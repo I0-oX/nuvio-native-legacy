@@ -516,6 +516,9 @@ typedef struct {
   int      nPend, capPend;
   size_t   bytesPend;
   int      refInvalida; // forced, letreiro, comentario ou faixa codificada
+  int      cod;         // ContentEncoding dos blocos: 0 nenhuma, 1 zlib, 2 header stripping
+  int      codSetN;
+  unsigned char codSet[16];
   size_t   corpoTam, corpoCap;
   ClCache  cl[CL_CACHE];
   int      clProx;
@@ -1283,6 +1286,234 @@ static int anexarEvento(Fio *f, const unsigned char *dados, long n,
   return (int)k;
 }
 
+// --- ContentEncodings (Matroska "compressao" de blocos) ----------------------
+//
+// mkvmerge/remuxers podem gravar os blocos de uma faixa (muito comum na faixa
+// de legenda, e so nela) com header stripping (algo 3: os primeiros bytes
+// iguais de todo bloco ficam em ContentCompSettings) ou zlib (algo 0). Sem
+// desfazer isto a faixa e aceita como ASS e entrega lixo: nada na tela e
+// nenhum erro. Fio.cod: 0 nada, 1 zlib, 2 header stripping.
+//
+// lerCodificacao: 0 ok (inclusive "sem codificacao de bloco"), -1 nao sabemos
+// desfazer.
+static int lerCodificacao(const unsigned char *d, long n, int *cod, int *setN, unsigned char *set) {
+  Iter it = { d, n, 0 }; unsigned long id; const unsigned char *v; long t;
+  int nEnc = 0;
+  *cod = 0; *setN = 0;
+  while (proximo(&it, &id, &v, &t)) {
+    Iter e = { v, t, 0 }; unsigned long eid; const unsigned char *ev; long et;
+    unsigned long long escopo = 1, tipo = 0; int algo = 0;
+    if (id != 0x6240) continue;                    // ContentEncoding
+    if (++nEnc > 1) return -1;                     // varias camadas
+    while (proximo(&e, &eid, &ev, &et)) {
+      if (eid == 0x5032) escopo = lerUint(ev, et);   // ContentEncodingScope
+      else if (eid == 0x5033) tipo = lerUint(ev, et);// ContentEncodingType
+      else if (eid == 0x5035) return -1;             // ContentEncryption
+      else if (eid == 0x5034) {                      // ContentCompression
+        Iter c = { ev, et, 0 }; unsigned long cid; const unsigned char *cv; long ct;
+        while (proximo(&c, &cid, &cv, &ct)) {
+          if (cid == 0x4254) algo = (int)lerUint(cv, ct);        // ContentCompAlgo
+          else if (cid == 0x4255) {                              // ContentCompSettings
+            if (ct > (long)16) return -1;
+            memcpy(set, cv, (size_t)ct); *setN = (int)ct;
+          }
+        }
+      }
+    }
+    if (tipo != 0) return -1;
+    if (escopo & ~3ULL) return -1;                 // so Block e CodecPrivate
+    if (escopo & 2) return -1;                     // CodecPrivate comprimido
+    if (!(escopo & 1)) { *cod = 0; *setN = 0; continue; }
+    if (algo == 0) *cod = 1; else if (algo == 3) *cod = 2; else return -1;
+  }
+  return 0;
+}
+
+// Inflate (RFC 1951) minimo, no estilo do puff.c de Mark Adler: sem dependencia
+// de zlib para que os testes e todos os alvos compilem como sempre. Blocos de
+// legenda sao pequenos; a saida e limitada ao `cap` dado.
+typedef struct { short cont[16]; short simb[288]; } InfHuf;
+typedef struct {
+  const unsigned char *in; size_t inN, inP;
+  unsigned buf; int nb;
+  unsigned char *out; size_t cap, n;
+} Infl;
+
+static int infBits(Infl *s, int need) {
+  long v = (long)s->buf;
+  while (s->nb < need) {
+    if (s->inP >= s->inN) return -1;
+    v |= (long)s->in[s->inP++] << s->nb;
+    s->nb += 8;
+  }
+  s->buf = (unsigned)(v >> need);
+  s->nb -= need;
+  return (int)(v & ((1L << need) - 1));
+}
+
+static int infDecodificar(Infl *s, const InfHuf *h) {
+  int code = 0, first = 0, index = 0, len;
+  for (len = 1; len <= 15; len++) {
+    int b = infBits(s, 1), count;
+    if (b < 0) return -1;
+    code |= b;
+    count = h->cont[len];
+    if (code - count < first) return h->simb[index + (code - first)];
+    index += count; first += count; first <<= 1; code <<= 1;
+  }
+  return -1;
+}
+
+static int infConstruir(InfHuf *h, const short *comp, int n) {
+  int simbolo, len, sobra; short offs[16];
+  for (len = 0; len <= 15; len++) h->cont[len] = 0;
+  for (simbolo = 0; simbolo < n; simbolo++) h->cont[comp[simbolo]]++;
+  if (h->cont[0] == n) return 0;
+  sobra = 1;
+  for (len = 1; len <= 15; len++) { sobra <<= 1; sobra -= h->cont[len]; if (sobra < 0) return sobra; }
+  offs[1] = 0;
+  for (len = 1; len < 15; len++) offs[len + 1] = (short)(offs[len] + h->cont[len]);
+  for (simbolo = 0; simbolo < n; simbolo++)
+    if (comp[simbolo] != 0) h->simb[offs[comp[simbolo]]++] = (short)simbolo;
+  return sobra;
+}
+
+static int infCodigos(Infl *s, const InfHuf *lc, const InfHuf *dc) {
+  static const short lens[29] = { 3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258 };
+  static const short lext[29] = { 0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0 };
+  static const short dists[30] = { 1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577 };
+  static const short dext[30] = { 0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13 };
+  int simbolo;
+  do {
+    simbolo = infDecodificar(s, lc);
+    if (simbolo < 0) return -1;
+    if (simbolo < 256) {
+      if (s->n >= s->cap) return -1;
+      s->out[s->n++] = (unsigned char)simbolo;
+    } else if (simbolo > 256) {
+      int e, len; size_t dist;
+      simbolo -= 257;
+      if (simbolo >= 29) return -1;
+      e = infBits(s, lext[simbolo]); if (e < 0) return -1;
+      len = lens[simbolo] + e;
+      simbolo = infDecodificar(s, dc);
+      if (simbolo < 0 || simbolo >= 30) return -1;
+      e = infBits(s, dext[simbolo]); if (e < 0) return -1;
+      dist = (size_t)(dists[simbolo] + e);
+      if (dist > s->n || s->n + (size_t)len > s->cap) return -1;
+      while (len--) { s->out[s->n] = s->out[s->n - dist]; s->n++; }
+      simbolo = 0;
+    }
+  } while (simbolo != 256);
+  return 0;
+}
+
+static int infDinamico(Infl *s) {
+  static const short ordem[19] = { 16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15 };
+  short comp[320]; InfHuf lc, dc; int nlen, ndist, ncode, index, err;
+  nlen = infBits(s, 5); ndist = infBits(s, 5); ncode = infBits(s, 4);
+  if (nlen < 0 || ndist < 0 || ncode < 0) return -1;
+  nlen += 257; ndist += 1; ncode += 4;
+  if (nlen > 286 || ndist > 30) return -1;
+  for (index = 0; index < ncode; index++) {
+    int b = infBits(s, 3); if (b < 0) return -1;
+    comp[ordem[index]] = (short)b;
+  }
+  for (; index < 19; index++) comp[ordem[index]] = 0;
+  if (infConstruir(&lc, comp, 19) != 0) return -1;
+  index = 0;
+  while (index < nlen + ndist) {
+    int simbolo = infDecodificar(s, &lc), rep, len = 0;
+    if (simbolo < 0) return -1;
+    if (simbolo < 16) { comp[index++] = (short)simbolo; continue; }
+    if (simbolo == 16) {
+      if (index == 0) return -1;
+      len = comp[index - 1];
+      rep = infBits(s, 2); if (rep < 0) return -1; rep += 3;
+    } else if (simbolo == 17) { rep = infBits(s, 3); if (rep < 0) return -1; rep += 3; }
+    else { rep = infBits(s, 7); if (rep < 0) return -1; rep += 11; }
+    if (index + rep > nlen + ndist) return -1;
+    while (rep--) comp[index++] = (short)len;
+  }
+  if (comp[256] == 0) return -1;
+  err = infConstruir(&lc, comp, nlen);
+  if (err && (err < 0 || nlen != lc.cont[0] + lc.cont[1])) return -1;
+  err = infConstruir(&dc, comp + nlen, ndist);
+  if (err && (err < 0 || ndist != dc.cont[0] + dc.cont[1])) return -1;
+  return infCodigos(s, &lc, &dc);
+}
+
+static int infFixo(Infl *s) {
+  static int pronto; static InfHuf lc, dc;
+  if (!pronto) {
+    short comp[288]; int i;
+    for (i = 0; i < 144; i++) comp[i] = 8;
+    for (; i < 256; i++) comp[i] = 9;
+    for (; i < 280; i++) comp[i] = 7;
+    for (; i < 288; i++) comp[i] = 8;
+    infConstruir(&lc, comp, 288);
+    for (i = 0; i < 30; i++) comp[i] = 5;
+    infConstruir(&dc, comp, 30);
+    pronto = 1;
+  }
+  return infCodigos(s, &lc, &dc);
+}
+
+static int infArmazenado(Infl *s) {
+  unsigned len, nlen;
+  s->buf = 0; s->nb = 0;
+  if (s->inP + 4 > s->inN) return -1;
+  len = s->in[s->inP] | ((unsigned)s->in[s->inP + 1] << 8);
+  nlen = s->in[s->inP + 2] | ((unsigned)s->in[s->inP + 3] << 8);
+  s->inP += 4;
+  if (len != (~nlen & 0xFFFFu)) return -1;
+  if (s->inP + len > s->inN || s->n + len > s->cap) return -1;
+  memcpy(s->out + s->n, s->in + s->inP, len);
+  s->inP += len; s->n += len;
+  return 0;
+}
+
+// Fluxo zlib (cabecalho de 2 bytes + deflate). Devolve o tamanho ou -1.
+static long inflarZlib(const unsigned char *in, long n, unsigned char *out, size_t cap) {
+  Infl s; int ultimo;
+  if (n < 3 || (in[0] & 0x0F) != 8 || ((in[0] << 8) | in[1]) % 31 || (in[1] & 0x20)) return -1;
+  memset(&s, 0, sizeof s);
+  s.in = in + 2; s.inN = (size_t)n - 2; s.out = out; s.cap = cap;
+  do {
+    int tipo, r;
+    ultimo = infBits(&s, 1); tipo = infBits(&s, 2);
+    if (ultimo < 0 || tipo < 0) return -1;
+    r = tipo == 0 ? infArmazenado(&s) : tipo == 1 ? infFixo(&s) : tipo == 2 ? infDinamico(&s) : -1;
+    if (r < 0) return -1;
+  } while (!ultimo);
+  return (long)s.n;
+}
+
+// anexarEvento depois de desfazer a ContentEncoding do bloco, se ha.
+static int anexarEventoCod(Fio *f, const unsigned char *dados, long n, double ini, double fim) {
+  unsigned char *t; long m; int r;
+  if (f->cod == 2) {                       // header stripping: o prefixo volta
+    t = malloc((size_t)n + (size_t)f->codSetN + 1u);
+    if (!t) return 0;
+    memcpy(t, f->codSet, (size_t)f->codSetN);
+    memcpy(t + f->codSetN, dados, (size_t)n);
+    r = anexarEvento(f, t, n + f->codSetN, ini, fim);
+    free(t);
+    return r;
+  }
+  if (f->cod == 1) {                       // zlib
+    size_t cap = (size_t)n * 32u + 4096u;
+    if (cap > 8u * 1024u * 1024u) cap = 8u * 1024u * 1024u;
+    t = malloc(cap);
+    if (!t) return 0;
+    m = inflarZlib(dados, n, t, cap);
+    r = m > 0 ? anexarEvento(f, t, m, ini, fim) : 0;
+    free(t);
+    return r;
+  }
+  return anexarEvento(f, dados, n, ini, fim);
+}
+
 // --- sidecar -----------------------------------------------------------------
 
 // FNV-1a de 64 bits da URL: o nome do sidecar. Nao e criptografico e nao
@@ -1306,10 +1537,12 @@ static void nomeSidecar(const char *url, int faixa, char *dst, size_t tam) {
 // faixas normais, que nao precisam ser colhidas de novo. O parcial nao muda de
 // versao: ele leva um bit por ponto, e um parcial feito com o indice cortado
 // tem 8000 bits para um indice que agora e maior — restaurarParcial o ignora.
-#define MARCA_COMPLETO    "; mkvass-estado: completo-v4\n"
+// v5: faixa com ContentEncoding (header stripping/zlib) passou a ser decodificada.
+// Um completo-v4 dessa faixa guarda lixo ou nada e nao pode ser reaproveitado.
+#define MARCA_COMPLETO    "; mkvass-estado: completo-v5\n"
 #define MARCA_COMPLETO_V3 "; mkvass-estado: completo-v3\n"
 #define MARCA_V3_EVENTOS  7000
-#define MARCA_PARCIAL  "; mkvass-estado: parcial-v3 "
+#define MARCA_PARCIAL  "; mkvass-estado: parcial-v4 "
 #define MARCA_FONTES   "NVASS-FONTES-1\n"
 
 static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1636,6 +1869,7 @@ static int lerTracks(Fio *f, const unsigned char *p, long n) {
   while (proximo(&it, &id, &d, &t)) {
     Iter j; unsigned long fid; const unsigned char *fd; long ft;
     int numero = 0, tipo = 0, ehAss = 0, ehTexto = 0, ehPgs = 0, refInvalida = 0; const unsigned char *priv = NULL; long privN = 0;
+    int cod = 0, codN = 0, codNaoSuportado = 0; unsigned char codSet[16] = { 0 };
     if (id != ID_TRACKENTRY) continue;
     j.p = d; j.n = t; j.o = 0;
     while (proximo(&j, &fid, &fd, &ft)) {
@@ -1650,7 +1884,10 @@ static int lerTracks(Fio *f, const unsigned char *p, long n) {
       }
       else if (fid == ID_CODECPRIV) { priv = fd; privN = ft; }
       else if (fid == 0x55AA && lerUint(fd, ft)) refInvalida = 1;
-      else if (fid == 0x6D80) refInvalida = 1;
+      else if (fid == 0x6D80) {
+        refInvalida = 1;
+        if (lerCodificacao(fd, ft, &cod, &codN, codSet) < 0) codNaoSuportado = 1;
+      }
       else if (fid == 0x536E) {
         char nome[96]; size_t k = (size_t)ft < sizeof nome - 1 ? (size_t)ft : sizeof nome - 1;
         memcpy(nome, fd, k); nome[k] = 0;
@@ -1665,6 +1902,15 @@ static int lerTracks(Fio *f, const unsigned char *p, long n) {
       f->faixa = numero;
     } else if (numero != f->faixa) continue;
     f->refInvalida = refInvalida;
+    // ContentEncoding que nao sabemos desfazer (cifra, bzip2/lzo, varias
+    // camadas, CodecPrivate comprimido): os blocos chegariam como lixo e a
+    // faixa "seria ASS" sem desenhar nada. Melhor devolve-la a TV.
+    if (codNaoSuportado) {
+      printf("[mkvass] faixa %d usa ContentEncoding que nao sei desfazer: a TV desenha\n", numero);
+      fflush(stdout);
+      return -1;
+    }
+    f->cod = cod; f->codSetN = codN; memcpy(f->codSet, codSet, sizeof f->codSet);
     // #421: o mesmo SubRip das externas, inclusive na pre-busca.
     if (!ehAss && ehTexto && aceitaTexto) {
       f->texto = 1;
@@ -2323,7 +2569,7 @@ static long lerBloco(Fio *f, const unsigned char *p, long n, const ClCache *cl,
       int nf = 0, fi;
       if (!tamanhosLace(frames, framesN, flags, &tams, &nf, &cab)) return total;
       for (fi = 0; fi < nf; fi++) {
-        if (tams[fi] > 0 && anexarEvento(f, frames + cab + off, tams[fi], ini, fim)) {
+        if (tams[fi] > 0 && anexarEventoCod(f, frames + cab + off, tams[fi], ini, fim)) {
           f->sujo = 1;
           // A fala chegou quando ja devia estar na tela (ou ja tinha saido).
           // Antes do seek/escolha e esperado; no meio do filme e o sintoma.
