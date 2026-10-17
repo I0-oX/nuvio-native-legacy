@@ -7,13 +7,12 @@ name: Build IPK (LG webOS)
 # Runs on a native arm64 runner: the SDK image (tools/Dockerfile) is linux/arm64,
 # which is very slow under qemu on x86.
 #
-# REQUIRED SECRET (repository Settings -> Secrets and variables -> Actions):
-#   NUVIO_LOCAL_PROPERTIES  the whole content of local.properties, i.e. the lines
-#                           NUVIO_SUPABASE_URL=, NUVIO_SUPABASE_ANON_KEY=,
-#                           TV_LOGIN_WEB_BASE_URL= (mandatory) and optionally
-#                           TRAKT_CLIENT_ID/SECRET, SIMKL_CLIENT_ID/APP_NAME,
-#                           TMDB_API_KEY, DISCORD_CLIENT_ID (see tools/env.sh).
-# Without it tools/env.sh refuses to build (the app would have no login).
+# OPTIONAL SECRET (repository Settings -> Secrets and variables -> Actions):
+#   NUVIO_LOCAL_PROPERTIES  the whole content of local.properties (see
+#                           tools/env.sh: NUVIO_SUPABASE_URL, NUVIO_SUPABASE_ANON_KEY,
+#                           TV_LOGIN_WEB_BASE_URL, TRAKT_*, SIMKL_*, TMDB_API_KEY...).
+# Without it the build still works (env.sh only warns), but the app has no
+# login server configured, exactly like the TPK CI artifacts.
 #
 # Runs on pushes to fix/** branches and by hand (Actions -> Build IPK -> Run
 # workflow; the button shows once this file is on the default branch).
@@ -42,15 +41,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write local.properties from the secret
+      # Optional, like the TPK workflow: without it the package builds but has no
+      # server configured (login screen says so); the owner's secret fixes that.
+      - name: Write local.properties from the secret (optional)
         env:
           PROPS: ${{ secrets.NUVIO_LOCAL_PROPERTIES }}
         run: |
           if [ -z "${PROPS//[[:space:]]/}" ]; then
-            echo "::error::Secret NUVIO_LOCAL_PROPERTIES is empty. Add the content of local.properties (NUVIO_SUPABASE_URL, NUVIO_SUPABASE_ANON_KEY, TV_LOGIN_WEB_BASE_URL, ...) in Settings -> Secrets and variables -> Actions."
-            exit 1
+            echo "::warning::NUVIO_LOCAL_PROPERTIES not set: building WITHOUT server keys (no login). Fine to test subtitles on a signed-out app."
+          else
+            printf '%s\n' "$PROPS" > local.properties
           fi
-          printf '%s\n' "$PROPS" > local.properties
 
       - uses: docker/setup-buildx-action@v3
 
