@@ -1,0 +1,105 @@
+name: Build IPK (LG webOS)
+
+# Builds the LG webOS package the same way `bash tools/arm.sh --ipk --build`
+# does on the owner's computer and publishes it as a GitHub PRERELEASE so it can
+# be installed on a TV for testing (ares-install / webosbrew Dev Manager).
+#
+# Runs on a native arm64 runner: the SDK image (tools/Dockerfile) is linux/arm64,
+# which is very slow under qemu on x86.
+#
+# REQUIRED SECRET (repository Settings -> Secrets and variables -> Actions):
+#   NUVIO_LOCAL_PROPERTIES  the whole content of local.properties, i.e. the lines
+#                           NUVIO_SUPABASE_URL=, NUVIO_SUPABASE_ANON_KEY=,
+#                           TV_LOGIN_WEB_BASE_URL= (mandatory) and optionally
+#                           TRAKT_CLIENT_ID/SECRET, SIMKL_CLIENT_ID/APP_NAME,
+#                           TMDB_API_KEY, DISCORD_CLIENT_ID (see tools/env.sh).
+# Without it tools/env.sh refuses to build (the app would have no login).
+#
+# Runs on pushes to fix/** branches and by hand (Actions -> Build IPK -> Run
+# workflow; the button shows once this file is on the default branch).
+# The package has no P2P engine (it lives on the owner's disk, not in the repo).
+
+on:
+  push:
+    branches: ["fix/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: build-ipk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      NUVIO_P2P_MOTOR: none
+      NUVIO_BUILD_JOBS: "4"
+      NUVIO_RELEASE_OUT: ${{ github.workspace }}/out
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write local.properties from the secret
+        env:
+          PROPS: ${{ secrets.NUVIO_LOCAL_PROPERTIES }}
+        run: |
+          if [ -z "${PROPS//[[:space:]]/}" ]; then
+            echo "::error::Secret NUVIO_LOCAL_PROPERTIES is empty. Add the content of local.properties (NUVIO_SUPABASE_URL, NUVIO_SUPABASE_ANON_KEY, TV_LOGIN_WEB_BASE_URL, ...) in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          printf '%s\n' "$PROPS" > local.properties
+
+      - uses: docker/setup-buildx-action@v3
+
+      # libass + FFmpeg (DTS) for ARM are built inside this image; cache it.
+      - name: Build the webOS SDK image
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          platforms: linux/arm64
+          load: true
+          tags: nuvio-webos-sdk
+          cache-from: type=gha,scope=webos-sdk
+          cache-to: type=gha,mode=max,scope=webos-sdk
+
+      - name: Install ares-package
+        run: |
+          sudo npm install -g @webos-tools/cli
+          echo "NUVIO_ARES_PACKAGE=$(command -v ares-package)" >> "$GITHUB_ENV"
+
+      - name: Build the IPK
+        run: |
+          set -o pipefail
+          mkdir -p out
+          bash tools/arm.sh --ipk --build 2>&1 | tee build.log
+          ls -l out
+
+      - name: Show build error summary
+        if: failure()
+        run: |
+          {
+            echo '### Build failed - last 60 lines'
+            echo '```'
+            tail -n 60 build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioIpk
+          path: out/*.ipk
+          if-no-files-found: error
+
+      - name: Publish test prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          SHORT="${GITHUB_SHA::7}"
+          TAG="test-${GITHUB_REF_NAME//\//-}-$SHORT"
+          gh release create "$TAG" out/*.ipk --prerelease --target "$GITHUB_SHA" \
+            --title "TEST $GITHUB_REF_NAME ($SHORT)" \
+            --notes "Test build for LG webOS from branch \`$GITHUB_REF_NAME\` at $SHORT. Not a stable release. Install with: ares-install space.nuvio.native.legacy_*_arm.ipk -d <tv>"
