@@ -863,6 +863,10 @@ const char *mkv_contentor_nome(int c) {
   }
 }
 
+// 1 quando o ULTIMO mkv_faixas_e_caps devolveu so o prefixo de um Tracks cortado.
+static int listaIncompleta;
+int mkv_lista_incompleta(void) { return listaIncompleta; }
+
 int mkv_faixas_e_caps(const char *url, MkvFaixa *saida, int max,
                       MkvCap *caps, int maxCaps, int *nCaps) {
   char *buf;
@@ -883,20 +887,19 @@ int mkv_faixas_e_caps(const char *url, MkvFaixa *saida, int max,
   achou = acharTracks((const unsigned char *)buf, n, saida, max,
                       caps, maxCaps, nCaps);
   diagTrecho((const unsigned char *)buf, n, saida, achou);
-  // Tracks cortado pela janela: uma lista PELA METADE faria o casamento das
-  // legendas dar "nenhum" e deixaria TODA faixa ASS com a TV (#483 so cobria o
-  // caso de 0 faixas). O SeekHead diz onde o elemento inteiro mora. Sem ele (ou
-  // se o Range falha) ficam so as faixas COMPLETAS que nao sao legenda: video e
-  // audio continuam servindo ao DV/DTS/rotulos, e sem TrackEntry de legenda o
-  // casamento da TV cai em "nenhum" em vez de errar com uma lista incompleta.
+  // Tracks cortado pela janela: o SeekHead diz onde o elemento inteiro mora.
+  // Se a leitura completa vem, ela vale. Se nao (sem SeekHead, CDN que recusa o
+  // Range com o video aberto), ficam as TrackEntry INTEIRAS que cabem na janela:
+  // elas sao um PREFIXO da lista, entao a ordem e os ordinais das legendas
+  // continuam certos e o app ainda consegue LISTAR e desenhar essas legendas
+  // quando a TV nao lista nenhuma. O que nao se pode e CASAR a lista da TV com
+  // um prefixo: quem chama confere mkv_lista_incompleta() logo depois e pula o
+  // casamento (cai em "nenhum" em vez de errar).
+  listaIncompleta = 0;
   if (tracksCortado) {
     int alem = mkv_tracks_alem(url, saida, max, NULL);
     if (alem > 0) achou = alem;
-    else {
-      int i, m = 0;
-      for (i = 0; i < achou; i++) if (saida[i].tipo != 17) saida[m++] = saida[i];
-      achou = m;
-    }
+    else listaIncompleta = achou > 0;
     tracksNaoVisto = 0;   // uma tentativa por sonda: o lerMkv nao repete o mesmo Range
   }
   if (caps && nCaps && !*nCaps && posChapters >= 0)

@@ -1967,15 +1967,16 @@ static void completarAudioMkv(const MkvFaixa *fx, int n) {
   fflush(stdout);
 }
 
-// Vale a pena repetir a sonda do MKV que falhou? DV pedido (como sempre) ou
-// a TV lista legendas: sem a sonda elas ficam sem codec e vao todas para a TV.
-static int sondaPrecisaDeNovaTentativa(void) { return dvHabilitado || nLeg > 0; }
+// Vale a pena repetir a sonda do MKV que falhou? SEMPRE (so MKV, ver as demais
+// condicoes no chamador): sem a sonda nenhuma legenda ganha o codec e, quando a
+// TV nao lista legendas, o app nao tem o que listar. DV ligado ou nao.
+static int sondaPrecisaDeNovaTentativa(void) { return 1; }
 
 static void *lerMkv(void *arg) {
   MkvFaixa fx[MKV_MAX_FAIXAS];
   MkvCap   caps[MKV_MAX_CAPS];
   char url[sizeof urlAtual];
-  int n, i, j, casou = 0, nCaps = 0;
+  int n, i, j, casou = 0, nCaps = 0, incompleto = 0;
   (void)arg;
 
   snprintf(url, sizeof url, "%s", urlAtual);
@@ -1997,7 +1998,10 @@ static void *lerMkv(void *arg) {
       if (n < 1) n = mkv_tracks_alem(url, fx, MKV_MAX_FAIXAS, NULL);
       free(cab);
     } }
-  if (n < 1) n = mkv_faixas_e_caps(url, fx, MKV_MAX_FAIXAS, caps, MKV_MAX_CAPS, &nCaps);
+  if (n < 1) {
+    n = mkv_faixas_e_caps(url, fx, MKV_MAX_FAIXAS, caps, MKV_MAX_CAPS, &nCaps);
+    incompleto = n > 0 && mkv_lista_incompleta();
+  }
   // O proprio trecho de 320 KB pode ter lido o SeekHead sem chegar no Tracks.
   if (n < 1) n = mkv_tracks_alem(url, fx, MKV_MAX_FAIXAS, NULL);
   if (nCaps > 0) {
@@ -2124,7 +2128,14 @@ static void *lerMkv(void *arg) {
   { int tv[NV_FAIXA_MAX], idx[NV_FAIXA_MAX], modo, nt = nLeg;
     if (nt > NV_FAIXA_MAX) nt = NV_FAIXA_MAX;
     for (i = 0; i < nt; i++) tv[i] = faixaLeg[i].numero;
-    modo = mkv_casar_legendas(fx, n, tv, nt, idx);
+    if (incompleto) {
+      // So o prefixo do Tracks (a leitura completa falhou): serve para LISTAR as
+      // legendas de texto que a TV nao mostra, nunca para casar com a lista dela.
+      int q;
+      for (q = 0; q < nt; q++) idx[q] = -1;
+      modo = MKV_CASA_NADA;
+      printf("[mkv] Tracks incompleto (so o prefixo): legendas da TV nao casadas, as de texto do arquivo sao listadas\n");
+    } else modo = mkv_casar_legendas(fx, n, tv, nt, idx);
     // SEM_IMAGEM so confere contagem: com idioma dos dois lados, tem de bater.
     if (modo == MKV_CASA_SEM_IMAGEM && !faixasmkv_idiomas_coerentes(faixaLeg, nt, fx, idx)) {
       int q;
@@ -2132,7 +2143,7 @@ static void *lerMkv(void *arg) {
       for (q = 0; q < nt; q++) idx[q] = -1;
       modo = MKV_CASA_NADA;
     }
-    if (modo == MKV_CASA_NADA && faixasmkv_legendas_por_idioma(faixaLeg, nt, fx, n, idx))
+    if (!incompleto && modo == MKV_CASA_NADA && faixasmkv_legendas_por_idioma(faixaLeg, nt, fx, n, idx))
       printf("[mkv] legendas: pares unicos por idioma (lista da TV diferente)\n");
     // DIAGNOSTICO que faltou no #92: sem as duas listas lado a lado no log, o
     // deslocamento parecia "a TV desenha mal" e ninguem via que era o app.

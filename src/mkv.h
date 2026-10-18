@@ -180,5 +180,9 @@ double mkv_previa_nomeada(const MkvCap *caps, int n);
 enum { MKV_CASA_NADA = 0, MKV_CASA_ORDINAL = 1, MKV_CASA_NUMERO = 2, MKV_CASA_SEM_IMAGEM = 3 };
 int mkv_casar_legendas(const MkvFaixa *fx, int n, const int *tvNum, int nTv,
                        int *idxFx);
+// 1 quando o ultimo mkv_faixas_e_caps devolveu so as TrackEntry inteiras de um
+// Tracks cortado pela janela (prefixo da lista): serve para LISTAR faixas, nao
+// para casar com a lista da TV. Valido logo apos a chamada, no mesmo fio.
+int mkv_lista_incompleta(void);
 
 #endif
