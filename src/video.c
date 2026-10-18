@@ -1967,6 +1967,10 @@ static void completarAudioMkv(const MkvFaixa *fx, int n) {
   fflush(stdout);
 }
 
+// Vale a pena repetir a sonda do MKV que falhou? DV pedido (como sempre) ou
+// a TV lista legendas: sem a sonda elas ficam sem codec e vao todas para a TV.
+static int sondaPrecisaDeNovaTentativa(void) { return dvHabilitado || nLeg > 0; }
+
 static void *lerMkv(void *arg) {
   MkvFaixa fx[MKV_MAX_FAIXAS];
   MkvCap   caps[MKV_MAX_CAPS];
@@ -2030,7 +2034,11 @@ static void *lerMkv(void *arg) {
     // Falha de sonda nao e "nao e MKV" (C9: a rede da TV ficou ~10 s fora logo
     // apos o disparo). Se o DV ainda pode valer para ESTA fonte, agenda nova
     // tentativa em vez de dar dvSondado=1 e perder o DV pelo resto da sessao.
-    if (dvHabilitado && !fonteMp4 && !nv_url_e_mp4(url) && !dtsSessao && !dtsTentou && !dvSondado &&
+    // O MESMO vale para as LEGENDAS: sem a sonda nenhuma faixa ganha o codec, e
+    // a TV desenha todas (ASS inclusive) como texto simples ate o fim do
+    // episodio. Fontes cujo CDN recusa a conexao extra com o video aberto
+    // falhavam uma vez e ficavam assim para sempre.
+    if (sondaPrecisaDeNovaTentativa() && !fonteMp4 && !nv_url_e_mp4(url) && !dtsSessao && !dtsTentou && !dvSondado &&
         mkvFioSessao == __atomic_load_n(&sessao, __ATOMIC_ACQUIRE) && !strcmp(url, urlAtual)) {
       int tent = 0;
       unsigned espera = nv_dvsonda_falhou(&mkvRetry, &tent);
@@ -2310,7 +2318,7 @@ static void velBombear(void);
 static void mkvRetryBombear(void) {
   if (!mkvRetryEm) return;
   if (mkvRetrySessao != __atomic_load_n(&sessao, __ATOMIC_ACQUIRE) || strcmp(mkvRetryUrl, urlAtual) ||
-      dtsSessao || fonteMp4 || nv_url_e_mp4(urlAtual) || !dvHabilitado || dtsTentou) {
+      dtsSessao || fonteMp4 || nv_url_e_mp4(urlAtual) || !sondaPrecisaDeNovaTentativa() || dtsTentou) {
     mkvRetryEm = 0; return;
   }
   if (fioMkvVivo || !nv_dvsonda_pronta((int)(SDL_GetTicks() - mkvRetryEm) >= 0, bufferandoDesde != 0)) return;
