@@ -4,6 +4,7 @@
 #include "telefoneui.h"
 #include "idioma.h"
 #include "player.h"
+#include "rede.h"
 #include "video.h"
 #include "xtream.h"
 #include "addons.h"
@@ -499,6 +500,22 @@ void faixas_abrir_em(int col) {
   // A sonda esperava 20 s de buffer (video.c) — numa fonte lenta a folha
   // abria com "Legenda 1..N" e sem selo ASS, e a escolha ia a TV.
   if (modo) { video_sondar_mkv_agora(); legendasui_abrir(); }
+  // FOTO DO ESTADO no momento em que a pessoa procura as legendas. O sourceInfo
+  // loga "[video] faixas: ..." uma vez, ao carregar, e o painel do Registro so
+  // guarda as ultimas 200 linhas: quando a lista vem vazia a prova ja rolou para
+  // fora. Aqui o que a pessoa ve na folha fica no fim do registro.
+  if (modo) {
+    char host[120]; int i, nl = video_n_legenda();
+    printf("[legenda] folha aberta: legendas da TV=%d audios=%d sonda=%s fonte=%s\n", nl, video_n_audio(),
+           video_mkv_sondado() == 0 ? "em curso" : video_mkv_sondado() == 1 ? "concluida" : "nao se aplica",
+           rede_url_publica(video_url_atual(), host, sizeof host));
+    for (i = 0; i < nl && i < 16; i++) {
+      const VideoFaixa *f = video_legenda(i);
+      if (f) printf("[legenda]   %d: num=%d codec=%s ordinal=%d idioma=%s\n", i, f->numero,
+                    f->codec[0] ? f->codec : "-", f->ordinalMkv, f->idioma[0] ? f->idioma : "-");
+    }
+    fflush(stdout);
+  }
   // Clamp nas duas colunas. A lista de legendas CRESCE durante a sessao (as do
   // OpenSubtitles chegam depois) e a de audio so existe apos o sourceInfo:
   // guardar um indice de antes e reabrir sem conferir poe o foco fora do vetor.
