@@ -1511,7 +1511,7 @@ static void *fioAirlock(void *u) {
   PedidoAirlock *pd = u;
   char det[160] = "";
   int ok = pd->conta == debrid_tb_geracao() && debrid_tb_airlock(pd->usenet, pd->item, pd->ligar, det, sizeof det);
-  if (ok) airlockNaMemoria(pd->usenet, pd->item, pd->ligar);
+  if (ok && pd->conta == debrid_tb_geracao()) airlockNaMemoria(pd->usenet, pd->item, pd->ligar);
   pthread_mutex_lock(&trava);
   if (pd->geracao == geracaoAirlock && pd->conta == debrid_tb_geracao()) {
     airEstado = ok ? 1 : -1;

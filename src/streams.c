@@ -5352,7 +5352,8 @@ static void desenhaPartes(float x, float w, int ptr, Uint32 agora) {
         if (b > t) ponteiro_alvo(rr.x, t, rr.w, b - t, ponteiroPartesLinha, NULL, r, 0);
       }
       if (ln->tipo == PR_AIRLOCK) {
-        const char *tit = ptAirOcupado ? "Mudando o Airlock…" : ptL.airlock ? "Tirar do Airlock" : "Guardar no Airlock";
+        const int aqui = ptAirOcupado && ptAirItem == ptL.item && ptAirUsenet == ptL.usenet;   // o pedido em curso e DESTE item
+        const char *tit = aqui ? "Mudando o Airlock…" : ptL.airlock ? "Tirar do Airlock" : "Guardar no Airlock";
         const char *sub = ptAirMsg[0] ? ptAirMsg : ptL.airlock ? "No Airlock: nunca expira por falta de uso"
                                                                : "Fica fora da purga de 30 dias sem uso";
         txt_desenhar_alpha(txt_linha_corta(TXT_PAINEL_ITEM, tit, sel ? 250 : 220, sel ? 250 : 220, sel ? 248 : 218, 255, iw - 40),
