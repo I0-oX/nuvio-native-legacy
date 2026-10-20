@@ -4573,7 +4573,7 @@ static void ptMontar(void) {
   }
   if (ptL.estado != PARTES_PRONTO || ptL.n <= 0) return;
   ptAbas();
-  if (ptAirlockVisivel()) { ptLinhas[ptNLinhas++] = (PtLinha){PR_AIRLOCK, 0, y, PT_LINHA_H}; y += PT_LINHA_H; }
+  if (ptAirlockVisivel()) { ptLinhas[ptNLinhas++] = (PtLinha){PR_AIRLOCK, 0, y, 64.0f}; y += 64.0f; }
   if (!ptL.exato) { ptLinhas[ptNLinhas++] = (PtLinha){PR_ESCOLHER, 0, y, 64.0f}; y += 64.0f; }
   { int tipo = ptNAbas ? ptAbaTipos[ptAba] : PARTE_EP, temps = 0, ult = -1, ultT = -999;
     // Separador de temporada so com duas ou mais temporadas nos episodios.
@@ -5352,13 +5352,19 @@ static void desenhaPartes(float x, float w, int ptr, Uint32 agora) {
         if (b > t) ponteiro_alvo(rr.x, t, rr.w, b - t, ponteiroPartesLinha, NULL, r, 0);
       }
       if (ln->tipo == PR_AIRLOCK) {
+        // A MESMA LINHA de "Escolher outra copia" (64 px, so o titulo); o que o
+        // TorBox recusou aparece em vermelho na direita.
         const int aqui = ptAirOcupado && ptAirItem == ptL.item && ptAirUsenet == ptL.usenet;   // o pedido em curso e DESTE item
         const char *tit = aqui ? "Mudando o Airlock…" : ptL.airlock ? "Tirar do Airlock" : "Guardar no Airlock";
-        const char *sub = ptAirMsg[0] ? ptAirMsg : ptL.airlock ? "No Airlock: nunca expira por falta de uso"
-                                                               : "Fica fora da purga de 30 dias sem uso";
-        txt_desenhar_alpha(txt_linha_corta(TXT_PAINEL_ITEM, tit, sel ? 250 : 220, sel ? 250 : 220, sel ? 248 : 218, 255, iw - 40),
-                           ix, ry + 12, a);
-        txt_desenhar_alpha(txt_linha_corta(TXT_MINI, sub, ptAirMsg[0] ? 235 : 150, ptAirMsg[0] ? 130 : 150, ptAirMsg[0] ? 120 : 148, 255, iw), ix, ry + 46, a);
+        TxtLinha tl = txt_linha_corta(TXT_PAINEL_ITEM, tit, sel ? 250 : 220, sel ? 250 : 220, sel ? 248 : 218, 255, iw - 40);
+        txt_desenhar_alpha(tl, ix, ry + 16, a);
+        if (ptAirMsg[0]) {
+          float espaco = iw - tl.w - 32.0f;
+          if (espaco > 80.0f) {
+            TxtLinha el = txt_linha_corta(TXT_PG_FIM, ptAirMsg, 235, 130, 120, 255, espaco);
+            txt_desenhar_alpha(el, ix + iw - el.w, ry + 20, a);
+          }
+        }
         continue;
       }
       if (ln->tipo == PR_ESCOLHER) {
