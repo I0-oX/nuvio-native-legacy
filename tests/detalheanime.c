@@ -1091,6 +1091,24 @@ int main(void) {
       assert(n1 == 1); }
     puts("ok  um pedido so a fonte por abertura");
 
+    // 29b) Addon de metadados que so atende "mal:" e item "kitsu:" sem origem: o
+    //      ARM diz o mal do mesmo titulo e o addon e perguntado por ele; o item
+    //      continua com o proprio id.
+    nFake = 1;
+    fake[0] = (FakeAddon){ "Anime MAL", "https://mal.test/SEGREDO", "org.mal", "mal:", 0 };
+    limparCacheMeta(); nRotas = 0;
+    rota("arm.haglund.dev/api/v2/ids?source=kitsu&id=41370",
+         "{\"kitsu\":41370,\"myanimelist\":38000,\"anilist\":null,\"imdb\":null}");
+    rota("mal.test/SEGREDO/meta/series/mal:38000.json", KITSU_META);
+    catalogoDe("kitsu:41370", "series", "Mushoku Tensei", "");
+    abrir();
+    assert(pediu("arm.haglund.dev/api/v2/ids?source=kitsu&id=41370"));
+    assert(pediu("mal.test/SEGREDO/meta/series/mal:38000.json"));
+    assert(!pediu("meta/series/kitsu:41370.json"));
+    assert(!strcmp(cat_item(0)->imdb, "kitsu:41370"));
+    assert(cat_n_episodios(0) == 3);
+    puts("ok  ARM: addon so de mal: recebe o mal do mesmo titulo do kitsu");
+
     // 30) ISSUE #209 (LG 50NANO75SPA, 1.6.5): app e TMDB em portugues, titulo e
     //     sinopse da SERIE em ingles. "Prefere a ficha do addon de metadados" e
     //     LIGADO de fabrica (e preferExternalMetaAddonDetail=true no web, que a
