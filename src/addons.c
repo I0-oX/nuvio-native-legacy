@@ -2460,11 +2460,19 @@ static int streamIdsExtras(Consulta *c, const AddonPedido *a, int cobreOriginal,
   return n;
 }
 
-// A mesma fonte vinda pelos dois ids: mesmo torrent (hash + arquivo) ou mesma URL.
+// A mesma fonte vinda pelos dois ids. Mesma URL; mesmo torrent (infoHash +
+// arquivo); ou, quando a fonte ja vem com URL (AIOStreams/MediaFusion com
+// debrid: a URL de playback leva o pedido dentro e muda com o id), o mesmo
+// hashTorrent, ou o mesmo nome de arquivo com o mesmo videoSize.
 static int mesmaFonte(const Stream *x, const Stream *y) {
+  if (x->url[0] && !strcmp(x->url, y->url)) return 1;
   if (x->infoHash[0] && y->infoHash[0])
     return !strcasecmp(x->infoHash, y->infoHash) && x->fileIdx == y->fileIdx;
-  return x->url[0] && !strcmp(x->url, y->url);
+  if (x->hashTorrent[0] && y->hashTorrent[0] && strcasecmp(x->hashTorrent, y->hashTorrent)) return 0;
+  if (x->arquivo[0] && !strcmp(x->arquivo, y->arquivo))
+    return x->hashTorrent[0] && y->hashTorrent[0] ? 1
+         : x->tamanhoBytes && x->tamanhoBytes == y->tamanhoBytes;
+  return 0;
 }
 static int consultaCancelada(const Consulta *c) {
   return !nv_perfil_sessao_atual(c->sessao) || (c->cancelado && c->cancelado(c->ctx));
@@ -2533,6 +2541,77 @@ static char *baixarStream(const char *nome, const char *url, int segundos) {
   return corpo;
 }
 
+// Os ids a mais de UM addon (streamIdsExtras) num fio proprio, ao mesmo tempo
+// que o pedido pelo id do item: um agregador lento (AIOStreams espera os
+// scrapers dele a cada pedido) nao soma os dois tempos, e o que vier pelo id do
+// item ja vai para a tela antes. `ac` 1 = o fio escolhe os ids (o ARM pode
+// demorar); 0 = `extra[xi..]` ja escolhidos.
+typedef struct {
+  Consulta *c;
+  const AddonPedido *a;
+  Uint32 inicio;
+  int prazoS, ac, nExtra, xi;
+  char extra[2][ARM_ALT_TAM];
+  Stream *l;
+  int n, respondeu;
+} IdsExtras;
+static void *fioIdsExtras(void *u) {
+  IdsExtras *x = u;
+  char url[NV_ADDON_PEDIDO_MAX], idX[3 * IDCANAL_LONGO_MAX + 1];
+  if (x->ac == 1) { x->nExtra = streamIdsExtras(x->c, x->a, 1, x->extra); x->xi = 0; }
+  for (; x->xi < x->nExtra && !consultaCancelada(x->c); x->xi++) {
+    char *cx;
+    Stream *ax = NULL;
+    int nx, novos = 0, restanteS;
+    Uint32 gasto = SDL_GetTicks() - x->inicio;
+    if (gasto >= (Uint32)x->prazoS * 1000u) break;
+    restanteS = (int)(((Uint32)x->prazoS * 1000u - gasto) / 1000u);
+    if (restanteS <= 0) break;
+    if (!nv_addon_id(idX, sizeof idX, x->extra[x->xi]) || !idX[0]) continue;
+    cx = nv_addon_pedido_coube(x->a->nome, nv_addon_url(url, sizeof url, x->a->base, "/stream/%s/%s.json",
+                                 x->c->tipo, idX), sizeof url)
+         ? baixarStream(x->a->nome, url, restanteS) : NULL;
+    if (!cx) continue;
+    x->respondeu = 1;
+    nx = stream_extrair(cx, x->a->nome, &ax);
+    free(cx);
+    if (nx > 0) {
+      Stream *tmp = realloc(x->l, sizeof(Stream) * (size_t)(x->n + nx));
+      if (tmp) {
+        x->l = tmp;
+        for (int j = 0; j < nx; j++) {
+          int dup = 0;
+          for (int q = 0; q < x->n + novos && !dup; q++) dup = mesmaFonte(&x->l[q], &ax[j]);
+          if (!dup) x->l[x->n + novos++] = ax[j];
+        }
+        x->n += novos;
+      }
+    }
+    free(ax);
+    printf("[addons] %s: %d fontes pelo id %s\n", x->a->nome, novos, x->extra[x->xi]);
+  }
+  return NULL;
+}
+// Junta ao fim de `*l` (com `*n`) o que o fio trouxe e o pedido do item nao.
+// Devolve quantas entraram.
+static int idsExtrasJuntar(IdsExtras *x, Stream **l, int *n) {
+  int novos = 0;
+  if (x->n > 0) {
+    Stream *tmp = realloc(*l, sizeof(Stream) * (size_t)(*n + x->n));
+    if (tmp) {
+      *l = tmp;
+      for (int j = 0; j < x->n; j++) {
+        int dup = 0;
+        for (int q = 0; q < *n && !dup; q++) dup = mesmaFonte(&(*l)[q], &x->l[j]);
+        if (!dup) (*l)[*n + novos++] = x->l[j];
+      }
+      *n += novos;
+    }
+  }
+  free(x->l); x->l = NULL; x->n = 0;
+  return novos;
+}
+
 static void *fioFontes(void *u) {
   Consulta *c = u;
   for (;;) {
@@ -2562,6 +2641,9 @@ static void *fioFontes(void *u) {
     int vod = !strcmp(c->tipo, "movie") || !strcmp(c->tipo, "series");
     if (vod) ac = streamAceita(origem, c->id);
     if (ac == 0 && (nExtra = streamIdsExtras(c, origem, 0, extra)) > 0) { primario = extra[0]; xi = 1; }
+    IdsExtras ex;
+    pthread_t exFio;
+    int exVivo = 0, exUsar = ac == 1 || (ac == 0 && nExtra > 1), publicados = 0;
     // Id codificado como o Nuvio web (nv_addon_id): "tt123:1:2" sai igual.
     { char longo[IDCANAL_LONGO_MAX + 1];   // apelido de canal longo (idcanal.h)
       if (!nv_addon_id(idUrl, sizeof idUrl, idcanal_longo(primario, longo, sizeof longo)) || !idUrl[0]) {
@@ -2579,10 +2661,21 @@ static void *fioFontes(void *u) {
     // prefetch. Ver ADD_PRAZO_VOD_S em consultar().
     prazoS = prazoDoAddon(c, i);
     Uint32 inicioAddon = SDL_GetTicks();
+    if (exUsar) {
+      memset(&ex, 0, sizeof ex);
+      ex.c = c; ex.a = origem; ex.inicio = inicioAddon; ex.prazoS = prazoS; ex.ac = ac;
+      ex.nExtra = nExtra; ex.xi = xi;
+      memcpy(ex.extra, extra, sizeof ex.extra);
+      exVivo = pthread_create(&exFio, NULL, fioIdsExtras, &ex) == 0;
+    }
     corpo = nv_addon_pedido_coube(origem->nome, nv_addon_url(url, sizeof url, origem->base, "/stream/%s/%s.json",
                                     t1, idUrl), sizeof url) && idUrl[0]
             ? baixarStream(origem->nome, url, prazoS) : NULL;
-    if (consultaCancelada(c)) { free(corpo); break; }
+    if (consultaCancelada(c)) {
+      if (exVivo) pthread_join(exFio, NULL);
+      if (exUsar) free(ex.l);
+      free(corpo); break;
+    }
     achados = NULL; n = 0;
     if (corpo) n = stream_extrair(corpo, origem->nome, &achados);
     // Retry the remaining type names after an empty or failed response.
@@ -2623,7 +2716,11 @@ static void *fioFontes(void *u) {
       alt = nv_addon_pedido_coube(origem->nome, nv_addon_url(url, sizeof url, origem->base, "/stream/%s/%s.json",
                                     t2, idUrl), sizeof url) && idUrl[0]
             ? baixarStream(origem->nome, url, restanteS) : NULL;
-      if (consultaCancelada(c)) { free(alt); free(corpo); free(achados); return NULL; }
+      if (consultaCancelada(c)) {
+        if (exVivo) pthread_join(exFio, NULL);
+        if (exUsar) free(ex.l);
+        free(alt); free(corpo); free(achados); return NULL;
+      }
       if (alt) {
         Stream *a2 = NULL;
         int n2 = stream_extrair(alt, origem->nome, &a2);
@@ -2638,39 +2735,21 @@ static void *fioFontes(void *u) {
         } else { free(a2); free(alt); }
       }
     }
-    // O mesmo episodio pelo id da outra familia que o addon aceita (Torrentio:
-    // "tt" e "kitsu"). Dentro do mesmo prazo; so entra fonte que ainda nao veio.
-    if (ac == 1 && !consultaCancelada(c)) { nExtra = streamIdsExtras(c, origem, 1, extra); xi = 0; }
-    for (; xi < nExtra && !consultaCancelada(c); xi++) {
-      char idX[3 * IDCANAL_LONGO_MAX + 1], *cx;
-      Stream *ax = NULL;
-      int nx, novos = 0, restanteS;
-      Uint32 gasto = SDL_GetTicks() - inicioAddon;
-      if (gasto >= (Uint32)prazoS * 1000u) break;
-      restanteS = (int)(((Uint32)prazoS * 1000u - gasto) / 1000u);
-      if (restanteS <= 0) break;
-      if (!nv_addon_id(idX, sizeof idX, extra[xi]) || !idX[0]) continue;
-      cx = nv_addon_pedido_coube(origem->nome, nv_addon_url(url, sizeof url, origem->base, "/stream/%s/%s.json",
-                                   t1, idX), sizeof url)
-           ? baixarStream(origem->nome, url, restanteS) : NULL;
-      if (consultaCancelada(c)) { free(cx); free(corpo); free(achados); return NULL; }
-      if (!cx) continue;
-      nx = stream_extrair(cx, origem->nome, &ax);
-      if (nx > 0) {
-        Stream *tmp = realloc(achados, sizeof(Stream) * (size_t)(n + nx));
-        if (tmp) {
-          achados = tmp;
-          for (int j = 0; j < nx; j++) {
-            int dup = 0;
-            for (int q = 0; q < n && !dup; q++) dup = mesmaFonte(&achados[q], &ax[j]);
-            if (!dup) achados[n + novos++] = ax[j];
-          }
-          n += novos;
-        }
+    // O mesmo episodio pelo id da outra familia que o addon aceita (Torrentio,
+    // AIOStreams: "tt" e "kitsu"). O que ja veio pelo id do item vai para a tela
+    // enquanto o outro pedido termina; depois so entra fonte que ainda nao veio.
+    if (exUsar) {
+      if (exVivo && c->progresso && corpo && n > 0) {
+        fonteAddonCarimbar(achados, n, i, origem->base);
+        progMarcarSessao(c->sessao, i, achados, n, 1);
+        publicados = n;
       }
-      free(ax);
-      printf("[addons] %s: +%d fontes pelo id %s (%d na resposta)\n", origem->nome, novos, extra[xi], nx > 0 ? nx : 0);
-      if (!corpo) corpo = cx; else free(cx);
+      if (exVivo) pthread_join(exFio, NULL);
+      else fioIdsExtras(&ex);
+      if (consultaCancelada(c)) { free(ex.l); free(corpo); free(achados); return NULL; }
+      { int novos = idsExtrasJuntar(&ex, &achados, &n);
+        if (novos > 0) printf("[addons] %s: +%d fontes pelos ids do mesmo titulo\n", origem->nome, novos); }
+      if (!corpo && ex.respondeu) corpo = strdup("{\"streams\":[]}");
     }
     if (!corpo) {
       free(achados);
@@ -2683,7 +2762,8 @@ static void *fioFontes(void *u) {
       continue;
     }
     fonteAddonCarimbar(achados, n, i, origem->base);
-    if (c->progresso) progMarcarSessao(c->sessao, i, achados, n, 2);
+    if (c->progresso) progMarcarSessao(c->sessao, i, n > publicados ? achados + publicados : NULL,
+                                       n - publicados, 2);
     c->baldes[meu].respondeu = 1;
     c->baldes[meu].ms = (unsigned)(SDL_GetTicks() - c->inicio);
     c->baldes[meu].n = n;
