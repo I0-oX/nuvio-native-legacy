@@ -342,6 +342,7 @@ static void limparCacheMeta(void) {
   int i;
   for (i = 0; i < META_CACHE_N; i++) { free(metaCache[i].corpo); metaCache[i].corpo = NULL; }
   metaNegLimpar();
+  arm_cache_limpar();
 }
 
 // /meta de serie com `nt` temporadas de cont[t] episodios (ids "<tt>:T:E"),

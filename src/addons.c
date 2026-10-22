@@ -1,6 +1,7 @@
 #include "addons.h"
 #include "plugins.h"
 #include "idbase.h"
+#include "armids.h"
 #include "idcanal.h"
 #include "idioma.h"
 #include "linguas.h"
@@ -80,6 +81,8 @@ static struct {
   // do resource (ou, na falta, os do manifesto), nMetaPref = 0 = nao disse.
   char metaTipos[64];
   char metaPref[ADD_PREF_MAX][ADD_PREF_TAM]; int nMetaPref;
+  // Os idPrefixes do resource "stream" (ou os da raiz); 0 = nao disse.
+  char streamPref[ADD_PREF_MAX][ADD_PREF_TAM]; int nStreamPref;
   WsDecl ws;     // resource "watch_state" v2 (watchstate.h); zerado = nao participa
 } addon[ADD_MAX];
 static pthread_mutex_t addonTrava = PTHREAD_MUTEX_INITIALIZER;
@@ -93,6 +96,7 @@ static _Atomic unsigned versaoLista;   // ver addons_versao
 typedef struct {
   char nome[64], base[NV_ADDON_URL_MAX], estatistica[32], tipoCanal[16];
   int ativo, fonte, legenda, sondado, mudoSeg;
+  char streamPref[ADD_PREF_MAX][ADD_PREF_TAM]; int nStreamPref;
 } AddonPedido;
 static uint64_t hashTexto(uint64_t h, const char *s) {
   for (; s && *s; s++) { h ^= (unsigned char)*s; h *= UINT64_C(1099511628211); }
@@ -111,6 +115,8 @@ static void copiarPedido(int i, AddonPedido *p) {
   p->mudoSeg = addon[i].mudoSeg;
   chaveEstatistica(p->base, 0, p->estatistica);
   snprintf(p->tipoCanal, sizeof p->tipoCanal, "%s", addon[i].tipoCatalogo);
+  p->nStreamPref = addon[i].sondado ? addon[i].nStreamPref : 0;
+  memcpy(p->streamPref, addon[i].streamPref, sizeof p->streamPref);
 }
 static AddonPedido *capturarPedidos(uint64_t sessao, int *n, unsigned *versao) {
   AddonPedido *p = NULL;
@@ -1842,14 +1848,19 @@ static void lerDeclaracaoMeta(int i, const char *corpo, const char *resources) {
   char tiposTopo[ADD_PREF_MAX][ADD_PREF_TAM];
   char prefTopo[ADD_PREF_MAX][ADD_PREF_TAM];
   int nT, nPT, n, k;
+  int metaVisto = 0;
   addon[i].nMetaPref = 0;
+  addon[i].nStreamPref = 0;
   addon[i].metaTipos[0] = 0;
   nT  = lerStringsDoArray(chaveNaRaiz(corpo, NULL, "types"), tiposTopo, ADD_PREF_MAX);
   nPT = lerStringsDoArray(chaveNaRaiz(corpo, NULL, "idPrefixes"), prefTopo, ADD_PREF_MAX);
-  // Comeca pelo da raiz; o resource "meta", se declarar, troca.
-  for (k = 0; k < nPT; k++)
+  // Comeca pelo da raiz; o resource "meta" (ou "stream"), se declarar, troca.
+  for (k = 0; k < nPT; k++) {
     snprintf(addon[i].metaPref[k], ADD_PREF_TAM, "%s", prefTopo[k]);
+    snprintf(addon[i].streamPref[k], ADD_PREF_TAM, "%s", prefTopo[k]);
+  }
   addon[i].nMetaPref = nPT;
+  addon[i].nStreamPref = nPT;
   n = nT;
   for (k = 0; k < nT; k++) snprintf(lista[k], ADD_PREF_TAM, "%s", tiposTopo[k]);
   if (resources && *resources == '[') {
@@ -1863,9 +1874,10 @@ static void lerDeclaracaoMeta(int i, const char *corpo, const char *resources) {
         char nome[24] = "";
         if (!fe) break;
         js_texto_raiz_em(e, fe, "name", nome, sizeof nome);
-        if (!strcasecmp(nome, "meta")) {
+        if (!metaVisto && !strcasecmp(nome, "meta")) {
           const char *tp = chaveNaRaiz(e, fe, "types");
           const char *pf = chaveNaRaiz(e, fe, "idPrefixes");
+          metaVisto = 1;
           if (tp) n = lerStringsDoArray(tp, lista, ADD_PREF_MAX);
           if (pf) {
             char pr[ADD_PREF_MAX][ADD_PREF_TAM];
@@ -1873,7 +1885,16 @@ static void lerDeclaracaoMeta(int i, const char *corpo, const char *resources) {
             for (k = 0; k < np; k++) snprintf(addon[i].metaPref[k], ADD_PREF_TAM, "%s", pr[k]);
             addon[i].nMetaPref = np;
           }
-          break;
+        } else if (!strcasecmp(nome, "stream")) {
+          // Os ids que o /stream atende (streamIdsExtras): Torrentio declara
+          // ["tt","kitsu"] aqui, um addon so de anime ["kitsu:","mal:"].
+          const char *pf = chaveNaRaiz(e, fe, "idPrefixes");
+          if (pf) {
+            char pr[ADD_PREF_MAX][ADD_PREF_TAM];
+            int np = lerStringsDoArray(pf, pr, ADD_PREF_MAX);
+            for (k = 0; k < np; k++) snprintf(addon[i].streamPref[k], ADD_PREF_TAM, "%s", pr[k]);
+            addon[i].nStreamPref = np;
+          }
         }
         e = fe + 1;
       } else if (*e == '"') {       // forma curta: "meta" herda os da raiz
@@ -2375,7 +2396,76 @@ typedef struct {
   unsigned versao;
   uint64_t sessao;
   pthread_mutex_t trava;
+  struct ArmFontes *arm;      // ids do mesmo titulo em outros sites (streamIdsExtras)
 } Consulta;
+
+// O MESMO EPISODIO COM OUTRO ID (armids.h). Em anime cada id acha fontes que o
+// outro nao acha: o Torrentio responde "kitsu:41370:5" com os lancamentos de
+// numeracao absoluta (fansubs, pacotes) e "tt9335498:1:5" com os de temporada;
+// addon so de "tt" nao responde nada a um "kitsu:", e addon so de anime nada a
+// um "tt". Um addon que declara no "stream" idPrefixes de outra familia de ids
+// tambem e perguntado por ela, e as listas se somam sem repetir fonte. A
+// consulta ao ARM e UMA por busca, feita pelo primeiro fio que precisar.
+struct ArmFontes {
+  pthread_mutex_t trava;
+  int feito, n;
+  char alt[ARM_COLS + 1][ARM_ALT_TAM];
+};
+
+// 1 = o /stream do addon declara este prefixo; 0 = declara outros; -1 = nao disse.
+static int streamAceita(const AddonPedido *a, const char *id) {
+  int k;
+  if (a->nStreamPref <= 0) return -1;
+  for (k = 0; k < a->nStreamPref; k++) {
+    size_t l = strlen(a->streamPref[k]);
+    if (l && !strncmp(id, a->streamPref[k], l)) return 1;
+  }
+  return 0;
+}
+
+// Ids a mais para o addon `a`: no maximo um por FAMILIA (IMDb, site de anime)
+// que ele declara aceitar e que a do id do item nao cobre (`cobreOriginal` = o
+// addon aceita o id do item). Devolve quantos em `out`.
+static int streamIdsExtras(Consulta *c, const AddonPedido *a, int cobreOriginal,
+                           char (*out)[ARM_ALT_TAM]) {
+  struct ArmFontes *arm = c->arm;
+  int familia[2] = { 0, 0 }, n = 0, k;
+  if (!arm || a->nStreamPref <= 0) return 0;
+  if (cobreOriginal) familia[idbase_e_imdb(c->id) ? 0 : 1] = 1;
+  // Sem nenhum prefixo de familia que falte, nem pergunta ao ARM.
+  { int precisa = 0;
+    if (!familia[0] && streamAceita(a, "tt1") == 1) precisa = 1;
+    for (k = 0; k < ARM_COLS && !familia[1] && !precisa; k++) {
+      char amostra[32];
+      snprintf(amostra, sizeof amostra, "%s1", arm_prefixo(k));
+      if (streamAceita(a, amostra) == 1) precisa = 1;
+    }
+    if (!precisa) return 0; }
+  pthread_mutex_lock(&arm->trava);
+  if (!arm->feito) {
+    arm->feito = 1;
+    arm->n = arm_ids_stream(c->id, c->tipo, arm->alt, ARM_COLS + 1);
+    if (arm->n > 0) {
+      printf("[addons] ARM: %d ids do mesmo titulo para as fontes\n", arm->n);
+      fflush(stdout);
+    }
+  }
+  pthread_mutex_unlock(&arm->trava);
+  for (k = 0; k < arm->n && n < 2; k++) {
+    int f = idbase_e_imdb(arm->alt[k]) ? 0 : 1;
+    if (familia[f] || streamAceita(a, arm->alt[k]) != 1) continue;
+    familia[f] = 1;
+    snprintf(out[n++], ARM_ALT_TAM, "%s", arm->alt[k]);
+  }
+  return n;
+}
+
+// A mesma fonte vinda pelos dois ids: mesmo torrent (hash + arquivo) ou mesma URL.
+static int mesmaFonte(const Stream *x, const Stream *y) {
+  if (x->infoHash[0] && y->infoHash[0])
+    return !strcasecmp(x->infoHash, y->infoHash) && x->fileIdx == y->fileIdx;
+  return x->url[0] && !strcmp(x->url, y->url);
+}
 static int consultaCancelada(const Consulta *c) {
   return !nv_perfil_sessao_atual(c->sessao) || (c->cancelado && c->cancelado(c->ctx));
 }
@@ -2463,9 +2553,18 @@ static void *fioFontes(void *u) {
     i = c->baldes[meu].idx; origem = &c->origens[i];
     if (!origem->ativo) continue;   // desligado na conta: nunca consultado
     if (semStreamSondado(c, i)) continue;   // a sonda terminou depois dos baldes
+    // Id que o addon atende. Filme/serie de anime: se o /stream dele declara
+    // outros prefixos e nao o do item, vai o MESMO episodio no id que ele fala
+    // (streamIdsExtras); sem traducao, o id do item como sempre.
+    const char *primario = c->id;
+    char extra[2][ARM_ALT_TAM];
+    int nExtra = 0, xi = 0, ac = -1;
+    int vod = !strcmp(c->tipo, "movie") || !strcmp(c->tipo, "series");
+    if (vod) ac = streamAceita(origem, c->id);
+    if (ac == 0 && (nExtra = streamIdsExtras(c, origem, 0, extra)) > 0) { primario = extra[0]; xi = 1; }
     // Id codificado como o Nuvio web (nv_addon_id): "tt123:1:2" sai igual.
     { char longo[IDCANAL_LONGO_MAX + 1];   // apelido de canal longo (idcanal.h)
-      if (!nv_addon_id(idUrl, sizeof idUrl, idcanal_longo(c->id, longo, sizeof longo)) || !idUrl[0]) {
+      if (!nv_addon_id(idUrl, sizeof idUrl, idcanal_longo(primario, longo, sizeof longo)) || !idUrl[0]) {
         printf("[addons] %s: stream build error (invalid or oversized ID; request not sent)\n", origem->nome);
         continue;
       } }
@@ -2538,6 +2637,40 @@ static void *fioFontes(void *u) {
                  origem->nome, t2, t1);
         } else { free(a2); free(alt); }
       }
+    }
+    // O mesmo episodio pelo id da outra familia que o addon aceita (Torrentio:
+    // "tt" e "kitsu"). Dentro do mesmo prazo; so entra fonte que ainda nao veio.
+    if (ac == 1 && !consultaCancelada(c)) { nExtra = streamIdsExtras(c, origem, 1, extra); xi = 0; }
+    for (; xi < nExtra && !consultaCancelada(c); xi++) {
+      char idX[3 * IDCANAL_LONGO_MAX + 1], *cx;
+      Stream *ax = NULL;
+      int nx, novos = 0, restanteS;
+      Uint32 gasto = SDL_GetTicks() - inicioAddon;
+      if (gasto >= (Uint32)prazoS * 1000u) break;
+      restanteS = (int)(((Uint32)prazoS * 1000u - gasto) / 1000u);
+      if (restanteS <= 0) break;
+      if (!nv_addon_id(idX, sizeof idX, extra[xi]) || !idX[0]) continue;
+      cx = nv_addon_pedido_coube(origem->nome, nv_addon_url(url, sizeof url, origem->base, "/stream/%s/%s.json",
+                                   t1, idX), sizeof url)
+           ? baixarStream(origem->nome, url, restanteS) : NULL;
+      if (consultaCancelada(c)) { free(cx); free(corpo); free(achados); return NULL; }
+      if (!cx) continue;
+      nx = stream_extrair(cx, origem->nome, &ax);
+      if (nx > 0) {
+        Stream *tmp = realloc(achados, sizeof(Stream) * (size_t)(n + nx));
+        if (tmp) {
+          achados = tmp;
+          for (int j = 0; j < nx; j++) {
+            int dup = 0;
+            for (int q = 0; q < n && !dup; q++) dup = mesmaFonte(&achados[q], &ax[j]);
+            if (!dup) achados[n + novos++] = ax[j];
+          }
+          n += novos;
+        }
+      }
+      free(ax);
+      printf("[addons] %s: +%d fontes pelo id %s (%d na resposta)\n", origem->nome, novos, extra[xi], nx > 0 ? nx : 0);
+      if (!corpo) corpo = cx; else free(cx);
     }
     if (!corpo) {
       free(achados);
@@ -2628,7 +2761,7 @@ static void segundaChance(Consulta *c, int fios) {
   }
   if (m > 0) {
     c2.origens = c->origens; c2.nOrigens = c->nOrigens; c2.sessao = c->sessao; c2.versao = c->versao;
-    c2.id = c->id; c2.tipo = c->tipo;
+    c2.id = c->id; c2.tipo = c->tipo; c2.arm = c->arm;
     c2.nBaldes = m; c2.cancelado = c->cancelado; c2.ctx = c->ctx;
     c2.timeout = c->timeout > 20 ? c->timeout : 20;
     c2.progresso = c->progresso; c2.rodada = 2; c2.inicio = c->inicio;
@@ -2843,6 +2976,11 @@ static int consultar(const char *id, const char *tipo, const char *base, int fio
   c.id = id; c.tipo = tipo;
   c.cancelado = cancelado; c.ctx = ctx;
   c.progresso = progresso;
+  // Filme/serie: os ids do mesmo titulo em outros sites, sob demanda (armids.h).
+  struct ArmFontes arm;
+  memset(&arm, 0, sizeof arm);
+  pthread_mutex_init(&arm.trava, NULL);
+  if (!strcmp(tipo, "movie") || !strcmp(tipo, "series")) c.arm = &arm;
   // PRAZO DA BUSCA DE FILME/SERIE (paridade com o Nuvio oficial, #202). O
   // Nuvio web espera 60 s por addon (streamRepository,
   // STREAM_SOURCE_REQUEST_TIMEOUT_MS) num pedido so. Aqui eram 12 s e, para
@@ -2977,6 +3115,7 @@ static int consultar(const char *id, const char *tipo, const char *base, int fio
   }
   free(c.baldes); free(c.origens);
   pthread_mutex_destroy(&c.trava);
+  pthread_mutex_destroy(&arm.trava);
   if (temExtra) pthread_join(fioEx, NULL);
   if (rs) rs->extraIncompleta = extra.pendentes != 0 || extra.incompleta;
   if (progresso) addonstats_salvar();

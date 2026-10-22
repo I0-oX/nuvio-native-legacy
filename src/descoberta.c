@@ -12,6 +12,7 @@
 #include "colecoes.h"
 #include "marco.h"
 #include "metaprov.h"
+#include "armids.h"
 #include <SDL2/SDL.h>
 #include "catalogo.h"
 #include "addons.h"
@@ -8047,150 +8048,15 @@ static char *cinemetaMeta(const char *tipoItem, const char *tt, int *ehFilme) {
   return corpo;
 }
 
-// ARM (arm.haglund.dev/api/v2): cruza os ids de anime entre os sites. Publico e
-// sem chave; o unico dado enviado e o id. Cobre TODAS as entradas da API:
-//   /ids?source=   anidb, anilist, anime-planet, animecountdown, animenewsnetwork,
-//                  anisearch, kitsu, livechart, myanimelist
-//   /imdb /themoviedb /thetvdb   o caminho de volta, de um "tt"/"tmdb:"/"tvdb:"
-// e devolve o IMDb e o mesmo titulo em cada site ("kitsu:41370" -> tt9335498,
-// mal 38000, anilist 101922, anidb 14107, livechart 3311...).
-//
-// AMBIGUIDADE. /imdb, /themoviedb e /thetvdb devolvem UMA LISTA: uma serie com
-// varias temporadas tem uma entrada de anime por temporada, e o filme da serie
-// costuma vir junto (o tmdb 30991 de Cowboy Bebop traz a serie E o filme). O
-// tipo do item ("movie" = MOVIE, "series" = o resto) separa; se ainda sobrar
-// mais de uma entrada e "nao sei" (0), nunca a primeira: adivinhar a temporada
-// poria o episodio errado no addon. Filme e serie de uma temporada resolvem.
-//
-// Cache no mesmo metaCache (chave "arm/<fonte>:<id>", corpo inteiro: a mesma
-// consulta serve ao IMDb e aos ids irmaos).
-#define ARM_COLS 8
-typedef struct {
-  char imdb[32];
-  unsigned long id[ARM_COLS];   // colunas de ARM_FONTES
-} ArmIds;
-// Cada coluna: prefixo do id no addon e campo da resposta.
-static const struct { const char *pref, *campo; } ARM_FONTES[ARM_COLS] = {
-  { "kitsu:", "kitsu" }, { "mal:", "myanimelist" }, { "anilist:", "anilist" },
-  { "anidb:", "anidb" }, { "livechart:", "livechart" }, { "anisearch:", "anisearch" },
-  { "ann:", "animenewsnetwork" }, { "animecountdown:", "animecountdown" },
-};
-enum { ARM_IDS, ARM_IMDB, ARM_TMDB, ARM_TVDB };
-// Prefixos de id aceitos como ENTRADA e o endpoint de cada um.
-static const struct { const char *pref, *fonte; int via; } ARM_ENTRADAS[] = {
-  { "kitsu:", "kitsu", ARM_IDS }, { "mal:", "myanimelist", ARM_IDS },
-  { "myanimelist:", "myanimelist", ARM_IDS }, { "anilist:", "anilist", ARM_IDS },
-  { "anidb:", "anidb", ARM_IDS }, { "livechart:", "livechart", ARM_IDS },
-  { "anisearch:", "anisearch", ARM_IDS }, { "ann:", "animenewsnetwork", ARM_IDS },
-  { "animenewsnetwork:", "animenewsnetwork", ARM_IDS },
-  { "animecountdown:", "animecountdown", ARM_IDS },
-  { "animeplanet:", "anime-planet", ARM_IDS }, { "anime-planet:", "anime-planet", ARM_IDS },
-  { "tt", "imdb", ARM_IMDB }, { "tmdb:", "themoviedb", ARM_TMDB },
-  { "tvdb:", "thetvdb", ARM_TVDB }, { "thetvdb:", "thetvdb", ARM_TVDB },
-};
-
-// Consulta o ARM para `id` ("kitsu:41370", "kitsu:41370:5", "tt0213338",
-// "tmdb:85937"...). `tipo` ("movie"/"series"/outro) so filtra as listas. 1 se
-// ele respondeu sem ambiguidade; `fora` zerado em 0.
-static int armConsultar(const char *id, const char *tipo, ArmIds *fora) {
-  static const char *const ROTA[] = { "ids", "imdb", "themoviedb", "thetvdb" };
-  char chave[128], num[64], url[256], *c;
-  const char *obj = NULL, *fim = NULL, *p;
-  size_t k = 0, i;
-  int via = -1, filme = -1;   // -1 = o tipo nao filtra
-  const char *fonte = NULL;
-  memset(fora, 0, sizeof *fora);
-  if (tipo && !strcmp(tipo, "movie")) filme = 1;
-  else if (tipo && !strcmp(tipo, "series")) filme = 0;
-  if (!id) return 0;
-  for (i = 0; i < sizeof ARM_ENTRADAS / sizeof *ARM_ENTRADAS; i++) {
-    size_t l = strlen(ARM_ENTRADAS[i].pref);
-    if (strncmp(id, ARM_ENTRADAS[i].pref, l)) continue;
-    // "tt" e prefixo E parte do id; os demais saem. Id de IMDb exige digitos.
-    if (ARM_ENTRADAS[i].via == ARM_IMDB) { if (id[2] < '0' || id[2] > '9') continue; }
-    else id += l;
-    fonte = ARM_ENTRADAS[i].fonte;
-    via = ARM_ENTRADAS[i].via;
-    break;
-  }
-  if (!fonte) return 0;
-  // "tmdb:t1399" / "tmdb:m123": a letra do tipo sai, e diz o tipo se o item nao disse.
-  if ((via == ARM_TMDB || via == ARM_TVDB) && (id[0] == 't' || id[0] == 'm') && id[1] >= '0' && id[1] <= '9') {
-    if (filme < 0) filme = id[0] == 'm';
-    id++;
-  }
-  // O "themoviedb"/"thetvdb" do ARM e o id da SERIE (o filme de Cowboy Bebop
-  // vem com o tmdb 30991, que e o da serie). Um id de FILME do TMDB nessa rota
-  // acharia o anime que por acaso tem a serie com o mesmo numero: so serie.
-  if ((via == ARM_TMDB || via == ARM_TVDB) && filme != 0) return 0;
-  // Numerico; o slug do anime-planet e o IMDb ("tt...") aceitam letras.
-  while (k + 1 < sizeof num) {
-    char ch = id[k];
-    int ok = (ch >= '0' && ch <= '9') ||
-             ((via == ARM_IMDB || !strcmp(fonte, "anime-planet")) &&
-              ((ch >= 'a' && ch <= 'z') || ch == '-' || ch == '_'));
-    if (!ok) break;
-    num[k] = ch; k++;
-  }
-  num[k] = 0;
-  if (!k) return 0;
-  snprintf(chave, sizeof chave, "arm/%s:%s", fonte, num);
-  c = metaCacheObter(chave);
-  if (!c) {
-    if (metaNegAtiva(chave)) return 0;
-    if (via == ARM_IDS)
-      snprintf(url, sizeof url, "https://arm.haglund.dev/api/v2/ids?source=%s&id=%s", fonte, num);
-    else
-      snprintf(url, sizeof url, "https://arm.haglund.dev/api/v2/%s?id=%s", ROTA[via], num);
-    c = rede_baixar(url, 8);
-    if (!c) { metaNegGuardar(chave); return 0; }
-    metaCacheGuardar(chave, c);
-  }
-  // Lista (/imdb, /themoviedb, /thetvdb): a UNICA entrada do tipo do item.
-  // Objeto (/ids): ele mesmo. As entradas sao planas, sem { } dentro.
-  p = c;
-  while (*p == ' ' || *p == '\n' || *p == '\t' || *p == '\r') p++;
-  if (*p == '[') {
-    int achadas = 0;
-    for (p = strchr(p, '{'); p; p = strchr(p, '{')) {
-      const char *f = strchr(p, '}');
-      char media[16] = "";
-      if (!f) break;
-      js_texto_raiz_em(p, f + 1, "media", media, sizeof media);
-      if (filme < 0 || (!strcmp(media, "MOVIE")) == filme) {
-        // Uma entrada so nao prova uma temporada so: o ARM pode ter mapeado
-        // apenas a 2a. Entrada de temporada > 1 e "nao sei".
-        if (js_num(p, f + 1, "themoviedb-season", 0.0) > 1.0 ||
-            js_num(p, f + 1, "thetvdb-season", 0.0) > 1.0) achadas++;
-        achadas++;
-        obj = p; fim = f + 1;
-      }
-      p = f + 1;
-    }
-    if (achadas != 1) { free(c); return 0; }
-  } else if (*p == '{') { obj = p; fim = NULL; }
-  else { free(c); return 0; }   // "null": o ARM nao conhece
-  { char tt[32] = "";
-    if (js_texto_raiz_em(obj, fim, "imdb", tt, sizeof tt) && !strncmp(tt, "tt", 2))
-      snprintf(fora->imdb, sizeof fora->imdb, "%s", tt); }
-  for (i = 0; i < ARM_COLS; i++) {
-    double v = js_num(obj, fim, ARM_FONTES[i].campo, 0.0);
-    if (v >= 1.0 && v < 4e9) fora->id[i] = (unsigned long)v;
-  }
-  free(c);
-  return 1;
-}
+// ARM: ver armids.h (o mesmo anime em cada site; tambem usado pelas fontes).
 
 // Vale perguntar ao ARM por este titulo? Id de site de anime, sempre. "tt",
 // "tmdb:" e "tvdb:" so quando o titulo e anime pela mesma regra de
 // artehero_eh_anime (genero Animacao/Anime E pais Japao): o ARM so conhece
 // anime, e um filme qualquer pagaria uma consulta para nada.
 static int armVale(const CatItem *c, const char *id) {
-  size_t i;
-  for (i = 0; i < sizeof ARM_ENTRADAS / sizeof *ARM_ENTRADAS; i++)
-    if (!strncmp(id, ARM_ENTRADAS[i].pref, strlen(ARM_ENTRADAS[i].pref))) break;
-  if (i == sizeof ARM_ENTRADAS / sizeof *ARM_ENTRADAS) return 0;
-  if (ARM_ENTRADAS[i].via == ARM_IDS) return 1;
+  if (arm_id_anime(id)) return 1;
+  if (!arm_id_conhecido(id)) return 0;
   if (!strstr(c->genero, "Anima") && !strstr(c->genero, "Anime")) return 0;
   return strstr(c->pais, "Jap") != NULL;
 }
@@ -8206,14 +8072,14 @@ static int armIdParaAddon(int i, const char *tipo, const char *id, ArmIds *a, in
   // So vale consultar se o addon declara algum dos prefixos que o ARM devolve:
   // addon so de fontes, so de "tt" ou sem manifesto lido nunca aceitaria.
   for (k = 0; k < ARM_COLS; k++) {
-    snprintf(dst, n, "%s1", ARM_FONTES[k].pref);
+    snprintf(dst, n, "%s1", arm_prefixo((int)k));
     if (addons_aceita_id(i, tipo, dst) == 1) break;
   }
   if (k == ARM_COLS) return 0;
-  if (!*feito) { *feito = 1; armConsultar(id, tipo, a); }
+  if (!*feito) { *feito = 1; arm_consultar(id, tipo, a); }
   for (k = 0; k < ARM_COLS; k++) {
     if (!a->id[k]) continue;
-    snprintf(dst, n, "%s%lu", ARM_FONTES[k].pref, a->id[k]);
+    snprintf(dst, n, "%s%lu", arm_prefixo((int)k), a->id[k]);
     if (!strcmp(dst, id)) continue;
     if (addons_aceita_id(i, tipo, dst) == 1) return 1;
   }
@@ -8381,7 +8247,7 @@ static int metaCatalogoResolver(const CatItem *orig, MetaFontes *mf, int indice)
   else for (i = 0; i < mf->n && !mf->tt[0]; i++) metaImdbDaFicha(mf->corpo[i], mf->tt, sizeof mf->tt);
   // d) sem IMDb a vista e ficha incompleta: a API ARM (a consulta de b, se houve)
   if (!mf->tt[0] && !ehImdb && armVale(orig, id) && (!mf->n || !metaCompleta(mf->corpo[0]))) {
-    if (!armFeito) { armFeito = 1; armConsultar(id, orig->tipo, &arm); }
+    if (!armFeito) { armFeito = 1; arm_consultar(id, orig->tipo, &arm); }
     snprintf(mf->tt, sizeof mf->tt, "%s", arm.imdb);
   }
   // c) o Cinemeta completa o que faltar (ou e a base, se nenhum addon serviu).
