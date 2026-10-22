@@ -8158,6 +8158,10 @@ static int armConsultar(const char *id, const char *tipo, ArmIds *fora) {
       if (!f) break;
       js_texto_raiz_em(p, f + 1, "media", media, sizeof media);
       if (filme < 0 || (!strcmp(media, "MOVIE")) == filme) {
+        // Uma entrada so nao prova uma temporada so: o ARM pode ter mapeado
+        // apenas a 2a. Entrada de temporada > 1 e "nao sei".
+        if (js_num(p, f + 1, "themoviedb-season", 0.0) > 1.0 ||
+            js_num(p, f + 1, "thetvdb-season", 0.0) > 1.0) achadas++;
         achadas++;
         obj = p; fim = f + 1;
       }
@@ -8199,6 +8203,13 @@ static int armVale(const CatItem *c, const char *id) {
 static int armIdParaAddon(int i, const char *tipo, const char *id, ArmIds *a, int *feito,
                           char *dst, size_t n) {
   size_t k;
+  // So vale consultar se o addon declara algum dos prefixos que o ARM devolve:
+  // addon so de fontes, so de "tt" ou sem manifesto lido nunca aceitaria.
+  for (k = 0; k < ARM_COLS; k++) {
+    snprintf(dst, n, "%s1", ARM_FONTES[k].pref);
+    if (addons_aceita_id(i, tipo, dst) == 1) break;
+  }
+  if (k == ARM_COLS) return 0;
   if (!*feito) { *feito = 1; armConsultar(id, tipo, a); }
   for (k = 0; k < ARM_COLS; k++) {
     if (!a->id[k]) continue;
@@ -8207,6 +8218,33 @@ static int armIdParaAddon(int i, const char *tipo, const char *id, ArmIds *a, in
     if (addons_aceita_id(i, tipo, dst) == 1) return 1;
   }
   return 0;
+}
+
+// Ficha pedida com um id TRADUZIDO ("mal:38000" para um item "kitsu:41370"): os
+// ids de video dela ("mal:38000:5") sao do addon de metadados, e cat_id_stream
+// os mandaria aos addons de FONTE, que falam o id do item. A chave "id" desses
+// videos vira "_id": o episodio fica sem id proprio e cat_id_stream monta o do
+// item ("kitsu:41370:5", ou "tt...:T:E"). Devolve um corpo novo (ou NULL).
+static char *armSemIdsDeVideo(const char *corpo, const char *qid) {
+  size_t nq = strlen(qid), extra = 0;
+  const char *p;
+  char *novo, *d;
+  for (p = strstr(corpo, "\"id\""); p; p = strstr(p + 4, "\"id\"")) extra++;
+  novo = malloc(strlen(corpo) + extra + 1);
+  if (!novo) return NULL;
+  for (p = corpo, d = novo; *p; ) {
+    if (!strncmp(p, "\"id\"", 4)) {
+      const char *v = p + 4;
+      while (*v == ' ' || *v == ':' || *v == '\t' || *v == '\n' || *v == '\r') v++;
+      if (*v == '"' && !strncmp(v + 1, qid, nq) && v[1 + nq] == ':') {
+        memcpy(d, "\"_id\"", 5); d += 5; p += 4;
+        continue;
+      }
+    }
+    *d++ = *p++;
+  }
+  *d = 0;
+  return novo;
 }
 
 // Tenta a ficha do addon `i`; guarda em `mf` se valida. Um pedido, no tipo
@@ -8317,9 +8355,14 @@ static int metaCatalogoResolver(const CatItem *orig, MetaFontes *mf, int indice)
         armIdParaAddon(i, orig->tipo, id, &arm, &armFeito, armAlt, sizeof armAlt)) {
       qid = armAlt;
       r = 1;
+      if (epPedidoSaiu()) break;   // a consulta ao ARM pode ter esperado ate 8 s
     }
     if (r == 1 || (r == -1 && ehImdb && addons_sondado(i) && addons_fornece(i, ADD_META))) {
       if (tentarFichaDoAddon(mf, i, orig->tipo, qid)) {
+        if (qid != id) {
+          char *limpo = armSemIdsDeVideo(mf->corpo[mf->n - 1], qid);
+          if (limpo) { free(mf->corpo[mf->n - 1]); mf->corpo[mf->n - 1] = limpo; }
+        }
         if (mf->n == 1 && !epPedidoSaiu()) {
           int alvo = epAlvo(indice);
           if (alvo >= 0) {

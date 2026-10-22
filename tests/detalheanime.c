@@ -1099,7 +1099,12 @@ int main(void) {
     limparCacheMeta(); nRotas = 0;
     rota("arm.haglund.dev/api/v2/ids?source=kitsu&id=41370",
          "{\"kitsu\":41370,\"myanimelist\":38000,\"anilist\":null,\"imdb\":null}");
-    rota("mal.test/SEGREDO/meta/series/mal:38000.json", KITSU_META);
+    rota("mal.test/SEGREDO/meta/series/mal:38000.json",
+         "{\"meta\":{\"id\":\"mal:38000\",\"type\":\"series\",\"name\":\"Mushoku Tensei\","
+         "\"description\":\"Sinopse do MAL.\",\"videos\":["
+         "{\"id\":\"mal:38000:1\",\"title\":\"Um\",\"season\":1,\"episode\":1},"
+         "{\"id\":\"mal:38000:2\",\"title\":\"Dois\",\"season\":1,\"episode\":2},"
+         "{\"id\":\"mal:38000:3\",\"title\":\"Tres\",\"season\":1,\"episode\":3}]}}");
     catalogoDe("kitsu:41370", "series", "Mushoku Tensei", "");
     abrir();
     assert(pediu("arm.haglund.dev/api/v2/ids?source=kitsu&id=41370"));
@@ -1107,7 +1112,11 @@ int main(void) {
     assert(!pediu("meta/series/kitsu:41370.json"));
     assert(!strcmp(cat_item(0)->imdb, "kitsu:41370"));
     assert(cat_n_episodios(0) == 3);
-    puts("ok  ARM: addon so de mal: recebe o mal do mesmo titulo do kitsu");
+    // As fontes continuam no id do item: o id de video do addon de metadados
+    // ("mal:38000:2") nunca chega aos addons de fonte.
+    { char sid[64];
+      assert(cat_id_stream(0, 1, 2, sid, sizeof sid) && !strcmp(sid, "kitsu:41370:2")); }
+    puts("ok  ARM: addon so de mal: recebe o mal do mesmo titulo do kitsu; fontes no id do item");
 
     // 30) ISSUE #209 (LG 50NANO75SPA, 1.6.5): app e TMDB em portugues, titulo e
     //     sinopse da SERIE em ingles. "Prefere a ficha do addon de metadados" e
