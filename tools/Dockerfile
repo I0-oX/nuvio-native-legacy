@@ -14,7 +14,7 @@ FROM debian:bookworm-slim
 ARG SDK_URL=https://github.com/openlgtv/buildroot-nc4/releases/download/webos-a38c582/arm-webos-linux-gnueabi_sdk-buildroot-aarch64.tar.gz
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl file xz-utils \
+  && apt-get install -y --no-install-recommends ca-certificates curl file xz-utils patch \
      autoconf automake libtool make gcc g++ meson ninja-build pkg-config python3 \
   && rm -rf /var/lib/apt/lists/*
 
@@ -30,11 +30,13 @@ ENV NUVIO_SYSROOT=/opt/arm-webos-linux-gnueabi_sdk-buildroot/arm-webos-linux-gnu
 # O firmware nao fornece libass. O renderer completo e os seus componentes de
 # texto entram estaticos no prefixo da imagem e sao ligados pelo tools/arm.sh.
 ENV NUVIO_ASS_ROOT=/opt/nuvio-ass
+# Mesmos patches do libass do .tpk (NEON ARMv7 + blur multifio + API nv).
+COPY tpk/libass-nv/patches /tmp/libass-nv/patches
 COPY build-ass-arm.sh /tmp/build-ass-arm.sh
 RUN chmod +x /tmp/build-ass-arm.sh \
   && CC=arm-webos-linux-gnueabi-gcc NUVIO_SYSROOT="$NUVIO_SYSROOT" \
      NUVIO_ASS_ROOT="$NUVIO_ASS_ROOT" /tmp/build-ass-arm.sh \
-  && rm -f /tmp/build-ass-arm.sh
+  && rm -rf /tmp/build-ass-arm.sh /tmp/libass-nv /tmp/nuvio-ass-build
 
 # Local DTS conversion is part of the normal webOS build. Specialized images
 # can omit the dependency with --build-arg NUVIO_DTS_FFMPEG=0.

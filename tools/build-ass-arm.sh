@@ -58,6 +58,14 @@ meson compile -C build -j2; meson install -C build
 fetch "https://github.com/libass/libass/releases/download/${LIBASS_VERSION}/libass-${LIBASS_VERSION}.tar.xz" libass.tar.xz
 tar -xf "$BUILD/libass.tar.xz" -C "$BUILD"
 cd "$BUILD/libass-${LIBASS_VERSION}"
+# Patches compartilhados com o .tpk (tools/tpk/libass-nv). O 0001 so liga com
+# __ARM_NEON, por isso -mfpu=neon; --disable-asm nao o afeta.
+PATCHES=${NUVIO_LIBASS_PATCHES:-/tmp/libass-nv/patches}
+[ -d "$PATCHES" ] || { echo "patches ausentes: $PATCHES" >&2; exit 2; }
+for p in "$PATCHES"/*.patch; do
+  patch -p1 -s --forward < "$p" || { echo "libass patch falhou: $p" >&2; exit 1; }
+done
+export CFLAGS="${LIBASS_CFLAGS:--O3 -fPIC -march=armv7-a -mfpu=neon}"
 export CPPFLAGS="${CPPFLAGS:-} -I$PREFIX/include -I$PREFIX/include/fribidi -I$PREFIX/include/freetype2 -I$PREFIX/include/harfbuzz"
 export LDFLAGS="$LDFLAGS -L$PREFIX/lib"
 ./configure --host="${CC%-gcc}" --prefix="$PREFIX" --enable-static --disable-shared --disable-fontconfig --disable-require-system-font-provider --disable-enca --disable-libunibreak --disable-asm --enable-harfbuzz

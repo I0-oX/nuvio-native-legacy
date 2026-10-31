@@ -797,6 +797,61 @@ static int ass_estilo_autor_locked(void) {
   return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
 
+#if defined(NV_WEBOS) && defined(ASS_NV_API)
+/* webOS: motor NEON do libass (tools/tpk/libass-nv) com fios de blur que se
+ * ajustam sozinhos. A cada 24 renders reais (changed == 2) toma-se o quase-p95
+ * (descarta os 2 maiores); sobe um
+ * fio se passar de 12 ms, desce um se ficar abaixo de 3 ms. Se o fio extra nao
+ * melhora 10 %, reverte e espera 8 janelas (o custo nao era o blur). Tudo sob
+ * assTrava, entre quadros. A saida nao depende do numero de fios. */
+#define TUNE_JANELA 24
+static int tuneIniciado, tuneN = 1, tuneMax = 1, tuneNum, tuneDir, tuneEspera, tuneFalhas;
+static double tuneAmostra[TUNE_JANELA], tuneAnt;
+
+static int tune_cmp(const void *a, const void *b) {
+  double x = *(const double *)a, y = *(const double *)b;
+  return (x > y) - (x < y);
+}
+
+static void tune_aplicar(int n) {
+  tuneN = ass_nv_set_threads(n);   /* devolve o que valeu (1 sem NEON) */
+}
+
+static void tune_iniciar_locked(void) {
+  long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+  if (tuneIniciado) return;
+  tuneIniciado = 1;
+  tuneMax = cpus < 1 ? 1 : cpus > 4 ? 4 : (int)cpus;
+  ass_nv_set_engine(assRenderer, 1);
+  tuneMax = ass_nv_set_threads(tuneMax);   /* cria os fios agora, nao dentro de um quadro */
+  tune_aplicar(1);
+}
+
+static void tune_amostra_locked(double ms) {
+  double p95;
+  int rev = 0;
+  if (!tuneIniciado) return;
+  tuneAmostra[tuneNum++] = ms;
+  if (tuneNum < TUNE_JANELA) return;
+  tuneNum = 0;
+  qsort(tuneAmostra, TUNE_JANELA, sizeof tuneAmostra[0], tune_cmp);
+  p95 = tuneAmostra[(TUNE_JANELA * 95) / 100 - 1];
+  if (tuneDir > 0 && p95 > tuneAnt * 0.9) {
+    tune_aplicar(tuneN - 1);
+    tuneEspera = 8 << (tuneFalhas < 3 ? tuneFalhas : 3);   /* recuo exponencial */
+    tuneFalhas++; rev = 1;
+  } else if (tuneDir < 0 && p95 > 6.0 && p95 > tuneAnt * 1.25) { tune_aplicar(tuneN + 1); tuneEspera = 8; rev = 1; }
+  else if (tuneDir > 0) tuneFalhas = 0;
+  tuneDir = 0;
+  if (!rev) {
+    if (tuneEspera > 0) tuneEspera--;
+    else if (p95 > 12.0 && tuneN < tuneMax) { tune_aplicar(tuneN + 1); tuneDir = 1; }
+    else if (p95 < 3.0 && tuneN > 1) { tune_aplicar(tuneN - 1); tuneDir = -1; }
+  }
+  tuneAnt = p95;
+}
+#endif
+
 /* The .tpk's libass (tools/tpk/libass-nv): NEON engine, 3 blur threads and
  * the dialogue opacity. Under assTrava, on the worker, when the options
  * change (assperf_versao). Elsewhere nothing. */
@@ -822,6 +877,9 @@ static void ass_aplicar_assperf_locked(void) {
   /* Dialogue opacity (Subtitles > Style): only lines without \pos, \move,
    * \clip, \org or a drawing; the signs keep the author's alpha. */
   ass_nv_set_dialogue_alpha(assRenderer, simples ? 255 : (assperf_get(AP_ASSOPAC) * 255 + 50) / 100);
+#endif
+#if defined(NV_WEBOS) && defined(ASS_NV_API)
+  tune_iniciar_locked();
 #endif
 }
 
@@ -932,7 +990,15 @@ static void *ass_worker_loop(void *unused) {
         ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
       ass_plain_reflow_locked(t);
       ass_pod_devolver_assTrava();   // seek para tras alem da poda: as falas voltam antes do render
+#if defined(NV_WEBOS) && defined(ASS_NV_API)
+      { struct timespec r0, r1;
+        clock_gettime(CLOCK_MONOTONIC, &r0);
+        images = ass_render_frame(assRenderer, assTrack, t, &changed);
+        clock_gettime(CLOCK_MONOTONIC, &r1);
+        if (changed == 2) tune_amostra_locked((double)(r1.tv_sec - r0.tv_sec) * 1e3 + (double)(r1.tv_nsec - r0.tv_nsec) / 1e6); }
+#else
       images = ass_render_frame(assRenderer, assTrack, t, &changed);
+#endif
 #ifdef NV_TPK
       /* Borda das legendas (tpkborda.c): o proximo inicio de fala depois de t,
        * para o premult ligar ~200 ms antes de a linha aparecer. */
