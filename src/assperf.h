@@ -83,8 +83,8 @@ void assperf_restaurar(void);
 unsigned assperf_versao(void);
 
 // Fixed values of the engine (0 / the old value where ASS_NOVO is 0). The attached
-// fonts cap is a function: 64 MB on the .tpk, 16 MB elsewhere, and on webOS 1/8 of
-// the memory free when the file is read, clamped to 16..64 MB.
+// fonts cap is a function: on the .tpk and on webOS 1/8 of the memory free when
+// the file is read, clamped to 16..64 MB; 16 MB elsewhere.
 size_t assperf_fontes_teto(void);
 #define ASSPERF_FONTES_TETO assperf_fontes_teto()   // attached fonts, bytes
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead
