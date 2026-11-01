@@ -798,9 +798,10 @@ static int ass_estilo_autor_locked(void) {
 }
 
 #if defined(NV_WEBOS) && defined(ASS_NV_API)
-/* webOS: motor NEON do libass (tools/tpk/libass-nv) com 3 fios de blur, o
- * mesmo valor do .tpk, limitado ao numero de nucleos. Fixo: a saida nao muda
- * com o numero de fios. Sob assTrava, uma vez. */
+/* webOS: motor NEON do libass (tools/tpk/libass-nv) com fios de blur =
+ * nucleos - 1 (um fica para a UI e o video), de 1 a 4. Sem medir TV nenhuma:
+ * os fios dormem fora dos blurs grandes e a saida nao muda com o numero. Sob
+ * assTrava, uma vez. */
 static void webos_ass_motor_locked(void) {
   static int feito;
   long cpus;
@@ -808,7 +809,7 @@ static void webos_ass_motor_locked(void) {
   feito = 1;
   cpus = sysconf(_SC_NPROCESSORS_ONLN);
   ass_nv_set_engine(assRenderer, 1);
-  ass_nv_set_threads(cpus < 1 ? 1 : cpus > 3 ? 3 : (int)cpus);
+  ass_nv_set_threads(cpus < 2 ? 1 : cpus > 5 ? 4 : (int)cpus - 1);
 }
 #endif
 
