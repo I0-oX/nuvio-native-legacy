@@ -7,7 +7,12 @@
 #include <string.h>
 #include <time.h>
 
-#ifdef NV_TPK
+/* The options live in assperf.txt (dados.h) on the .tpk and on webOS: dados.h
+ * writes there with a real write probe on both (the same file as ajustes.txt).
+ * Without the file every option is at its default (PESSOA below): AP_ASSOPAC
+ * 100 and AP_LIBASS 1, never 0. The .wgt and Android: no file, always 0. */
+#if defined(NV_TPK) || defined(NV_WEBOS)
+#define AP_PERSISTE 1
 #include "dados.h"
 #endif
 
@@ -20,12 +25,12 @@ static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
 };
 
-static int val[AP_N] __attribute__((unused));   // read off the .tpk only by the tests
+static int val[AP_N] __attribute__((unused));   // off the .tpk and webOS: read only by the tests
 static int iniciado;
 static unsigned versao;
 static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
 
-#ifdef NV_TPK
+#ifdef AP_PERSISTE
 static int valido(int id, int v) {
   if (id == AP_ESCALA) return v == 0 || v == 2 || v == 5;   // 100 %, 75 %, Auto (file values kept)
   return v >= PESSOA[id].min && v <= PESSOA[id].max;
@@ -48,7 +53,7 @@ void assperf_iniciar(void) {
   if (__atomic_load_n(&iniciado, __ATOMIC_ACQUIRE)) return;
   pthread_mutex_lock(&trava);
   if (iniciado) { pthread_mutex_unlock(&trava); return; }
-#ifdef NV_TPK
+#ifdef AP_PERSISTE
   {
     char *t = dados_ler(AP_ARQ);
     int i;
@@ -74,7 +79,7 @@ void assperf_iniciar(void) {
 }
 
 #ifdef NV_ASSPERF_TESTE
-/* Tests on the computer (no NV_TPK): set the person's options without a file. */
+/* Tests on the computer (no NV_TPK, no NV_WEBOS): set the person's options without a file. */
 void assperf_teste_definir(int id, int v) {
   __atomic_store_n(&iniciado, 1, __ATOMIC_RELEASE);
   if (id >= 0 && id < AP_N) { val[id] = v; __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL); }
@@ -84,7 +89,7 @@ void assperf_teste_definir(int id, int v) {
 int assperf_get(int id) {
 #ifdef NV_ASSPERF_TESTE
   return id >= 0 && id < AP_N ? __atomic_load_n(&val[id], __ATOMIC_RELAXED) : 0;
-#elif defined(NV_TPK)
+#elif defined(AP_PERSISTE)
   if (id < 0 || id >= AP_N) return 0;
   assperf_iniciar();
   return __atomic_load_n(&val[id], __ATOMIC_RELAXED);
@@ -97,7 +102,7 @@ int assperf_get(int id) {
 unsigned assperf_versao(void) { return __atomic_load_n(&versao, __ATOMIC_ACQUIRE); }
 
 void assperf_definir(int id, int v) {
-#ifdef NV_TPK
+#ifdef AP_PERSISTE
   if (id < 0 || id >= AP_N || !valido(id, v)) return;
   assperf_iniciar();
   pthread_mutex_lock(&trava);
@@ -111,7 +116,7 @@ void assperf_definir(int id, int v) {
 }
 
 void assperf_restaurar(void) {
-#ifdef NV_TPK
+#ifdef AP_PERSISTE
   int i;
   assperf_iniciar();
   pthread_mutex_lock(&trava);

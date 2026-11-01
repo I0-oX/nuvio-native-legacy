@@ -1,4 +1,5 @@
-// ASS (libass) SETTINGS FOR THE SAMSUNG .tpk (owner, 23-26/10/2026).
+// ASS (libass) SETTINGS FOR THE SAMSUNG .tpk AND THE LG webOS APP (owner,
+// 23-26/10/2026; webOS 31/10).
 //
 // The frame-by-frame anime signs (the phone scene of Kaguya-sama, a "Signs &
 // Songs" track with 36,944 blocks) made the subtitles late and jerky on the
@@ -6,13 +7,14 @@
 // now fixed here (the TPK column of assperf.c) and the test panel is gone.
 //
 // What the person can still change lives in Subtitles > Style on an ASS/SSA
-// track (faixas.c): size and opacity of the dialogue, contrast and gamma to
-// match the TV, render resolution and libass itself (on/off). They are kept in
-// assperf.txt (data), on this TV only.
+// track (faixas.c, .tpk only): size and opacity of the dialogue, contrast and
+// gamma to match the TV, render resolution and libass itself (on/off). They
+// are kept in assperf.txt (data), on this TV only.
 //
-// ONLY THE .tpk CHANGES. assrender.c is shared with webOS, the .wgt and
-// Android: there ASS_NOVO is 0 and assperf_get returns 0, the behaviour from
-// before 23/10.
+// THE .wgt AND ANDROID DO NOT CHANGE. assrender.c is shared: there ASS_NOVO is
+// 0 and assperf_get returns 0, the behaviour from before 23/10. webOS has the
+// engine (ASS_NOVO = 1) with the options at their defaults and no sheet in
+// Subtitles > Style for them: see ASS_NOVO_TPK below for what stays out.
 //
 // BLUR: libass's own, on the CPU (NEON, 3 threads). A GPU blur was tried on
 // the S95C (24-27/10) and removed: CPU only was faster and lighter there.
@@ -28,12 +30,33 @@
  * 2 min (restored on a seek back), render 100 ms ahead with held frames,
  * render only on changes, authored ASS styles, the app's cue copy every 10 s,
  * subtitle blocks from the local relay with 6 MB parked ahead, attached fonts
- * up to 64 MB. ASS_NOVO = 0 everywhere else: the engine of before 23/10.
- * NV_ASS_NOVO turns it on in the computer tests. */
-#if defined(NV_TPK) || defined(NV_ASS_NOVO)
+ * up to 64 MB. ASS_NOVO = 0 on the .wgt and Android: the engine of before
+ * 23/10. NV_ASS_NOVO turns all of it on in the computer tests.
+ *
+ * webOS (NV_WEBOS) has the engine too: the same libass (tools/build-ass-arm.sh),
+ * the 8-bit upload with the texture cache, render ahead, render only on
+ * changes, incremental batches with the pruning, render resolution Auto, the
+ * dialogue opacity and the app's cue copy every 10 s. The Samsung-only parts
+ * stay out, each for a reason that is not about the engine (ASS_NOVO_TPK):
+ *   - authored ASS styles: they go with the "Preservado pelo ASS" rows of
+ *     faixas.c (.tpk). webOS keeps the sheet of the person: what the person
+ *     touched in the Style bar still wins over the file, as before;
+ *   - relay blocks parked ahead: the relay is the .tpk's local mkvfix server
+ *     (video_tpk.c); webOS plays the file itself, so no block ever arrives;
+ *   - attached fonts up to 64 MB: kept at 16 MB, the cap the webOS builds
+ *     always had. 64 MB read into the memory of a 32-bit TV was never
+ *     measured there.
+ * The frame grid, the picture sync, the GPU queue limit and the subtitle
+ * edge (legimagem.c, telalag.c, tpkborda.c) are .tpk files and stay so. */
+#if defined(NV_TPK) || defined(NV_WEBOS) || defined(NV_ASS_NOVO)
 #define ASS_NOVO 1
 #else
 #define ASS_NOVO 0
+#endif
+#if defined(NV_TPK) || defined(NV_ASS_NOVO)
+#define ASS_NOVO_TPK 1
+#else
+#define ASS_NOVO_TPK 0
 #endif
 
 // The person's options (Subtitles > Style on an ASS/SSA track, .tpk):
@@ -47,7 +70,8 @@ enum {
   AP_N
 };
 
-// Current value (cheap). Outside the .tpk: always 0.
+// Current value (cheap): the person's option or its default (assperf.c). On
+// the .wgt and Android: always 0.
 int  assperf_get(int id);
 // Reads assperf.txt once (later calls do nothing).
 void assperf_iniciar(void);
@@ -58,11 +82,12 @@ void assperf_restaurar(void);
 // Changes with every assperf_definir (the worker re-applies).
 unsigned assperf_versao(void);
 
-// Fixed values of the engine (0 / the old value where ASS_NOVO is 0).
-#define ASSPERF_FONTES_TETO ((size_t)(ASS_NOVO ? 64 : 16) * 1024u * 1024u)   // attached fonts, bytes
+// Fixed values of the engine (0 / the old value where ASS_NOVO is 0; the old
+// value too on webOS for the two that are ASS_NOVO_TPK).
+#define ASSPERF_FONTES_TETO ((size_t)(ASS_NOVO_TPK ? 64 : 16) * 1024u * 1024u)   // attached fonts, bytes
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead
 #define ASSPERF_PODA_MS     (ASS_NOVO ? 120000L : 0L)   // drop events that ended this long ago
-#define ASSPERF_PARQUE      (ASS_NOVO ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes
+#define ASSPERF_PARQUE      (ASS_NOVO_TPK ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes
 double assperf_escala(void);                 // render resolution now (Auto: the one in use)
 // Subtitle colour like the video's (AP_GAMA, AP_CONTRASTE): the TV's picture
 // processing only touches the video plane.

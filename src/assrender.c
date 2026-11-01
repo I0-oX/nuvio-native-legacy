@@ -792,9 +792,11 @@ static void ass_plain_reflow_locked(long long t) {
 /* Styled ASS on the .tpk is drawn as the author made it (colours, border,
  * box, font of the Style sheet do NOT apply), and the size only scales the
  * dialogue (ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE, libass's and mpv's default).
- * Plain text follows the sheet as always. Under assTrava. */
+ * Plain text follows the sheet as always. webOS has no "Preservado pelo ASS"
+ * rows (faixas.c is .tpk): there what the person touched still wins over the
+ * file, as before the engine. Under assTrava. */
 static int ass_estilo_autor_locked(void) {
-  return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
+  return ASS_NOVO_TPK && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
 
 #if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
@@ -808,20 +810,9 @@ static int ass_fios_blur(void) {
 }
 #endif
 
-#if defined(NV_WEBOS) && defined(ASS_NV_API)
-/* webOS: liga o motor NEON e os fios, uma vez. Sob assTrava. */
-static void webos_ass_motor_locked(void) {
-  static int feito;
-  if (feito) return;
-  feito = 1;
-  ass_nv_set_engine(assRenderer, 1);
-  ass_nv_set_threads(ass_fios_blur());
-}
-#endif
-
-/* The .tpk's libass (tools/tpk/libass-nv): NEON engine, cores - 1 blur threads and
- * the dialogue opacity. Under assTrava, on the worker, when the options
- * change (assperf_versao). Elsewhere nothing. */
+/* The libass of tools/tpk/libass-nv (the .tpk and webOS): NEON engine, cores - 1
+ * blur threads and the dialogue opacity. Under assTrava, on the worker, when the
+ * options change (assperf_versao). Elsewhere nothing. */
 static unsigned assApVersao = ~0u;
 static int assApSimples = -1;
 static void ass_aplicar_assperf_locked(void) {
@@ -829,7 +820,7 @@ static void ass_aplicar_assperf_locked(void) {
   int simples = __atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
   if (!assRenderer || (v == assApVersao && simples == assApSimples)) return;
   assApVersao = v; assApSimples = simples;
-#if defined(NV_TPK) && defined(ASS_NV_API)
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
   { static int feito;
     if (!feito) {
       /* The blur helper threads are born inside libass and inherit the
@@ -842,11 +833,9 @@ static void ass_aplicar_assperf_locked(void) {
       assfios_nome_voltar(nomeAnt);
     } }
   /* Dialogue opacity (Subtitles > Style): only lines without \pos, \move,
-   * \clip, \org or a drawing; the signs keep the author's alpha. */
+   * \clip, \org or a drawing; the signs keep the author's alpha. On webOS
+   * nothing sets it: assperf_get gives the default (100 %, 255 = untouched). */
   ass_nv_set_dialogue_alpha(assRenderer, simples ? 255 : (assperf_get(AP_ASSOPAC) * 255 + 50) / 100);
-#endif
-#if defined(NV_WEBOS) && defined(ASS_NV_API)
-  webos_ass_motor_locked();
 #endif
 }
 
@@ -1151,10 +1140,10 @@ static GLuint ass_textura_locked(int slot, const AssCpuImage *im) {
   return assTex[slot].tex;
 }
 
-#if ASS_NOVO   /* only built where it runs (.tpk): off it, nothing of this is used */
+#if ASS_NOVO   /* only built where it runs (.tpk, webOS): off it, nothing of this is used */
 /* ===== O CAMINHO NOVO DO DESENHO (fio GL, ASS_NOVO) =========================
  *
- * O caminho antigo (acima, assAtual + assTex) e o de fora do .tpk. Este:
+ * O caminho antigo (acima, assAtual + assTex) e o de fora do .tpk e do webOS. Este:
  *   - Alpha 8-bit: a textura e o bitmap do libass como veio (GL_ALPHA, 1 byte
  *     por pixel, sem a conversao RGBA por pixel na CPU); a cor e a opacidade
  *     da imagem vao no desenho (GFX_MARCA: forma do alfa, cor de uCor).
@@ -2246,7 +2235,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
 #endif
 
   if (!ASS_NOVO) {
-    /* ---- o caminho de sempre (fora do .tpk) ---- */
+    /* ---- o caminho de sempre (fora do .tpk e do webOS) ---- */
     if (quadroNovo) {
       ass_frame_liberar(&assAtual);
       assAtual = novo; memset(&novo, 0, sizeof novo);
