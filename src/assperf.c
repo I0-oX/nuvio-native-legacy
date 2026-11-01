@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 /* The options live in assperf.txt (dados.h) on the .tpk and on webOS: dados.h
  * writes there with a real write probe on both (the same file as ajustes.txt).
@@ -100,6 +101,23 @@ int assperf_get(int id) {
 }
 
 unsigned assperf_versao(void) { return __atomic_load_n(&versao, __ATOMIC_ACQUIRE); }
+
+size_t assperf_fontes_teto(void) {
+#if ASS_NOVO_TPK
+  return (size_t)64 * 1024u * 1024u;
+#elif defined(NV_WEBOS)
+  /* O bloco de anexos e lido inteiro na memoria (um malloc): o teto segue a
+   * memoria livre da TV, como os fios do blur seguem os nucleos. */
+  long pag = sysconf(_SC_AVPHYS_PAGES), tam = sysconf(_SC_PAGESIZE);
+  unsigned long long livre = pag > 0 && tam > 0 ? (unsigned long long)pag * (unsigned long long)tam : 0;
+  unsigned long long teto = livre / 8;
+  if (teto < (16ull << 20)) teto = 16ull << 20;
+  if (teto > (64ull << 20)) teto = 64ull << 20;
+  return (size_t)teto;
+#else
+  return (size_t)16 * 1024u * 1024u;
+#endif
+}
 
 void assperf_definir(int id, int v) {
 #ifdef AP_PERSISTE

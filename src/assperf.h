@@ -82,9 +82,11 @@ void assperf_restaurar(void);
 // Changes with every assperf_definir (the worker re-applies).
 unsigned assperf_versao(void);
 
-// Fixed values of the engine (0 / the old value where ASS_NOVO is 0; the old
-// value too on webOS for the two that are ASS_NOVO_TPK).
-#define ASSPERF_FONTES_TETO ((size_t)(ASS_NOVO_TPK ? 64 : 16) * 1024u * 1024u)   // attached fonts, bytes
+// Fixed values of the engine (0 / the old value where ASS_NOVO is 0). The attached
+// fonts cap is a function: 64 MB on the .tpk, 16 MB elsewhere, and on webOS 1/8 of
+// the memory free when the file is read, clamped to 16..64 MB.
+size_t assperf_fontes_teto(void);
+#define ASSPERF_FONTES_TETO assperf_fontes_teto()   // attached fonts, bytes
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead
 #define ASSPERF_PODA_MS     (ASS_NOVO ? 120000L : 0L)   // drop events that ended this long ago
 #define ASSPERF_PARQUE      (ASS_NOVO_TPK ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes
