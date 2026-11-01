@@ -78,6 +78,17 @@ jobs:
             nuvio-webos-sdk bash tools/build-dv7.sh
           sudo chown -R "$USER" build/dv7
 
+      # Compiled objects of the app (tools/arm.sh keys them by flags and image),
+      # so a push that touches a few files does not recompile everything.
+      - name: Cache app objects and ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/ccache-arm
+            build/arm-objects
+          key: webos-objects-${{ github.sha }}
+          restore-keys: webos-objects-
+
       - name: Install the webOS CLI (ares-package)
         run: npm install -g @webos-tools/cli
 

@@ -27,17 +27,6 @@ RUN curl -fsSL "$SDK_URL" -o /tmp/sdk.tar.gz \
 ENV PATH=/opt/arm-webos-linux-gnueabi_sdk-buildroot/bin:$PATH
 ENV NUVIO_SYSROOT=/opt/arm-webos-linux-gnueabi_sdk-buildroot/arm-webos-linux-gnueabi/sysroot
 
-# O firmware nao fornece libass. O renderer completo e os seus componentes de
-# texto entram estaticos no prefixo da imagem e sao ligados pelo tools/arm.sh.
-ENV NUVIO_ASS_ROOT=/opt/nuvio-ass
-# Mesmos patches do libass do .tpk (NEON ARMv7 + blur multifio + API nv).
-COPY tpk/libass-nv/patches /tmp/libass-nv/patches
-COPY build-ass-arm.sh /tmp/build-ass-arm.sh
-RUN chmod +x /tmp/build-ass-arm.sh \
-  && CC=arm-webos-linux-gnueabi-gcc NUVIO_SYSROOT="$NUVIO_SYSROOT" \
-     NUVIO_ASS_ROOT="$NUVIO_ASS_ROOT" /tmp/build-ass-arm.sh \
-  && rm -rf /tmp/build-ass-arm.sh /tmp/libass-nv /tmp/nuvio-ass-build
-
 # Local DTS conversion is part of the normal webOS build. Specialized images
 # can omit the dependency with --build-arg NUVIO_DTS_FFMPEG=0.
 ARG NUVIO_DTS_FFMPEG=1
@@ -58,5 +47,16 @@ RUN if [ "$NUVIO_DV7" = 1 ]; then \
       && rm /tmp/rustup.sh; \
     fi
 ENV PATH=/root/.cargo/bin:$PATH
+# O firmware nao fornece libass. O renderer completo e os seus componentes de
+# texto entram estaticos no prefixo da imagem e sao ligados pelo tools/arm.sh.
+ENV NUVIO_ASS_ROOT=/opt/nuvio-ass
+# Mesmos patches do libass do .tpk (NEON ARMv7 + blur multifio + API nv).
+COPY tpk/libass-nv/patches /tmp/libass-nv/patches
+COPY build-ass-arm.sh /tmp/build-ass-arm.sh
+RUN chmod +x /tmp/build-ass-arm.sh \
+  && CC=arm-webos-linux-gnueabi-gcc NUVIO_SYSROOT="$NUVIO_SYSROOT" \
+     NUVIO_ASS_ROOT="$NUVIO_ASS_ROOT" /tmp/build-ass-arm.sh \
+  && rm -rf /tmp/build-ass-arm.sh /tmp/libass-nv /tmp/nuvio-ass-build
+
 
 WORKDIR /work
