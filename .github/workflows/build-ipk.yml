@@ -1,0 +1,127 @@
+name: Build IPK
+
+# Builds the LG webOS packages the same way `bash tools/ipk.sh` does on a
+# computer: the normal .ipk and the -highcache one (300 MB texture cache), and
+# uploads both as one downloadable artifact.
+#
+# The SDK image (tools/Dockerfile) is linux/arm64 and builds libass with the
+# NEON patches of tools/tpk/libass-nv, so this runs on a native arm64 runner
+# (no emulation). Image layers are cached in the GitHub cache.
+#
+# Runs on pushes to master that touch app code, and by hand: Actions tab ->
+# Build IPK -> Run workflow. A new push to the same branch cancels the build
+# still running for it.
+#
+# Optional repository secrets (the same keys as local.properties). Without
+# them the package builds with empty server settings, like Build TPK does.
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".github/ISSUE_TEMPLATE/**"
+  workflow_dispatch:
+
+concurrency:
+  group: build-ipk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      # No P2P engine on CI (it lives on the owner's disk, not in the repo).
+      NUVIO_P2P_MOTOR: none
+      RUSTUP_HOME: /home/runner/.rustup
+      CARGO_HOME: /home/runner/.cargo
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # tools/arm.sh compiles inside this image. FFmpeg (DTS) and libass take
+      # long to build, so the layers are cached; editing a libass patch only
+      # rebuilds from the libass layer on.
+      - name: Build the webOS SDK image
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          platforms: linux/arm64
+          load: true
+          tags: nuvio-webos-sdk
+          cache-from: type=gha,scope=webos-sdk
+          cache-to: type=gha,scope=webos-sdk,mode=max
+
+      # arm.sh builds the Rust MKV core on the host (static library, no
+      # linker needed) and reads the cargo/rustup paths from the environment.
+      - name: Install Rust 1.88 with the webOS target
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: armv7-unknown-linux-gnueabi
+
+      - name: Fetch Rust dependencies (arm.sh builds offline)
+        run: cargo fetch --locked --manifest-path rust/mkvcore/Cargo.toml
+
+      # The DV7 converter needs the LG SDK linker, which only the image has.
+      # arm.sh skips its own host build when the library already exists.
+      - name: Build the DV7 library inside the image
+        run: |
+          docker run --rm -v "$PWD":/work -w /work \
+            -e NUVIO_DV7_TARGET=armv7-unknown-linux-gnueabi \
+            nuvio-webos-sdk bash tools/build-dv7.sh
+          sudo chown -R "$USER" build/dv7
+
+      - name: Install the webOS CLI (ares-package)
+        run: npm install -g @webos-tools/cli
+
+      - name: Write local.properties from secrets
+        env:
+          NUVIO_SUPABASE_URL: ${{ secrets.NUVIO_SUPABASE_URL }}
+          NUVIO_SUPABASE_ANON_KEY: ${{ secrets.NUVIO_SUPABASE_ANON_KEY }}
+          TV_LOGIN_WEB_BASE_URL: ${{ secrets.TV_LOGIN_WEB_BASE_URL }}
+          TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+          SIMKL_CLIENT_ID: ${{ secrets.SIMKL_CLIENT_ID }}
+          SIMKL_APP_NAME: ${{ secrets.SIMKL_APP_NAME }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: |
+          for k in NUVIO_SUPABASE_URL NUVIO_SUPABASE_ANON_KEY TV_LOGIN_WEB_BASE_URL \
+                   TRAKT_CLIENT_ID TRAKT_CLIENT_SECRET SIMKL_CLIENT_ID SIMKL_APP_NAME TMDB_API_KEY; do
+            [ -n "${!k}" ] && printf '%s=%s\n' "$k" "${!k}" >> local.properties
+          done
+          touch local.properties
+
+      - name: Build the IPK
+        run: |
+          set -o pipefail
+          bash tools/ipk.sh 2>&1 | tee build.log
+
+      - name: Build the high-cache IPK
+        run: |
+          set -o pipefail
+          bash tools/ipk.sh --high-cache 2>&1 | tee build-highcache.log
+
+      # On failure, show the last lines of the build at the top of the run page.
+      - name: Show build error summary
+        if: failure()
+        run: |
+          {
+            echo '### Build IPK failed'
+            echo '```'
+            tail -n 40 build-highcache.log 2>/dev/null || tail -n 40 build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NuvioIpk
+          path: build/ipk/*.ipk
+          if-no-files-found: error
