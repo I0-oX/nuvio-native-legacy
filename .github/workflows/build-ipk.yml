@@ -76,7 +76,7 @@ jobs:
           docker run --rm -v "$PWD":/work -w /work \
             -e NUVIO_DV7_TARGET=armv7-unknown-linux-gnueabi \
             nuvio-webos-sdk bash tools/build-dv7.sh
-          sudo chown -R "$USER" build/dv7
+          sudo chown -R "$USER" build
 
       # Compiled objects of the app (tools/arm.sh keys them by flags and image),
       # so a push that touches a few files does not recompile everything.
@@ -115,6 +115,8 @@ jobs:
           mkdir -p build/ipk
           NUVIO_ARES_PACKAGE="$(command -v ares-package)" NUVIO_RELEASE_OUT="$PWD/build/ipk" \
             bash tools/arm.sh --ipk --build 2>&1 | tee build.log
+          # The container ran as root: give the workspace back before the next build.
+          sudo chown -R "$USER" . 
 
       - name: Build the high-cache IPK
         run: |
