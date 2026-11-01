@@ -174,7 +174,7 @@ jobs:
         run: |
           tag="libass-test-${GITHUB_SHA::7}"
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
-            --title "libass test ${GITHUB_SHA::7}" \
-            --notes "Test build of the patched libass (ARMv7 NEON engine, blur threads = cores - 1) for Samsung .tpk and LG webOS .ipk. Not a stable release." \
+            --title "libass performance build ${GITHUB_SHA::7} (Tizen + webOS)" \
+            --notes "Performance build of the subtitle engine (patched libass: ARMv7 NEON engine, blur threads = cores - 1; new ASS draw path on webOS) for Samsung .tpk and LG webOS .ipk. Prerelease for testing on TVs." \
             || gh release view "$tag" >/dev/null   # the other workflow created it first
           gh release upload "$tag" build/tpk/*.tpk --clobber
