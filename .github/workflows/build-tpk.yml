@@ -12,7 +12,7 @@ name: Build TPK
 
 on:
   push:
-    branches: [master]
+    branches: [master, libass-engine-rewrite-tizen]
     paths-ignore:
       - "docs/**"
       - "**/*.md"
@@ -28,7 +28,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -163,3 +163,17 @@ jobs:
             tail -n 25 verify-libass.log | sed 's/^/::error title=libass verify::/'
             exit 1
           fi
+
+      # Test release of the libass build (branch libass-engine-rewrite-tizen
+      # only): a prerelease tagged with the commit, shared by the .tpk and .ipk
+      # workflows (whichever finishes first creates it, the other adds files).
+      - name: Publish libass test prerelease
+        if: github.ref == 'refs/heads/libass-engine-rewrite-tizen'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="libass-test-${GITHUB_SHA::7}"
+          gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
+            --title "libass test ${GITHUB_SHA::7}" \
+            --notes "Test build of the patched libass (ARMv7 NEON engine, blur threads = cores - 1) for Samsung .tpk and LG webOS .ipk. Not a stable release." 2>/dev/null || true
+          gh release upload "$tag" build/tpk/*.tpk --clobber
