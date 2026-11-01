@@ -1,7 +1,7 @@
 name: Build IPK
 
-# Builds the LG webOS packages the same way `bash tools/ipk.sh` does on a
-# computer: the normal .ipk and the -highcache one (300 MB texture cache), and
+# Builds the LG webOS packages the same way `bash tools/arm.sh --ipk --build`
+# does on a computer: the normal .ipk and the -highcache one (300 MB texture cache), and
 # uploads both as one downloadable artifact.
 #
 # The SDK image (tools/Dockerfile) is linux/arm64 and builds libass with the
@@ -101,12 +101,15 @@ jobs:
       - name: Build the IPK
         run: |
           set -o pipefail
-          bash tools/ipk.sh 2>&1 | tee build.log
+          mkdir -p build/ipk
+          NUVIO_ARES_PACKAGE="$(command -v ares-package)" NUVIO_RELEASE_OUT="$PWD/build/ipk" \
+            bash tools/arm.sh --ipk --build 2>&1 | tee build.log
 
       - name: Build the high-cache IPK
         run: |
           set -o pipefail
-          bash tools/ipk.sh --high-cache 2>&1 | tee build-highcache.log
+          NUVIO_ARES_PACKAGE="$(command -v ares-package)" NUVIO_RELEASE_OUT="$PWD/build/ipk" \
+            bash tools/arm.sh --ipk --build --high-cache 2>&1 | tee build-highcache.log
 
       # On failure, show the last lines of the build at the top of the run page.
       - name: Show build error summary
