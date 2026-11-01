@@ -60,7 +60,6 @@ unsigned assperf_versao(void);
 
 // Fixed values of the engine (0 / the old value where ASS_NOVO is 0).
 #define ASSPERF_FONTES_TETO ((size_t)(ASS_NOVO ? 64 : 16) * 1024u * 1024u)   // attached fonts, bytes
-#define ASSPERF_FIOS        (ASS_NOVO ? 3 : 1)          // NEON blur threads
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead
 #define ASSPERF_PODA_MS     (ASS_NOVO ? 120000L : 0L)   // drop events that ended this long ago
 #define ASSPERF_PARQUE      (ASS_NOVO ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes

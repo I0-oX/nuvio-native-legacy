@@ -797,23 +797,29 @@ static int ass_estilo_autor_locked(void) {
   return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
 
-#if defined(NV_WEBOS) && defined(ASS_NV_API)
-/* webOS: motor NEON do libass (tools/tpk/libass-nv) com fios de blur =
- * nucleos - 1 (um fica para a UI e o video), de 1 a 4. Sem medir TV nenhuma:
- * os fios dormem fora dos blurs grandes e a saida nao muda com o numero. Sob
- * assTrava, uma vez. */
-static void webos_ass_motor_locked(void) {
-  static int feito;
-  long cpus;
-  if (feito) return;
-  feito = 1;
-  cpus = sysconf(_SC_NPROCESSORS_ONLN);
-  ass_nv_set_engine(assRenderer, 1);
-  ass_nv_set_threads(cpus < 2 ? 1 : cpus > 5 ? 4 : (int)cpus - 1);
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
+/* Fios de blur do libass de tools/tpk/libass-nv: nucleos - 1 (um fica para a
+ * UI e o video), de 1 a 4. Mesma regra no .tpk e no webOS, sem medir TV
+ * nenhuma: os fios dormem fora dos blurs grandes e a saida nao muda com o
+ * numero. */
+static int ass_fios_blur(void) {
+  long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+  return cpus < 2 ? 1 : cpus > 5 ? 4 : (int)cpus - 1;
 }
 #endif
 
-/* The .tpk's libass (tools/tpk/libass-nv): NEON engine, 3 blur threads and
+#if defined(NV_WEBOS) && defined(ASS_NV_API)
+/* webOS: liga o motor NEON e os fios, uma vez. Sob assTrava. */
+static void webos_ass_motor_locked(void) {
+  static int feito;
+  if (feito) return;
+  feito = 1;
+  ass_nv_set_engine(assRenderer, 1);
+  ass_nv_set_threads(ass_fios_blur());
+}
+#endif
+
+/* The .tpk's libass (tools/tpk/libass-nv): NEON engine, cores - 1 blur threads and
  * the dialogue opacity. Under assTrava, on the worker, when the options
  * change (assperf_versao). Elsewhere nothing. */
 static unsigned assApVersao = ~0u;
@@ -832,7 +838,7 @@ static void ass_aplicar_assperf_locked(void) {
       feito = 1;
       ass_nv_set_engine(assRenderer, 1);
       assfios_nome_trocar("nv-assblur", nomeAnt);
-      ass_nv_set_threads(ASSPERF_FIOS);
+      ass_nv_set_threads(ass_fios_blur());
       assfios_nome_voltar(nomeAnt);
     } }
   /* Dialogue opacity (Subtitles > Style): only lines without \pos, \move,
