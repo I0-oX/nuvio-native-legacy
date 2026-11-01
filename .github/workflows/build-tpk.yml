@@ -172,9 +172,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="libass-test-${GITHUB_SHA::7}"
+          tag="master-libass-${GITHUB_SHA::7}"
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
-            --title "libass performance build ${GITHUB_SHA::7} (Tizen + webOS)" \
+            --title "master-libass ${GITHUB_SHA::7} (libass performance, Tizen + webOS)" \
             --notes "Performance build of the subtitle engine (patched libass: ARMv7 NEON engine, blur threads = cores - 1; new ASS draw path on webOS) for Samsung .tpk and LG webOS .ipk. Prerelease for testing on TVs." \
             || gh release view "$tag" >/dev/null   # the other workflow created it first
-          gh release upload "$tag" build/tpk/*.tpk --clobber
+          # The package version inside is still the app's; the file name says which build it is.
+          mkdir -p rel
+          for f in build/tpk/*.tpk; do b="$(basename "$f")"; cp "$f" "rel/${b%.tpk}-master-libass.tpk"; done
+          gh release upload "$tag" rel/*.tpk --clobber
