@@ -65,7 +65,7 @@ PATCHES=${NUVIO_LIBASS_PATCHES:-/tmp/libass-nv/patches}
 for p in "$PATCHES"/*.patch; do
   patch -p1 -s --forward < "$p" || { echo "libass patch falhou: $p" >&2; exit 1; }
 done
-export CFLAGS="${LIBASS_CFLAGS:--O3 -fPIC -march=armv7-a -mfpu=neon}"
+export CFLAGS="${LIBASS_CFLAGS:--O3 -fPIC -march=armv7-a -mfpu=neon -mtune=cortex-a53}"
 export CPPFLAGS="${CPPFLAGS:-} -I$PREFIX/include -I$PREFIX/include/fribidi -I$PREFIX/include/freetype2 -I$PREFIX/include/harfbuzz"
 export LDFLAGS="$LDFLAGS -L$PREFIX/lib"
 ./configure --host="${CC%-gcc}" --prefix="$PREFIX" --enable-static --disable-shared --disable-fontconfig --disable-require-system-font-provider --disable-enca --disable-libunibreak --disable-asm --enable-harfbuzz
