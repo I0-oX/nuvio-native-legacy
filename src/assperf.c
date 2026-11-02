@@ -108,14 +108,17 @@ size_t assperf_fontes_teto(void) {
    * dinamica bajaba a 16-30 MB con el video abierto y las rechazaba. */
   return (size_t)64 * 1024u * 1024u;
 #elif defined(NV_WEBOS)
-  /* O bloco de anexos e lido inteiro na memoria (um malloc): o teto segue a
-   * memoria livre da TV, como os fios do blur seguem os nucleos. */
+  /* webOS: fixed 64 MB, same as the .tpk. When free memory leaves no headroom
+   * (under 128 MB), fall back to 1/8 of the free memory, clamped to 16..64 MB:
+   * the attachments block is one malloc and must not exhaust the TV. */
   long pag = sysconf(_SC_AVPHYS_PAGES), tam = sysconf(_SC_PAGESIZE);
   unsigned long long livre = pag > 0 && tam > 0 ? (unsigned long long)pag * (unsigned long long)tam : 0;
-  unsigned long long teto = livre / 8;
-  if (teto < (16ull << 20)) teto = 16ull << 20;
-  if (teto > (64ull << 20)) teto = 64ull << 20;
-  return (size_t)teto;
+  if (livre >= (128ull << 20)) return (size_t)64 * 1024u * 1024u;
+  {
+    unsigned long long teto = livre / 8;
+    if (teto < (16ull << 20)) teto = 16ull << 20;
+    return (size_t)teto;
+  }
 #else
   return (size_t)16 * 1024u * 1024u;
 #endif
