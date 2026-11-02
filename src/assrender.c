@@ -805,8 +805,12 @@ static int ass_estilo_autor_locked(void) {
  * nenhuma: os fios dormem fora dos blurs grandes e a saida nao muda com o
  * numero. */
 static int ass_fios_blur(void) {
+#ifdef NV_TPK
+  return 3;   /* S95C: valor medido; no depende de los nucleos en linea. */
+#else
   long cpus = sysconf(_SC_NPROCESSORS_ONLN);
   return cpus < 2 ? 1 : cpus > 5 ? 4 : (int)cpus - 1;
+#endif
 }
 #endif
 

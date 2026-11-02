@@ -103,7 +103,11 @@ int assperf_get(int id) {
 unsigned assperf_versao(void) { return __atomic_load_n(&versao, __ATOMIC_ACQUIRE); }
 
 size_t assperf_fontes_teto(void) {
-#if ASS_NOVO_TPK || defined(NV_WEBOS)
+#if ASS_NOVO_TPK
+  /* S95C: 64 MB fijos, el valor que cargaba las fuentes del fansub. La regla
+   * dinamica bajaba a 16-30 MB con el video abierto y las rechazaba. */
+  return (size_t)64 * 1024u * 1024u;
+#elif defined(NV_WEBOS)
   /* O bloco de anexos e lido inteiro na memoria (um malloc): o teto segue a
    * memoria livre da TV, como os fios do blur seguem os nucleos. */
   long pag = sysconf(_SC_AVPHYS_PAGES), tam = sysconf(_SC_PAGESIZE);
