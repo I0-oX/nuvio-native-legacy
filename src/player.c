@@ -5533,9 +5533,10 @@ static PlrRect areaVideoLegenda(void) {
  * cresce junto, como o sub-scale do mpv, sem mexer em cor, borda ou lugar. */
 static double escalaFonteAss(void) {
   int pct = legEstilo.tamanho;
-#ifdef NV_TPK
-  /* Styled ASS on the .tpk: its own dialogue size (Subtitles > Style), 100 %
-   * = as authored; libass scales only the dialogue (selective font scale). */
+#if defined(NV_TPK) || defined(NV_WEBOS)
+  /* Styled ASS on the .tpk and webOS: its own dialogue size (Subtitles > Style),
+   * 100 % = as authored. .tpk: libass scales only the dialogue (selective font
+   * scale); webOS has no authored styles (ASS_NOVO_TPK), so libass scales the lot. */
   if (ASS_NOVO) return assperf_get(AP_ASSTAM) / 100.0;
 #endif
   if (pct < TXT_LEG_PCT_MIN) pct = TXT_LEG_PCT_MIN;
@@ -5696,7 +5697,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
     float opacidade = legEstilo.opacidade==3?.25f:legEstilo.opacidade==2?.5f:
                       legEstilo.opacidade==1?.75f:1.f;
     float alpha = opacidade * entrada;
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     /* Styled ASS: the signs and typesetting (white masks) are part of the
      * picture; the opacity from Subtitles > Style goes to the dialogue only,
      * inside libass (assperf AP_ASSOPAC). Plain text follows the sheet. */

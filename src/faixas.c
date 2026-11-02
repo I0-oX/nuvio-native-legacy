@@ -30,8 +30,15 @@
 #include "faixasmkv.h"
 #define NV_ESCALA_TELA   // o arquivo inteiro mede pela tela virtual (escala.h)
 #include "escala.h"
-#ifdef NV_TPK
+// Menu Estilo das faixas ASS (libass, tamanho/opacidade das falas, contraste,
+// gama, resolucao): .tpk e webOS rodam o motor novo (assperf.h). A sincronia
+// com a imagem (legimagem.*) precisa da grade de quadros do host Samsung
+// (video_tpk_quadro) e fica so no .tpk.
+#if defined(NV_TPK) || defined(NV_WEBOS)
+#define FX_ASSUI 1
 #include "assperf.h"
+#endif
+#ifdef NV_TPK
 #include "legimagem.h"
 #endif
 #include <stdio.h>
@@ -591,19 +598,20 @@ static int nLinhas(int col) {
 // personalizacoes abaixo usam somente metodos presentes no firmware. A ultima
 // linha restaura o conjunto inteiro sem exigir dezenas de toques no controle.
 enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
-#ifdef NV_TPK
+#ifdef FX_ASSUI
        /* ASS/SSA tracks on the .tpk (owner 26-27/10): with libass on, the
         * column is size and opacity of the dialogue, delay, contrast, gamma,
         * render resolution, picture sync, libass itself and Restore
         * defaults (always the last cell). With libass off it is the ordinary
-        * column plus the libass row, Restore defaults last. */
+        * column plus the libass row, Restore defaults last. On webOS EST_SINC
+        * is only a placeholder (no frame grid there): the menu never lists it. */
        EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
 #endif
        EST_TOTAL };
 static const char *const EST_ROT[EST_TOTAL] = {
   "Tamanho", "Fonte OpenSubtitles", "Cor", "Opacidade", "Fundo", "Posição", "Borda", "Atraso",
   "Negrito", "Restaurar padrão", "Cor da borda"
-#ifdef NV_TPK
+#ifdef FX_ASSUI
   , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
 #endif
 };
@@ -612,6 +620,8 @@ static const char *const EST_ROT[EST_TOTAL] = {
 static int estLinhas[EST_TOTAL], estNLinhas;
 #ifdef NV_TPK
 static int sincPesada;   // Picture sync: 0 = Left/Right edit normal scenes, 1 = busy scenes
+#endif
+#ifdef FX_ASSUI
 static void escolherLegenda(int i);
 static int legendaAtiva(void);
 static int estFaixaAss(void) {
@@ -619,13 +629,18 @@ static int estFaixaAss(void) {
   return ehAss(f) || legenda_ass_ativa() || (assrender_ativo() && !assrender_texto_simples());
 }
 #endif
+#ifdef NV_TPK
+#define EST_SINC_LINHA EST_SINC,
+#else
+#define EST_SINC_LINHA   // webOS: EST_SINC existe no enum mas nao entra no menu
+#endif
 static void estMapa(void) {
   int i;
   estNLinhas = 0;
-#ifdef NV_TPK
+#ifdef FX_ASSUI
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
-      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
+      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC_LINHA
                                EST_LIBASS, EST_RESTAURAR };
       for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) estLinhas[estNLinhas++] = L[i];
       return;
@@ -672,9 +687,9 @@ static int estCampoAss(int linha) {
 static int estiloPreservadoAss(int linha) {
   int campo = estCampoAss(linha);
   if (!campo || !assrender_ativo() || assrender_texto_simples()) return 0;
-#ifdef NV_TPK
+#ifdef FX_ASSUI
   /* Styled ASS is drawn as the author made it (new engine, assperf.h). */
-  if (ASS_NOVO) return 1;
+  if (ASS_NOVO_TPK) return 1;
 #endif
   return !player_leg_estilo_tocado(campo);
 }
@@ -712,7 +727,7 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       int c = e->corBorda >= 0 && e->corBorda < VIDEO_LEG_NCORES ? e->corBorda : 0;
       snprintf(dst, tam, "%s", VIDEO_LEG_CORES_PT[c ? c - 1 : VIDEO_LEG_NCORES - 1]);
       break; }
-#ifdef NV_TPK
+#ifdef FX_ASSUI
     case EST_LIBASS: snprintf(dst, tam, "%s", i18n(assperf_get(AP_LIBASS) ? "Ligado" : "Desligado")); break;
     case EST_ASS_TAM: snprintf(dst, tam, "%d%%", assperf_get(AP_ASSTAM)); break;
     case EST_ASS_OPAC: snprintf(dst, tam, "%d%%", assperf_get(AP_ASSOPAC)); break;
@@ -723,6 +738,8 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
       snprintf(dst, tam, "%s", v == 5 ? i18n("Automático") : v == 2 ? "75%" : "100%");
       break; }
+#endif
+#ifdef NV_TPK
     case EST_SINC: { int lv, ps, ag;
       legimagem_valores(&lv, &ps, &ag);
       if (ctl == EST_SINC) snprintf(dst, tam, sincPesada ? "%d / [%d] ms" : "[%d] / %d ms", lv, ps);
@@ -743,18 +760,22 @@ static void ciclarEstilo(int linha) {
     case 6: e->borda   = (e->borda + 1) % 3; player_leg_estilo_tocou(PLR_LEG_BORDA); break;
     case 8: e->negrito = !e->negrito; player_leg_estilo_tocou(PLR_LEG_NEGRITO); break;
     case EST_RESTAURAR:
-#ifdef NV_TPK
+#ifdef FX_ASSUI
       if (estFaixaAss() && assperf_get(AP_LIBASS)) {
         assperf_restaurar();
+#ifdef NV_TPK
         legimagem_restaurar();
+#endif
         e->atrasoMs = 0;
+#ifdef NV_TPK
         sincPesada = 0;
+#endif
         break;
       }
 #endif
       player_leg_estilo_restaurar();
       return;
-#ifdef NV_TPK
+#ifdef FX_ASSUI
     case EST_ESCALA: {   // Auto -> 100 % -> 75 %
       int v = assperf_get(AP_ESCALA);
       assperf_definir(AP_ESCALA, v == 5 ? 0 : v == 0 ? 2 : 5);
@@ -785,7 +806,7 @@ static const EstSlider EST_SL[EST_TOTAL] = {
   [3] = { 0, 3, 1, 1, 1 },                                        // Opacidade: 25..100%
   [5] = { 0, 7, 1, 1, 1 },                                        // Posicao: 8 niveis
   [7] = { -LEGUI_ATRASO_MAX, LEGUI_ATRASO_MAX, 100, 500, 4 },     // Atraso: 0,1 s / 0,5 s
-#ifdef NV_TPK
+#ifdef FX_ASSUI
   [EST_ASS_TAM] = { 50, 200, 5, 10, 2 },                          // dialogue size %
   [EST_ASS_OPAC] = { 20, 100, 5, 10, 1 },                         // dialogue opacity %
   [EST_CONTRASTE] = { 0, 30, 1, 1, 1 },                           // the TV's numbers
@@ -811,7 +832,7 @@ static float ctlAmostra[VIDEO_LEG_NCORES];   // 0..1: a amostra em foco cresce
 static int estLer(int i) {
   const VideoLegendaEstilo *e = player_leg_estilo();
   switch (i) {
-#ifdef NV_TPK
+#ifdef FX_ASSUI
     case EST_ASS_TAM: return assperf_get(AP_ASSTAM);
     case EST_ASS_OPAC: return assperf_get(AP_ASSOPAC);
     case EST_CONTRASTE: return 30 - assperf_get(AP_CONTRASTE);
@@ -828,7 +849,7 @@ static void estGravar(int i, int v) {
   const EstSlider *s = &EST_SL[i];
   v = v < s->min ? s->min : v > s->max ? s->max : v;
   switch (i) {
-#ifdef NV_TPK
+#ifdef FX_ASSUI
     case EST_ASS_TAM: assperf_definir(AP_ASSTAM, v); return;
     case EST_ASS_OPAC: assperf_definir(AP_ASSOPAC, v); return;
     case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, 30 - v); return;
@@ -2091,7 +2112,7 @@ static void sliderCtl(int i, GfxRect r, float a, int ativo) {
   } else {
     char lo[24], hi[24];
     if (i == 7) { snprintf(lo, sizeof lo, "-%d s", LEGUI_ATRASO_MAX / 1000); snprintf(hi, sizeof hi, "+%d s", LEGUI_ATRASO_MAX / 1000); }
-#ifdef NV_TPK
+#ifdef FX_ASSUI
     else if (i == EST_CONTRASTE) { snprintf(lo, sizeof lo, "0"); snprintf(hi, sizeof hi, "30"); }
     else if (i == EST_GAMA) { snprintf(lo, sizeof lo, "-5"); snprintf(hi, sizeof hi, "+5"); }
 #endif
@@ -2105,14 +2126,14 @@ static void sliderCtl(int i, GfxRect r, float a, int ativo) {
   px = x1 + (x2 - x1) * f;
   gfx_cor((GfxRect){ x1, cy - 4.0f, x2 - x1, 8.0f }, 0.5f, 1, 1, 1, 0.16f * a);
   { int centro = i == 7;
-#ifdef NV_TPK
+#ifdef FX_ASSUI
     centro |= i == EST_GAMA;
 #endif
   { float z = centro ? 0.5f : 0.0f, fa = (z < f ? z : f), fb = (z < f ? f : z);
     if (fb - fa > 0.001f) gfx_cor((GfxRect){ x1 + (x2 - x1) * fa, cy - 4.0f, (x2 - x1) * (fb - fa), 8.0f }, 0.5f, ar, ag, ab, a); }
   if (centro) gfx_cor((GfxRect){ (x1 + x2) * 0.5f - 1.0f, cy - 11.0f, 2.0f, 22.0f }, 0, 1, 1, 1, 0.38f * a); }
   if (i == 3 || i == 5
-#ifdef NV_TPK
+#ifdef FX_ASSUI
       || i == EST_GAMA
 #endif
       ) {   // niveis discretos: um ponto por parada
