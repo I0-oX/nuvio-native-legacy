@@ -799,9 +799,10 @@ static int ass_estilo_autor_locked(void) {
   return ASS_NOVO_TPK && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
 
-/* Escalado solo del diálogo (Tamaño): vale en .tpk y webOS, porque es el motor
- * y no la política de estilos. Los estilos del autor (ass_estilo_autor_locked)
- * siguen siendo solo del .tpk: en webOS lo que la persona tocó gana. Sob assTrava. */
+/* Selective dialogue font scale (the size row): applies on .tpk and webOS,
+ * because it is engine behaviour, not the authored-style policy. Authored
+ * styles (ass_estilo_autor_locked) stay .tpk-only: on webOS the person's
+ * touches still win. Under assTrava. */
 static int ass_escala_dialogo_locked(void) {
   return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
