@@ -1928,6 +1928,11 @@ static int avancarFontes(Fio *f, int esperar) {
      * do corpo ASS), e as fontes CJK de um fansub passam disso. */
     { long teto = (long)ASSPERF_FONTES_TETO;
       if (teto < MKVASS_CORPO_MAX) teto = MKVASS_CORPO_MAX;
+#ifdef NV_WEBOS
+      printf("[mkvass] fontes anexadas: bloco %ld KB, teto efetivo %ld KB%s\n",
+             an / 1024, teto / 1024, (an <= 0 || an > teto) ? " (recusado por tamanho)" : "");
+      fflush(stdout);
+#endif
       if (an <= 0 || an > teto) { free(p); f->fontesPasso = 3; goto falhou; } }
     if (ai + at + an <= n) {
       int ok = lerAttachments(f, p + ai + at, an);

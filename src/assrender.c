@@ -842,6 +842,10 @@ static void ass_aplicar_assperf_locked(void) {
       ass_nv_set_engine(assRenderer, 1);
       assfios_nome_trocar("nv-assblur", nomeAnt);
       ass_nv_set_threads(ass_fios_blur());
+#ifdef NV_WEBOS
+      printf("[ass] motor NEON: fios de blur %d (nucleos online %ld)\n", ass_fios_blur(), sysconf(_SC_NPROCESSORS_ONLN));
+      fflush(stdout);
+#endif
       assfios_nome_voltar(nomeAnt);
     } }
   /* Dialogue opacity (Subtitles > Style): only lines without \pos, \move,
