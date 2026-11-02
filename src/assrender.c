@@ -311,13 +311,21 @@ static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) 
 typedef struct { char nome[96]; size_t tam; unsigned long long amostra; } AssFonteVista;
 #define ASS_FONTES_MAX 192
 #define ASS_FONTES_TETO_BYTES (96u * 1024u * 1024u)
-static AssFonteVista assFontesVistas[ASS_FONTES_MAX];
+/* O reinicio repoe o lote inteiro (ate MKVASS_FONTES_MAX fontes), por isso o
+ * array de vistas tem pelo menos essa capacidade; ASS_FONTES_MAX continua sendo
+ * o limite que dispara o reinicio. Sem isso um lote de mais de 192 fontes
+ * escrevia fora do array. */
+#define ASS_VISTAS_CAP 256
+static AssFonteVista assFontesVistas[ASS_VISTAS_CAP];
 static int assNFontesVistas;
 static size_t assBytesFontesVistas;
 static char assFallbackFont[768], assFonteLocal[768];
 static int assFonteRegistrada;
-#define ASS_ATUAIS_MAX 32
-#define ASS_ATUAIS_BYTES (32u * 1024u * 1024u)
+/* O lote e a entrega atual, e a entrega cabe no bloco de anexos aceito: o
+ * mesmo teto de bytes (ASSPERF_FONTES_TETO) e o mesmo numero de fontes
+ * (MKVASS_FONTES_MAX). Assim um lote nunca fica parcial por tamanho. */
+#define ASS_ATUAIS_MAX 256
+#define ASS_ATUAIS_BYTES ASSPERF_FONTES_TETO
 typedef struct { char nome[256]; unsigned char *dados; size_t tam; } AssFonteAtual;
 static AssFonteAtual assFontesAtuais[ASS_ATUAIS_MAX];
 static int assNFontesAtuais, assAtuaisCompletas = 1;
@@ -809,14 +817,16 @@ static int ass_escala_dialogo_locked(void) {
 
 #if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
 /* Fios de blur do libass de tools/tpk/libass-nv. .tpk: 3 fixos (medido na S95C).
- * webOS: nucleos - 1, de 1 a 4 (sem medir TV ainda). Os fios dormem fora dos
- * blurs grandes e a saida nao muda com o numero. */
+ * webOS: 3 fios; 1 fio se a TV tiver menos de 4 nucleos online. Os fios dormem
+ * fora dos blurs grandes e a saida nao muda com o numero. Valor de webOS ainda
+ * sem medida na LG. */
 static int ass_fios_blur(void) {
 #ifdef NV_TPK
-  return 3;   /* S95C: valor medido; no depende de los nucleos en linea. */
+  return 3;   /* S95C: valor medido; nao depende dos nucleos. */
 #else
   long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-  return cpus < 2 ? 1 : cpus > 5 ? 4 : (int)cpus - 1;
+  if (cpus >= 4) return 3;   /* 3 fios, como o .tpk */
+  return 1;                  /* respaldo: menos de 4 nucleos -> 1 fio */
 #endif
 }
 #endif
