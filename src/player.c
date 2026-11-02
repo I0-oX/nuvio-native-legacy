@@ -56,6 +56,7 @@
 #include "logotitulo.h"
 #include "extplayer.h"
 #include "corviva.h"
+#include "assplat.h"
 #include "assperf.h"
 
 // A CASCA DO TIZEN PRECISA SABER SE O PLAYER ESTA NA TELA. tools/tizen-shell.html
@@ -5533,10 +5534,10 @@ static PlrRect areaVideoLegenda(void) {
  * cresce junto, como o sub-scale do mpv, sem mexer em cor, borda ou lugar. */
 static double escalaFonteAss(void) {
   int pct = legEstilo.tamanho;
-#if defined(NV_TPK) || defined(NV_WEBOS)
+#if ASS_OPCOES
   /* Styled ASS on the .tpk and webOS: its own dialogue size (Subtitles > Style),
    * 100 % = as authored. .tpk: libass scales only the dialogue (selective font
-   * scale); webOS has no authored styles (ASS_NOVO_TPK), so libass scales the lot. */
+   * scale, authored styles: ASS_NOVO_TPK); webOS has none, so libass scales the lot. */
   if (ASS_NOVO) return assperf_get(AP_ASSTAM) / 100.0;
 #endif
   if (pct < TXT_LEG_PCT_MIN) pct = TXT_LEG_PCT_MIN;
@@ -5697,7 +5698,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
     float opacidade = legEstilo.opacidade==3?.25f:legEstilo.opacidade==2?.5f:
                       legEstilo.opacidade==1?.75f:1.f;
     float alpha = opacidade * entrada;
-#if defined(NV_TPK) || defined(NV_WEBOS)
+#if ASS_OPCOES
     /* Styled ASS: the signs and typesetting (white masks) are part of the
      * picture; the opacity from Subtitles > Style goes to the dialogue only,
      * inside libass (assperf AP_ASSOPAC). Plain text follows the sheet. */
@@ -5708,8 +5709,12 @@ static void desenharLegendaPrincipal(float *topoPilha){
                              assrender_texto_simples() ? 1920 : video_largura(),
                              assrender_texto_simples() ? 1080 : video_altura(),
                              assrender_texto_simples() ? 1.0 : escalaFonteAss());
+    /* Grade de quadros (assrender.c, neutra): quem diz a taxa depende da
+     * plataforma. 0 = desconhecida, grade desligada. */
 #ifdef NV_TPK
-    assrender_definir_fps(legimagem_fps());   // frame grid (assrender.c)
+    assrender_definir_fps(legimagem_fps());   // Samsung: o host (video_tpk_quadro)
+#elif defined(NV_WEBOS)
+    assrender_definir_fps(video_quadro_fps());   // webOS: DefaultDuration do MKV (video.c, lerMkv)
 #endif
     assrender_desenhar(posLeg, atraso, alpha,
                         0, 0, NV_TELA_W, NV_TELA_H);

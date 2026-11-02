@@ -8,12 +8,12 @@
 #include <time.h>
 #include <unistd.h>
 
-/* The options live in assperf.txt (dados.h) on the .tpk and on webOS: dados.h
- * writes there with a real write probe on both (the same file as ajustes.txt).
- * Without the file every option is at its default (PESSOA below): AP_ASSOPAC
- * 100 and AP_LIBASS 1, never 0. The .wgt and Android: no file, always 0. */
-#if defined(NV_TPK) || defined(NV_WEBOS)
-#define AP_PERSISTE 1
+/* The options live in assperf.txt (dados.h) where ASS_OPCOES is 1 (.tpk and
+ * webOS): dados.h writes there with a real write probe on both (the same file
+ * as ajustes.txt). Without the file every option is at its default (PESSOA
+ * below): AP_ASSOPAC 100 and AP_LIBASS 1, never 0. The .wgt and Android: no
+ * file, always 0. */
+#if ASS_OPCOES
 #include "dados.h"
 #endif
 
@@ -26,12 +26,12 @@ static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
 };
 
-static int val[AP_N] __attribute__((unused));   // off the .tpk and webOS: read only by the tests
+static int val[AP_N] __attribute__((unused));   // without ASS_OPCOES: read only by the tests
 static int iniciado;
 static unsigned versao;
 static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
 
-#ifdef AP_PERSISTE
+#if ASS_OPCOES
 static int valido(int id, int v) {
   if (id == AP_ESCALA) return v == 0 || v == 2 || v == 5;   // 100 %, 75 %, Auto (file values kept)
   return v >= PESSOA[id].min && v <= PESSOA[id].max;
@@ -54,7 +54,7 @@ void assperf_iniciar(void) {
   if (__atomic_load_n(&iniciado, __ATOMIC_ACQUIRE)) return;
   pthread_mutex_lock(&trava);
   if (iniciado) { pthread_mutex_unlock(&trava); return; }
-#ifdef AP_PERSISTE
+#if ASS_OPCOES
   {
     char *t = dados_ler(AP_ARQ);
     int i;
@@ -80,7 +80,7 @@ void assperf_iniciar(void) {
 }
 
 #ifdef NV_ASSPERF_TESTE
-/* Tests on the computer (no NV_TPK, no NV_WEBOS): set the person's options without a file. */
+/* Tests on the computer (ASS_OPCOES 0): set the person's options without a file. */
 void assperf_teste_definir(int id, int v) {
   __atomic_store_n(&iniciado, 1, __ATOMIC_RELEASE);
   if (id >= 0 && id < AP_N) { val[id] = v; __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL); }
@@ -90,7 +90,7 @@ void assperf_teste_definir(int id, int v) {
 int assperf_get(int id) {
 #ifdef NV_ASSPERF_TESTE
   return id >= 0 && id < AP_N ? __atomic_load_n(&val[id], __ATOMIC_RELAXED) : 0;
-#elif defined(AP_PERSISTE)
+#elif ASS_OPCOES
   if (id < 0 || id >= AP_N) return 0;
   assperf_iniciar();
   return __atomic_load_n(&val[id], __ATOMIC_RELAXED);
@@ -103,22 +103,23 @@ int assperf_get(int id) {
 unsigned assperf_versao(void) { return __atomic_load_n(&versao, __ATOMIC_ACQUIRE); }
 
 size_t assperf_fontes_teto(void) {
-#if ASS_NOVO_TPK || defined(NV_WEBOS)
+#if ASSPERF_FONTES_DINAMICO
   /* O bloco de anexos e lido inteiro na memoria (um malloc): o teto segue a
-   * memoria livre da TV, como os fios do blur seguem os nucleos. */
+   * memoria livre da TV, como os fios do blur seguem os nucleos. A regra e
+   * os limites sao do bloco da plataforma em assplat.h. */
   long pag = sysconf(_SC_AVPHYS_PAGES), tam = sysconf(_SC_PAGESIZE);
   unsigned long long livre = pag > 0 && tam > 0 ? (unsigned long long)pag * (unsigned long long)tam : 0;
-  unsigned long long teto = livre / 8;
-  if (teto < (16ull << 20)) teto = 16ull << 20;
-  if (teto > (64ull << 20)) teto = 64ull << 20;
+  unsigned long long teto = livre / ASSPERF_FONTES_LIVRE_DIV;
+  if (teto < ASSPERF_FONTES_MIN) teto = ASSPERF_FONTES_MIN;
+  if (teto > ASSPERF_FONTES_MAX) teto = ASSPERF_FONTES_MAX;
   return (size_t)teto;
 #else
-  return (size_t)16 * 1024u * 1024u;
+  return (size_t)ASSPERF_FONTES_MIN;   // o teto fixo do motor antigo
 #endif
 }
 
 void assperf_definir(int id, int v) {
-#ifdef AP_PERSISTE
+#if ASS_OPCOES
   if (id < 0 || id >= AP_N || !valido(id, v)) return;
   assperf_iniciar();
   pthread_mutex_lock(&trava);
@@ -132,7 +133,7 @@ void assperf_definir(int id, int v) {
 }
 
 void assperf_restaurar(void) {
-#ifdef AP_PERSISTE
+#if ASS_OPCOES
   int i;
   assperf_iniciar();
   pthread_mutex_lock(&trava);
@@ -179,16 +180,18 @@ static double agoraS(void) {
  *   - normal only after CG_LEVE_S seconds of playing below CG_DESLIGA with a
  *     simple screen and no busy forecast (a pause does not count);
  *   - CG_OCIOSO_S with nothing new (the scene is over): normal. */
-#define CG_BALDES   20      /* 100 ms each: 2 s */
-#define CG_LIGA     300.0   /* ms of work per second */
-#define CG_DESLIGA  150.0
-#define CG_LEVE_S   3.0
-#define CG_OCIOSO_S 8.0
+/* The numbers (window, thresholds, forecast) are the ASSPERF_* of assplat.h,
+ * per platform: all of them were measured on the S95C. */
+#define CG_BALDES   ASSPERF_CARGA_BALDES      /* 100 ms each: 2 s */
+#define CG_LIGA     ASSPERF_CARGA_LIGA        /* ms of work per second */
+#define CG_DESLIGA  ASSPERF_CARGA_DESLIGA
+#define CG_LEVE_S   ASSPERF_CARGA_LEVE_S
+#define CG_OCIOSO_S ASSPERF_CARGA_OCIOSO_S
 /* Forecast (the next second of the track, assrender.c): busy with this many
  * lines starting or this much text. Normal only with few pictures on screen. */
-#define CG_PREV_INICIOS 300
-#define CG_PREV_CHARS   400000L
-#define CG_TELA_SIMPLES 20
+#define CG_PREV_INICIOS ASSPERF_PREV_INICIOS
+#define CG_PREV_CHARS   ASSPERF_PREV_CHARS
+#define CG_TELA_SIMPLES ASSPERF_TELA_SIMPLES
 static pthread_mutex_t autoTrava = PTHREAD_MUTEX_INITIALIZER;
 static struct { double ms[CG_BALDES]; long long id[CG_BALDES]; double ult, leveAcum; int on, prevPesada, prevCedo, imagens; } CG;
 
@@ -252,8 +255,8 @@ int assperf_pesado(void) {
  * 100 % normally; 75 % while the subtitles are busy (owner 25/10: "only as a
  * fallback when subtitles get heavy"). At least 5 s at 75 % and 2 s at 100 %
  * between switches: each one redraws everything at the new size. */
-#define AUTO_MIN75_S  5.0
-#define AUTO_MIN100_S 2.0
+#define AUTO_MIN75_S  ASSPERF_AUTO_MIN75_S
+#define AUTO_MIN100_S ASSPERF_AUTO_MIN100_S
 static struct { int em75; double desde; } A;
 
 static void auto_trocar_locked(int em75, double t) { A.em75 = em75; A.desde = t; }

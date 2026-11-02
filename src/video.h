@@ -568,5 +568,9 @@ void video_simular(const VideoSimulacao *s);
 // One-reply webOS LS2 request; callback runs on the GLib thread.
 #if !defined(NV_TPK) && !defined(NV_ANDROID)
 int video_luna(const char *uri, const char *payload, void (*callback)(const char *, void *), void *context);
+// Taxa de quadros do video em reproducao (DefaultDuration do cabecalho MKV,
+// lido por lerMkv); 0 = desconhecida. Fio de desenho; legimagem_fps a repassa
+// ao assrender (grade de quadros) no webOS.
+double video_quadro_fps(void);
 #endif
 #endif

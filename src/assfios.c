@@ -1,7 +1,8 @@
 // Ver assfios.h.
 #include "assfios.h"
+#include "assplat.h"
 
-#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(__linux__)
+#if ASS_LIBASS_NV && defined(__linux__)
 #include <stdio.h>
 #include <sys/prctl.h>
 

@@ -637,7 +637,13 @@ static int dvPedido;
 // tabela e mantinha uma propria, com tres idiomas.
 
 static char      midia[64];
-static double    posSeg, durSeg, posNativa;
+// Escritos no fio do LS2 (currentTime/duration, eventoPayload) e lidos no de
+// desenho por quadro (video_pos): um double de 8 bytes nao e atomico no ARMv7
+// (a leitura pode sair rasgada, metade de cada valor), por isso _Atomic.
+static _Atomic double posSeg, durSeg, posNativa;
+// Taxa de quadros do arquivo (DefaultDuration, escrita pelo fio lerMkv, lida no
+// de desenho): mesmo cuidado. 0 = desconhecida; zera em video_tocar.
+static _Atomic double mkvFps;
 static _Atomic int tocando, falhou, terminou;
 static int       pronto, ligado;
 static _Atomic int ackMidia; // presenca de midia, sem ler a string entre fios
@@ -2105,6 +2111,10 @@ static void *lerMkv(void *arg) {
         achouVideo = 1;
         dvMkvEl = fx[j].dvEl; dvMkvBl = fx[j].dvBl; dvMkvRpu = fx[j].dvRpu;
         dvMkvPerfil = fx[j].dvPerfil;
+        // A grade de quadros da legenda (assrender_definir_fps): sem
+        // DefaultDuration fica 0 e a grade desliga. Sessao velha nao escreve.
+        if (fx[j].quadroNs > 0 && mkvFioSessao == __atomic_load_n(&sessao, __ATOMIC_ACQUIRE))
+          mkvFps = 1e9 / (double)fx[j].quadroNs;
         if (fx[j].dvPerfil)
           printf("[dv] file: profile=%d level=%d rpu=%d el=%d bl=%d compat=%d\n", fx[j].dvPerfil,
                  fx[j].dvNivel, fx[j].dvRpu, fx[j].dvEl, fx[j].dvBl, fx[j].dvCompat);
@@ -2339,7 +2349,7 @@ int video_tocar(const char *url) {
   dtsHabilitado = dts_playback_enabled() && dtsLiberadoNestaTv();
   printf("[dts] fallback %s\n", dtsHabilitado ? "available" : "unavailable");
   dvSondado = dvMkvPerfil = dvAudios = 0; dtsModoDv = 0; dvAudioMkvOrd = -1; dvSegurar = 0;
-  mkvNaoMkv = 0;
+  mkvNaoMkv = 0; mkvFps = 0;
   dvNao = 0; dvSessaoN++; dvFonteAberta = 0; dvAudioDe[0] = 0;
   nv_dvsonda_zerar(&mkvRetry); mkvRetryEm = 0; dvEntradaSeg = 0.0;
   dvHabilitado = dvLiberadoNestaTv();
@@ -3519,6 +3529,7 @@ void video_janela_fonte(int sx, int sy, int sw, int sh,
 }
 
 double video_pos(void)      { return posSeg; }
+double video_quadro_fps(void) { return mkvFps; }
 double video_duracao(void)  { return durSeg; }
 double video_buffer_fim(void) {
   DtsBufferInfo b={0};double end=bufferSeg;

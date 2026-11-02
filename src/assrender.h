@@ -28,8 +28,11 @@ void assrender_limpar_fontes(void);
 /* Admission and local preference commit are serialized with a rare selector
  * rebuild. The callback must not acquire other app locks or perform network IO. */
 int assrender_fonte_local_transacao(const char *caminho, int (*confirmar)(void *), void *u);
+/* Barata e sem esperar o worker: o fio GL a chama a cada quadro. */
 int assrender_fonte_local_ativa(const char *caminho);
-/* Esvazia o cache de glifos/bitmaps do libass (aviso de memoria, #415). */
+/* Aviso de memoria (#415): esvazia o cache de glifos/bitmaps do libass, solta a
+ * fila de quadros prontos e as texturas do desenho (o fio GL as libera no
+ * proximo assrender_desenhar / aplicar_invalidacao); o quadro em tela fica. */
 void assrender_aliviar(void);
 
 /* Fontes extraidas de attachments Matroska. O nome e apenas informativo para

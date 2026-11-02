@@ -4,6 +4,7 @@
 #include "rede.h"
 #include "legenda.h"
 #include "assrender.h"
+#include "assplat.h"
 #include "assperf.h"
 #include "dados.h"
 #include "imgsub.h"
@@ -613,7 +614,8 @@ static volatile int aceitaTexto; // Media3 ja entrega texto ao overlay.
 static volatile int aceitaTexto = 1;
 #endif
 void mkvass_aceitar_texto(int sim) { aceitaTexto = sim ? 1 : 0; }
-// Legenda de imagem (PGS) decodificada aqui e desenhada pelo app: so o .tpk liga.
+// Legenda de imagem (PGS) decodificada aqui e desenhada pelo app: o .tpk e o
+// webOS ligam (video_tpk.c, video_iniciar em video.c).
 static volatile int aceitaImagem;
 void mkvass_aceitar_imagem(int sim) { aceitaImagem = sim ? 1 : 0; }
 
@@ -1108,7 +1110,10 @@ static int montarCabecalho(Fio *f, const unsigned char *priv, long n) {
   return corpoAnexar(f, CORPO_EVENTOS, sizeof CORPO_EVENTOS - 1);
 }
 
-#ifdef NV_TPK
+// Fontes anexadas: o teto de 32 cortava fontes de fansub (.tpk e webOS, o motor
+// novo, ASS_NOVO). A memoria continua limitada: o bloco de anexos inteiro cabe
+// em assperf_fontes_teto() (ver avancarFontes), a contagem so poupa o vetor.
+#if ASS_NOVO
 #define MKVASS_FONTES_MAX 256
 #else
 #define MKVASS_FONTES_MAX 32
@@ -1117,7 +1122,7 @@ static int montarCabecalho(Fio *f, const unsigned char *priv, long n) {
 static int extensaoFonte(const char *nome, const char *mime) {
   const char *p = nome ? strrchr(nome, '.') : NULL;
   if (mime && (!strncasecmp(mime, "font/", 5) || !strncasecmp(mime, "application/x-font", 18))) return 1;
-#ifdef NV_TPK
+#if ASS_NOVO
   if (mime && (!strcasecmp(mime, "application/vnd.ms-opentype") ||
                !strcasecmp(mime, "application/x-truetype-font") ||
                !strncasecmp(mime, "application/font-", 17))) return 1;
@@ -1326,10 +1331,10 @@ static void nomeSidecar(const char *url, int faixa, char *dst, size_t tam) {
 #define MARCA_COMPLETO_V3 "; mkvass-estado: completo-v3\n"
 #define MARCA_V3_EVENTOS  7000
 #define MARCA_PARCIAL  "; mkvass-estado: parcial-v3 "
-#ifdef NV_TPK
-/* TPK: o teto de 32 arquivos cortava fontes de fansub (Kaguya: 32 de ~40, e
- * Kozuka/Lato/PWFicelles caiam em ArialMT). A marca nova invalida os caches
- * gravados com o corte. */
+#if ASS_NOVO
+/* .tpk e webOS (ASS_NOVO): o teto de 32 arquivos cortava fontes de fansub
+ * (Kaguya: 32 de ~40, e Kozuka/Lato/PWFicelles caiam em ArialMT). A marca nova
+ * invalida os caches gravados com o corte. */
 #define MARCA_FONTES   "NVASS-FONTES-2\n"
 #else
 #define MARCA_FONTES   "NVASS-FONTES-1\n"

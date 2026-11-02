@@ -1,5 +1,6 @@
 #include "legenda.h"
 #include "assrender.h"
+#include "assplat.h"
 #include "assperf.h"
 #include "rede.h"
 #include "idioma.h"
@@ -26,7 +27,7 @@ static int docAss;   // the current document is ASS/SSA (sob trava)
 /* libass off (.tpk and webOS, Subtitles > Style): an ASS/SSA track is drawn by the app
  * as plain text, dialogue only (assDialogoSo). */
 static int libassDesligado(void) {
-#if defined(NV_TPK) || defined(NV_WEBOS)
+#if ASS_OPCOES
   return !assperf_get(AP_LIBASS);
 #else
   return 0;
