@@ -634,13 +634,21 @@ static int estFaixaAss(void) {
 #else
 #define EST_SINC_LINHA   // webOS: EST_SINC existe no enum mas nao entra no menu
 #endif
+// Contraste/gama foram calibrados contra o processamento de imagem da Samsung
+// (ver assperf_gama/contraste): no webOS ficam escondidos (padrao 0 = sem
+// efeito), ate serem medidos numa LG.
+#ifdef NV_TPK
+#define EST_CALIB_LINHAS EST_CONTRASTE, EST_GAMA,
+#else
+#define EST_CALIB_LINHAS
+#endif
 static void estMapa(void) {
   int i;
   estNLinhas = 0;
 #ifdef FX_ASSUI
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
-      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC_LINHA
+      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CALIB_LINHAS EST_ESCALA, EST_SINC_LINHA
                                EST_LIBASS, EST_RESTAURAR };
       for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) estLinhas[estNLinhas++] = L[i];
       return;
@@ -1537,7 +1545,16 @@ void faixas_atualizar(float dt, Uint32 agora) {
       // MKVASS_TENTATIVAS_OVERLAY tentativas sem fala nova, a pessoa ja
       // ficou tempo demais sem legenda. Nos dois casos a TV desenha POR
       // ENQUANTO, e a tentativa seguinte que entregar traz a faixa de volta.
+      // webOS: o firmware da LG corta metade das falas (#92), entao o
+      // overlay do app fica durante as tentativas, com o que ja colheu; so
+      // o no-go definitivo (abaixo) devolve a faixa a TV. No .tpk o
+      // hand-off continua: o host so manda texto por callback e
+      // faixas_legenda_overlay devolve 1 sempre.
+#ifdef NV_WEBOS
+      if (0) {
+#else
       if (!legOverlayTV && (col == 0 || legOverlayFalhas > MKVASS_TENTATIVAS_OVERLAY)) {
+#endif
         legOverlayTV = 1;
         printf("[legenda] faixa %d: a TV desenha POR ENQUANTO (%d colhidos), o app segue tentando\n", i, col);
         fflush(stdout);

@@ -5710,6 +5710,8 @@ static void desenharLegendaPrincipal(float *topoPilha){
                              assrender_texto_simples() ? 1.0 : escalaFonteAss());
 #ifdef NV_TPK
     assrender_definir_fps(legimagem_fps());   // frame grid (assrender.c)
+#elif defined(NV_WEBOS)
+    assrender_definir_fps(video_quadro_fps());   // webOS: DefaultDuration do MKV (video.c); 0 desliga a grade
 #endif
     assrender_desenhar(posLeg, atraso, alpha,
                         0, 0, NV_TELA_W, NV_TELA_H);

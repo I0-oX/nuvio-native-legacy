@@ -637,7 +637,19 @@ static int dvPedido;
 // tabela e mantinha uma propria, com tres idiomas.
 
 static char      midia[64];
+#ifdef NV_WEBOS
+// Taxa de quadros do video (DefaultDuration do MKV, lida pelo fio lerMkv e
+// consumida pelo fio de desenho via video_quadro_fps): fio cruzado, por isso
+// o armazenamento dedicado. 0 = desconhecida. Zerada em video_tocar.
+static double mkvFps;
+// Posicao/duracao/nativa: escritas no fio do LS2 (currentTime/duration,
+// eventoPayload) e lidas no de desenho por quadro (video_pos). Um double de
+// 8 bytes nao e atomico no ARMv7 (a leitura pode sair rasgada, metade de
+// cada valor), por isso _Atomic so no webOS; o .tpk segue como sempre.
+static _Atomic double posSeg, durSeg, posNativa;
+#else
 static double    posSeg, durSeg, posNativa;
+#endif
 static _Atomic int tocando, falhou, terminou;
 static int       pronto, ligado;
 static _Atomic int ackMidia; // presenca de midia, sem ler a string entre fios
@@ -2105,6 +2117,13 @@ static void *lerMkv(void *arg) {
         achouVideo = 1;
         dvMkvEl = fx[j].dvEl; dvMkvBl = fx[j].dvBl; dvMkvRpu = fx[j].dvRpu;
         dvMkvPerfil = fx[j].dvPerfil;
+#ifdef NV_WEBOS
+        // Grade de quadros da legenda (assrender_definir_fps, via
+        // video_quadro_fps): sem DefaultDuration fica 0 e a grade desliga.
+        // Sessao velha nao escreve. 0 e valido: "desconhecida".
+        if (fx[j].quadroNs > 0 && mkvFioSessao == __atomic_load_n(&sessao, __ATOMIC_ACQUIRE))
+          mkvFps = 1e9 / (double)fx[j].quadroNs;
+#endif
         if (fx[j].dvPerfil)
           printf("[dv] file: profile=%d level=%d rpu=%d el=%d bl=%d compat=%d\n", fx[j].dvPerfil,
                  fx[j].dvNivel, fx[j].dvRpu, fx[j].dvEl, fx[j].dvBl, fx[j].dvCompat);
@@ -2340,6 +2359,9 @@ int video_tocar(const char *url) {
   printf("[dts] fallback %s\n", dtsHabilitado ? "available" : "unavailable");
   dvSondado = dvMkvPerfil = dvAudios = 0; dtsModoDv = 0; dvAudioMkvOrd = -1; dvSegurar = 0;
   mkvNaoMkv = 0;
+#ifdef NV_WEBOS
+  mkvFps = 0;   // sessoes velhas nao alimentam a grade de quadros da nova
+#endif
   dvNao = 0; dvSessaoN++; dvFonteAberta = 0; dvAudioDe[0] = 0;
   nv_dvsonda_zerar(&mkvRetry); mkvRetryEm = 0; dvEntradaSeg = 0.0;
   dvHabilitado = dvLiberadoNestaTv();
@@ -3519,6 +3541,9 @@ void video_janela_fonte(int sx, int sy, int sw, int sh,
 }
 
 double video_pos(void)      { return posSeg; }
+#ifdef NV_WEBOS
+double video_quadro_fps(void) { return mkvFps; }   // 0 = desconhecida; a grade de quadros desliga
+#endif
 double video_duracao(void)  { return durSeg; }
 double video_buffer_fim(void) {
   DtsBufferInfo b={0};double end=bufferSeg;

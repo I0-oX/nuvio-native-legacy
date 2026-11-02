@@ -1108,7 +1108,7 @@ static int montarCabecalho(Fio *f, const unsigned char *priv, long n) {
   return corpoAnexar(f, CORPO_EVENTOS, sizeof CORPO_EVENTOS - 1);
 }
 
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)   // webOS: o mesmo teto do motor novo; a memoria segue limitada por assperf_fontes_teto()
 #define MKVASS_FONTES_MAX 256
 #else
 #define MKVASS_FONTES_MAX 32
@@ -1117,7 +1117,7 @@ static int montarCabecalho(Fio *f, const unsigned char *priv, long n) {
 static int extensaoFonte(const char *nome, const char *mime) {
   const char *p = nome ? strrchr(nome, '.') : NULL;
   if (mime && (!strncasecmp(mime, "font/", 5) || !strncasecmp(mime, "application/x-font", 18))) return 1;
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)   // webOS: os mesmos anexos de fonte contam para o teto de 256
   if (mime && (!strcasecmp(mime, "application/vnd.ms-opentype") ||
                !strcasecmp(mime, "application/x-truetype-font") ||
                !strncasecmp(mime, "application/font-", 17))) return 1;
@@ -1326,10 +1326,10 @@ static void nomeSidecar(const char *url, int faixa, char *dst, size_t tam) {
 #define MARCA_COMPLETO_V3 "; mkvass-estado: completo-v3\n"
 #define MARCA_V3_EVENTOS  7000
 #define MARCA_PARCIAL  "; mkvass-estado: parcial-v3 "
-#ifdef NV_TPK
-/* TPK: o teto de 32 arquivos cortava fontes de fansub (Kaguya: 32 de ~40, e
- * Kozuka/Lato/PWFicelles caiam em ArialMT). A marca nova invalida os caches
- * gravados com o corte. */
+#if defined(NV_TPK) || defined(NV_WEBOS)
+/* .tpk e webOS: o teto de 32 arquivos cortava fontes de fansub (Kaguya: 32 de
+ * ~40, e Kozuka/Lato/PWFicelles caiam em ArialMT). A marca nova invalida os
+ * caches gravados com o corte. */
 #define MARCA_FONTES   "NVASS-FONTES-2\n"
 #else
 #define MARCA_FONTES   "NVASS-FONTES-1\n"
@@ -3448,8 +3448,12 @@ static int relayFaixa;          // faixa do fio que colhe agora (0 = nenhum); at
 static MkvassPreparo *relayDono;
 
 int mkvass_relay_faixa(void) {
+#ifdef NV_TPK
   if (!ASS_NOVO) return 0;
   return __atomic_load_n(&relayFaixa, __ATOMIC_ACQUIRE);
+#else
+  return 0;
+#endif
 }
 
 void mkvass_relay_bloco(long long clPos, int clHdr, unsigned long clTs, int temTs,
