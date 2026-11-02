@@ -1985,9 +1985,19 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
           assFonteRegistrada = local != NULL;
           free(local);
         } else assFonteRegistrada = 0;
-        ass_carregar_pasta_locked();
-        ass_aplicar_fontes_locked();
         assNFontesVistas = 0; assBytesFontesVistas = 0;
+        ass_carregar_pasta_locked();
+        /* Repoe o lote da entrega atual (como ass_fontes_reconstruir_locked):
+         * senao as fontes ja somadas nela sumem e o estilo cai na fonte do app. */
+        for (int i = 0; i < assNFontesAtuais; i++) {
+          const AssFonteAtual *f = &assFontesAtuais[i];
+          ass_add_font(assLib, f->nome, (const char *)f->dados, (int)f->tam);
+          AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
+          snprintf(v->nome, sizeof v->nome, "%.95s", f->nome);
+          v->tam = f->tam; v->amostra = ass_amostra_fonte(f->dados, f->tam);
+          assBytesFontesVistas += f->tam;
+        }
+        ass_aplicar_fontes_locked();
       }
       ass_add_font(assLib, nome, (const char *)dados, (int)tamanho);
       { AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
