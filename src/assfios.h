@@ -1,4 +1,4 @@
-// NAMES OF THE SUBTITLE THREADS (ASS_LIBASS_NV, Linux: .tpk and webOS). The libass worker is
+// NAMES OF THE SUBTITLE THREADS (.tpk and webOS, Linux). The libass worker is
 // "nv-assrender" and libass's blur helper threads "nv-assblur", so they can be
 // told apart from the UI in top/ps on the TV. Elsewhere these do nothing.
 #ifndef NV_ASSFIOS_H

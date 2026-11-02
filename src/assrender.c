@@ -117,7 +117,6 @@ char *assrender_marcar_tailandes(const char *txt) {
 #include <ass/ass.h>
 #include "gfx.h"
 #include "bidi.h"
-#include "assplat.h"
 #include "assperf.h"
 #include "assfios.h"
 #if !defined(__EMSCRIPTEN__)
@@ -125,17 +124,12 @@ char *assrender_marcar_tailandes(const char *txt) {
 #include <sys/syscall.h>
 #endif
 
-#if !ASS_NOVO
-/* O caminho ANTIGO do desenho (uma textura RGBA por imagem, convertida na CPU):
- * so onde o motor novo nao roda. No .tpk e no webOS (ASS_NOVO) nada disto e
- * compilado: o caminho novo (ass_main_desenhar) e o unico. */
 #define ASS_TEX_INICIAL 64
 
 typedef struct {
   GLuint tex;
   int w, h;
 } AssTex;
-#endif
 
 
 typedef struct {
@@ -191,8 +185,8 @@ static unsigned assEpoch;
  * vez; enquanto isso o worker ja faz os seguintes, entao cabe mais de um.
  * Sem hold a fila tem teto 1 e e o comportamento de sempre. Sob assFilaTrava,
  * em ordem de pedido (ms crescente dentro de um epoch). */
-#define ASS_FILA_MAX ASSPERF_FILA_MAX             /* os numeros: assplat.h, por plataforma */
-#define ASS_FILA_BYTES ASSPERF_FILA_BYTES
+#define ASS_FILA_MAX 4
+#define ASS_FILA_BYTES (24u * 1024u * 1024u)
 static AssCpuFrame assFila[ASS_FILA_MAX];
 static int assFilaN;
 static int assFilaTeto = 1;      // 1 = como antes; ASS_FILA_MAX com hold
@@ -225,12 +219,9 @@ static ASS_Library *assLib;
 static ASS_Renderer *assRenderer;
 static ASS_Track *assTrack;
 static unsigned assTrackGeracao;
-#if !ASS_NOVO
 static AssTex *assTex;
 static int assTexCap;
-#endif
 static int assTexResetar;
-static int assTexAliviar;   // aviso de memoria (assrender_aliviar): o fio GL solta as texturas no proximo desenho; sob assFilaTrava
 static int assFrameW, assFrameH;
 /* AREA DO VIDEO. O libass desenhava num quadro 1920x1080 fixo, como se o video
  * ocupasse a tela inteira: num 4:3 uma placa em \pos(64,48) caia em x=195,
@@ -256,13 +247,11 @@ static size_t assBytesQuadro;
  * nem reenviado a GPU. */
 static unsigned assProduzidoEpoch, assProduzidoGeracao;
 static int assProduziu;
-#if !ASS_NOVO
 /* Textura: serial do quadro cujas imagens estao nas texturas e a cor usada.
  * Reenviar tudo a cada quadro (o que se fazia) custa a conversao RGBA de
  * todos os glifos 60 vezes por segundo. */
 static unsigned assTexSerial;
 static int assTexCorChave = -1;
-#endif
 /* Medidas (#92): o dono ve "atrasada e piscando"; o log precisa dizer quanto. */
 static struct {
   long quadros, trocas, renders, iguais, piscas, vaziosPisca, falas;
@@ -275,7 +264,6 @@ static struct {
 static pthread_mutex_t assDiagTrava = PTHREAD_MUTEX_INITIALIZER;
 static char assDiag[160] = "libass pronto";
 static int assGlifoMsgs;   // assperf: mensagens de glifo ausente desta faixa (sob assTrava)
-static int assQuadroMsgs;  // avisos de quadro acima do teto desta faixa (sob assTrava, so o worker escreve)
 
 static void ass_diag(const char *s) {
   pthread_mutex_lock(&assDiagTrava);
@@ -291,7 +279,7 @@ static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) 
   /* So ate MSGL_INFO (4), o mesmo corte do callback padrao do libass (que
    * para em 5). Os niveis 6-7 sao depuracao por quadro e por glifo. */
   if (nivel > 4) return;
-#if ASS_NOVO
+#ifdef NV_TPK
   /* Clean log: the "Glyph ... not found / selecting one more font / Trying
    * all charmaps" loop is three lines PER GLYPH (60+ in the 23/10 log). The
    * first 6 per track stay. */
@@ -321,30 +309,15 @@ static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) 
  * passa do teto e que a biblioteca e reiniciada por inteiro, com ass_set_fonts
  * logo depois do ass_clear_fonts — o caro fica no caso raro. */
 typedef struct { char nome[96]; size_t tam; unsigned long long amostra; } AssFonteVista;
-#define ASS_FONTES_MAX ASSPERF_FONTES_VISTAS_MAX
-#define ASS_FONTES_TETO_BYTES ASSPERF_FONTES_ACUM_BYTES
+#define ASS_FONTES_MAX 192
+#define ASS_FONTES_TETO_BYTES (96u * 1024u * 1024u)
 static AssFonteVista assFontesVistas[ASS_FONTES_MAX];
 static int assNFontesVistas;
 static size_t assBytesFontesVistas;
 static char assFallbackFont[768], assFonteLocal[768];
 static int assFonteRegistrada;
-/* assFonteLocal e assFonteRegistrada so MUDAM sob assTrava. O fio GL pergunta
- * "esta fonte esta ativa?" a cada quadro (player.c) e nao pode esperar um
- * ass_render_frame do worker, que segura assTrava: ele le a copia publicada
- * abaixo (assFonteAtiva: o caminho se registrada, senao ""), sob
- * assFonteTrava. Esta e uma folha: nada e pego com ela segurada, e quem a pega
- * ja segura assTrava (assTrava -> assFonteTrava, nunca o contrario). Quem muda
- * o par publica DEPOIS da mudanca inteira, entao o fio GL nunca ve o meio de
- * uma troca de fonte. */
-static pthread_mutex_t assFonteTrava = PTHREAD_MUTEX_INITIALIZER;
-static char assFonteAtiva[768];
-static void ass_fonte_publicar_locked(void) {
-  pthread_mutex_lock(&assFonteTrava);
-  snprintf(assFonteAtiva, sizeof assFonteAtiva, "%s", assFonteRegistrada ? assFonteLocal : "");
-  pthread_mutex_unlock(&assFonteTrava);
-}
-#define ASS_ATUAIS_MAX ASSPERF_FONTES_COPIA_MAX
-#define ASS_ATUAIS_BYTES ASSPERF_FONTES_COPIA_BYTES
+#define ASS_ATUAIS_MAX 32
+#define ASS_ATUAIS_BYTES (32u * 1024u * 1024u)
 typedef struct { char nome[256]; unsigned char *dados; size_t tam; } AssFonteAtual;
 static AssFonteAtual assFontesAtuais[ASS_ATUAIS_MAX];
 static int assNFontesAtuais, assAtuaisCompletas = 1;
@@ -476,7 +449,6 @@ static void ass_fontes_reconstruir_locked(const unsigned char *selecionada, size
     assBytesFontesVistas += f->tam;
   }
   ass_aplicar_fontes_locked();
-  ass_fonte_publicar_locked();
 }
 
 static void ass_iniciar_locked(int sistema) {
@@ -580,7 +552,6 @@ static void ass_iniciar_locked(int sistema) {
     if (b) { ass_add_font(assLib, assFonteLocal, (const char *)b, (int)n); assFonteRegistrada = 1; }
     else assFonteRegistrada = 0;
     free(b);
-    ass_fonte_publicar_locked();
   }
   ass_carregar_pasta_locked();
   snprintf(assFallbackFont, sizeof assFallbackFont, "%s", fallbackFont);
@@ -664,19 +635,15 @@ static unsigned long long ass_chave_bitmap(const unsigned char *b, int w, int h,
 }
 
 
-/* Copia as imagens do libass para memoria do app (o ASS_Image so vale ate o
- * proximo ass_render_frame). Tetos de UM quadro (assplat.h): ASSPERF_QUADRO_IMAGENS
- * imagens e ASSPERF_QUADRO_BYTES; o quadro atual e o pronto podem coexistir por
- * um instante. O que passa do teto fica DE FORA e o resto e publicado: largar o
- * quadro inteiro deixava a legenda velha na tela. Sob assTrava (o worker). */
-static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out) {
+static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out, int hashear) {
   ASS_Image *p;
-  int n, i = 0, validas = 0, fora = 0;
-  size_t total = 0, foraBytes = 0;
+  int n = 0, i = 0;
+  size_t total = 0;
   memset(out, 0, sizeof *out);
-  for (p = im; p; p = p->next)
-    if (p->bitmap && p->w > 0 && p->h > 0 && p->stride >= p->w) validas++;
-  n = validas < ASSPERF_QUADRO_IMAGENS ? validas : ASSPERF_QUADRO_IMAGENS;
+  for (p = im; p; p = p->next) {
+    if (p->bitmap && p->w > 0 && p->h > 0 && p->stride >= p->w) n++;
+    if (n > 4096) return 0;
+  }
   if (n) {
     out->images = calloc((size_t)n, sizeof *out->images);
     if (!out->images) return 0;
@@ -688,38 +655,27 @@ static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out) {
     int y;
     if (!p->bitmap || p->w <= 0 || p->h <= 0 || p->stride < p->w) continue;
     bytes = (size_t)p->w * (size_t)p->h;
-    if (i >= n || bytes > ASSPERF_QUADRO_BYTES - total) { fora++; foraBytes += bytes; continue; }
+    /* Mantem o snapshot CPU de cada frame abaixo de 16 MiB. O quadro atual e
+     * o pronto podem coexistir por um instante, portanto o teto total e 32 MiB. */
+    if (bytes > 16u * 1024u * 1024u - total) {
+      ass_frame_liberar(out); return 0;
+    }
     dst = &out->images[i];
     dst->bitmap = malloc(bytes);
     if (!dst->bitmap) { ass_frame_liberar(out); return 0; }
     dst->x = p->dst_x; dst->y = p->dst_y;
     dst->w = p->w; dst->h = p->h; dst->stride = p->w;
     dst->type = p->type; dst->color = p->color;
-    dst->chave = 0;   // ass_frame_chaves (motor novo), fora de assTrava
     for (y = 0; y < p->h; y++)
       memcpy(dst->bitmap + (size_t)y * (size_t)p->w,
              p->bitmap + (size_t)y * (size_t)p->stride, (size_t)p->w);
+    /* Texture cache key (new engine). Alpha 8-bit is tinted at draw time:
+     * the same bitmap serves any colour. */
+    dst->chave = hashear ? ass_chave_bitmap(dst->bitmap, p->w, p->h, 0u) : 0;
     total += bytes; i++;
   }
   out->count = i; out->bytes = total;
-  if (fora && assQuadroMsgs < 3) {
-    assQuadroMsgs++;
-    fprintf(stderr, "[ass] quadro acima do teto (%d imagens, teto %d imagens / %u bytes): %d imagem(ns), %zu bytes ficaram de fora; o resto e publicado\n",
-            validas, ASSPERF_QUADRO_IMAGENS, (unsigned)ASSPERF_QUADRO_BYTES, fora, foraBytes);
-  }
   return 1;
-}
-
-/* Chave de CONTEUDO de cada imagem (cache de texturas do caminho novo; o alfa
- * 8-bit e tingido no desenho, o mesmo bitmap serve a qualquer cor). Fora de
- * assTrava: o quadro e do worker e so ele toca nele, entao o hash nao segura
- * quem espera a trava (fonte, lote do mkvass, diagnostico). */
-static void ass_frame_chaves(AssCpuFrame *f) {
-  int i;
-  for (i = 0; i < f->count; i++) {
-    AssCpuImage *im = &f->images[i];
-    im->chave = ass_chave_bitmap(im->bitmap, im->w, im->h, 0u);
-  }
 }
 
 static void ass_trilha_tailandes(ASS_Track *t) {
@@ -834,37 +790,29 @@ static void ass_plain_reflow_locked(long long t) {
 }
 
 /* Styled ASS on the .tpk is drawn as the author made it (colours, border,
- * box, font of the Style sheet do NOT apply). Plain text follows the sheet as
- * always. webOS has no "Preservado pelo ASS" rows (they are the host's): there
- * what the person touched still wins over the file, as before the engine.
- * Under assTrava. */
+ * box, font of the Style sheet do NOT apply), and the size only scales the
+ * dialogue (ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE, libass's and mpv's default).
+ * Plain text follows the sheet as always. webOS has no "Preservado pelo ASS"
+ * rows (faixas.c is .tpk): there what the person touched still wins over the
+ * file, as before the engine. Under assTrava. */
 static int ass_estilo_autor_locked(void) {
   return ASS_NOVO_TPK && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
 
-/* O tamanho da pessoa (AP_ASSTAM, Subtitles > Style) so escala o DIALOGO: os
- * letreiros (\pos, \move, desenhos) ficam no tamanho do autor
- * (ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE, o padrao do libass 0.17 e do mpv).
- * E do motor, nao do host: .tpk e webOS. Texto simples segue a folha. Sob
- * assTrava. */
-static int ass_escala_dialogo_locked(void) {
-  return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
-}
-
-#if ASS_LIBASS_NV && defined(ASS_NV_API)
-/* Fios de blur do libass de tools/tpk/libass-nv: nucleos - ASSPERF_BLUR_RESERVA
- * (um fica para a UI e o video), entre ASSPERF_BLUR_FIOS_MIN e _MAX (assplat.h,
- * um bloco por plataforma). Os fios dormem fora dos blurs grandes e a saida nao
- * muda com o numero. */
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
+/* Fios de blur do libass de tools/tpk/libass-nv: nucleos - 1 (um fica para a
+ * UI e o video), de 1 a 4. Mesma regra no .tpk e no webOS, sem medir TV
+ * nenhuma: os fios dormem fora dos blurs grandes e a saida nao muda com o
+ * numero. */
 static int ass_fios_blur(void) {
-  long n = sysconf(_SC_NPROCESSORS_ONLN) - ASSPERF_BLUR_RESERVA;
-  return n < ASSPERF_BLUR_FIOS_MIN ? ASSPERF_BLUR_FIOS_MIN : n > ASSPERF_BLUR_FIOS_MAX ? ASSPERF_BLUR_FIOS_MAX : (int)n;
+  long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+  return cpus < 2 ? 1 : cpus > 5 ? 4 : (int)cpus - 1;
 }
 #endif
 
-/* The libass of tools/tpk/libass-nv (ASS_LIBASS_NV: the .tpk and webOS): NEON
- * engine, blur threads and the dialogue opacity. Under assTrava, on the worker,
- * when the options change (assperf_versao). Elsewhere nothing. */
+/* The libass of tools/tpk/libass-nv (the .tpk and webOS): NEON engine, cores - 1
+ * blur threads and the dialogue opacity. Under assTrava, on the worker, when the
+ * options change (assperf_versao). Elsewhere nothing. */
 static unsigned assApVersao = ~0u;
 static int assApSimples = -1;
 static void ass_aplicar_assperf_locked(void) {
@@ -872,7 +820,7 @@ static void ass_aplicar_assperf_locked(void) {
   int simples = __atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
   if (!assRenderer || (v == assApVersao && simples == assApSimples)) return;
   assApVersao = v; assApSimples = simples;
-#if ASS_LIBASS_NV && defined(ASS_NV_API)
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
   { static int feito;
     if (!feito) {
       /* The blur helper threads are born inside libass and inherit the
@@ -884,9 +832,9 @@ static void ass_aplicar_assperf_locked(void) {
       ass_nv_set_threads(ass_fios_blur());
       assfios_nome_voltar(nomeAnt);
     } }
-  /* Dialogue opacity (Subtitles > Style, ASS_OPCOES): only lines without \pos,
-   * \move, \clip, \org or a drawing; the signs keep the author's alpha. The
-   * default (100 %) is 255 = untouched. */
+  /* Dialogue opacity (Subtitles > Style): only lines without \pos, \move,
+   * \clip, \org or a drawing; the signs keep the author's alpha. On webOS
+   * nothing sets it: assperf_get gives the default (100 %, 255 = untouched). */
   ass_nv_set_dialogue_alpha(assRenderer, simples ? 255 : (assperf_get(AP_ASSOPAC) * 255 + 50) / 100);
 #endif
 }
@@ -925,7 +873,7 @@ static void *ass_worker_loop(void *unused) {
     struct timespec a, b, c0;
     ASS_Image *images = NULL;
     int changed = 0, pronto = 0, igual = 0, seq = 0;
-    long long validoDe = LLONG_MAX, validoAte = LLONG_MAX, inicioMax = -1;
+    long long validoDe = LLONG_MAX, validoAte = LLONG_MAX;
     memset(&frame, 0, sizeof frame);
     pthread_mutex_lock(&assFilaTrava);
     while (!assWorkerParar && !assPedidoPendente)
@@ -994,7 +942,7 @@ static void *ass_worker_loop(void *unused) {
         if (ass_estilo_autor_locked()) ps.overrides = 0;   // estilos do autor de volta
         ass_plain_style_locked(&ps);
       }
-      if (ass_escala_dialogo_locked())
+      if (ass_estilo_autor_locked())
         ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
       ass_plain_reflow_locked(t);
       ass_pod_devolver_assTrava();   // seek para tras alem da poda: as falas voltam antes do render
@@ -1008,11 +956,6 @@ static void *ass_worker_loop(void *unused) {
           if (assTrack->events[i].Start > t && assTrack->events[i].Start < prox) prox = assTrack->events[i].Start;
         __atomic_store_n(&assProxInicio, prox, __ATOMIC_RELAXED); }
 #endif
-      /* UMA varredura dos eventos por render, sob assTrava (eram tres; o .mks
-       * do dono tem mais de 30 mil falas): a previsao da cena pesada, a
-       * validade do quadro (assValidoAte) e o maior Start vivo (inicioMax). O
-       * strlen so corre nos eventos da janela da previsao, e a deteccao de
-       * animacao (varre o texto) para no primeiro evento que anima. */
       /* CENA PESADA PREVISTA (dono 26/10): o que comeca no proximo segundo ja
        * esta na faixa (a colheita vai a frente). No .mks do dono: celular
        * (22:13) 377-1228 falas e 130-440 mil caracteres por segundo; desenhos
@@ -1021,48 +964,48 @@ static void *ass_worker_loop(void *unused) {
       /* Also the second starting 0.5 s ahead: render resolution Auto drops to
        * 75 % that much before a busy scene, so its full redraw happens just
        * before the scene instead of in its first frames (owner 27/10). */
-      { int i, nIni = 0, nImg = 0, nIniC = 0, anima = 0; long chars = 0, charsC = 0; const ASS_Image *im;
+      if (ASS_NOVO) { int i, nIni = 0, nImg = 0, nIniC = 0; long chars = 0, charsC = 0; const ASS_Image *im;
         for (i = 0; i < assTrack->n_events; i++) {
           const ASS_Event *ev = &assTrack->events[i];
-          long long ini = ev->Start, fimE = ev->Start + ev->Duration;
-          if (ASS_NOVO && ini >= t && ini < t + 1500) {   /* previsao: o texto so conta dentro da janela */
-            long n = ev->Text ? (long)strlen(ev->Text) : 0;
-            if (ini < t + 1000) { nIni++; chars += n; }
-            if (ini >= t + 500) { nIniC++; charsC += n; }
-          }
-          if (ini > t) {   /* ainda nao comecou: o quadro vale ate o primeiro inicio */
-            if (ASS_NOVO && ini < validoAte) validoAte = ini;
-          } else if (fimE > t) {   /* vivo agora */
-            if (ASS_NOVO) {
-              if (fimE < validoAte) validoAte = fimE;
-              if (!anima && ass_evento_anima(ev)) anima = 1;
-            }
-            if (ini > inicioMax) inicioMax = ini;
-          }
+          long n;
+          if (ev->Start < t || ev->Start >= t + 1500) continue;   /* text length only inside the window */
+          n = ev->Text ? (long)strlen(ev->Text) : 0;
+          if (ev->Start < t + 1000) { nIni++; chars += n; }
+          if (ev->Start >= t + 500) { nIniC++; charsC += n; }
         }
-        if (ASS_NOVO) {
-          for (im = images; im; im = im->next) nImg++;
-          assperf_previsao(nIni, chars, nImg, nIniC, charsC);
-          /* assperf: ate quando este quadro continua certo (ver assValidoAte). */
-          validoDe = t;
-          if (anima) validoAte = t;   // animando: cada quadro e outro
-        } }
+        for (im = images; im; im = im->next) nImg++;
+        assperf_previsao(nIni, chars, nImg, nIniC, charsC); }
+      /* assperf: ate quando este quadro continua certo (ver assValidoAte). */
+      if (ASS_NOVO) {
+        int i, anima = 0;
+        for (i = 0; i < assTrack->n_events && !anima; i++) {
+          const ASS_Event *ev = &assTrack->events[i];
+          long long ini = ev->Start, fimE = ev->Start + ev->Duration;
+          if (ini > t) { if (ini < validoAte) validoAte = ini; }
+          else if (fimE > t) { if (fimE < validoAte) validoAte = fimE; if (ass_evento_anima(ev)) anima = 1; }
+        }
+        validoDe = t;
+        if (anima) validoAte = t;   // animando: cada quadro e outro
+      }
       /* Igual ao publicado: nada a fazer, o quadro em tela continua certo. */
       pthread_mutex_lock(&assFilaTrava);
       igual = !changed && assProduziu && assProduzidoEpoch == epoch &&
               assProduzidoGeracao == generation && epoch == assEpoch;
       pthread_mutex_unlock(&assFilaTrava);
       if (!igual) {
-        pronto = ass_frame_copiar(images, &frame);
-        frame.ms = t; frame.inicioMax = inicioMax;
+        pronto = ass_frame_copiar(images, &frame, ASS_NOVO);
+        frame.ms = t; frame.inicioMax = -1;
         frame.ox = ox; frame.oy = oy; frame.k = k;
         frame.esc = (float)((double)k * resol);
+        { int i;
+          for (i = 0; i < assTrack->n_events; i++) {
+            long long ini = assTrack->events[i].Start;
+            if (ini <= t && ini + assTrack->events[i].Duration > t && ini > frame.inicioMax)
+              frame.inicioMax = ini;
+          } }
       }
     }
     pthread_mutex_unlock(&assTrava);
-    /* O hash das imagens (motor novo) fora de assTrava; conta no custo do
-     * render (b depois dele), como antes. */
-    if (ASS_NOVO && pronto) ass_frame_chaves(&frame);
     clock_gettime(CLOCK_MONOTONIC, &b);
     if (ASS_NOVO && pronto) assperf_escala_custo(ass_ms_entre(&c0, &b));
 
@@ -1124,7 +1067,6 @@ static int ass_worker_iniciar(void) {
   return ok;
 }
 
-#if !ASS_NOVO
 static void ass_apagar_texturas_locked(void) {
   int i;
   for (i = 0; i < assTexCap; i++) {
@@ -1197,33 +1139,30 @@ static GLuint ass_textura_locked(int slot, const AssCpuImage *im) {
   assTex[slot].w = im->w; assTex[slot].h = im->h;
   return assTex[slot].tex;
 }
-#endif
 
-#if ASS_NOVO   /* .tpk e webOS (e os testes de computador com NV_ASS_NOVO); fora disso nada disto e compilado */
+#if ASS_NOVO   /* only built where it runs (.tpk, webOS): off it, nothing of this is used */
 /* ===== O CAMINHO NOVO DO DESENHO (fio GL, ASS_NOVO) =========================
  *
- * O caminho antigo (RGBA por pixel, assAtual + assTex) e o do motor antigo
- * (fora do .tpk e do webOS), e so la e compilado. Este:
+ * O caminho antigo (acima, assAtual + assTex) e o de fora do .tpk e do webOS. Este:
  *   - Alpha 8-bit: a textura e o bitmap do libass como veio (GL_ALPHA, 1 byte
  *     por pixel, sem a conversao RGBA por pixel na CPU); a cor e a opacidade
  *     da imagem vao no desenho (GFX_MARCA: forma do alfa, cor de uCor).
  *   - Cache de texturas pela CHAVE do conteudo: um letreiro que nao mudou nao
- *     sobe de novo, nem depois de um seek. Uma textura so e regravada depois de
- *     ASS_TC_RECICLA quadros sem ser desenhada (a GPU ainda pode le-la).
+ *     sobe de novo. Uma textura so e regravada depois de ASS_TC_RECICLA
+ *     quadros sem ser desenhada (a GPU ainda pode le-la).
  *   - Upload fora da trava: o quadro em tela (assMain) e do fio GL; o upload
  *     corre sem assFilaTrava, que o worker precisa para pegar o proximo pedido.
- * Quem invalida de outro fio (troca de faixa, documento, fonte, geracao) liga
- * assTexResetar, como sempre; o fio GL entao solta assMain e as texturas. O
- * seek so solta assMain; o aviso de memoria (assTexAliviar) so as texturas. */
+ * Quem invalida de outro fio (troca de faixa, seek, geracao) liga
+ * assTexResetar, como sempre; o fio GL entao solta assMain e as texturas. */
 typedef struct {
   GLuint tex;
   int w, h;
   unsigned long long chave;
   unsigned uso;          // assGlQuadro do ultimo desenho
 } AssTc;
-#define ASS_TC_TETO ASSPERF_TC_TETO
-#define ASS_TC_BYTES ASSPERF_TC_BYTES
-#define ASS_TC_RECICLA ASSPERF_TC_RECICLA
+#define ASS_TC_TETO 768
+#define ASS_TC_BYTES (24u * 1024u * 1024u)
+#define ASS_TC_RECICLA 2u
 static AssTc *assTc;
 static int assTcN, assTcCap;
 static size_t assTcBytes;
@@ -1234,7 +1173,6 @@ static GLuint *assMainTex;       // textura de cada imagem do assMain
 static int *assMainIdx;          // e o indice dela em assTc
 static int assMainTexCap, assMainEnviado;
 static int assMainResetar;       // assrender_aplicar_invalidacao consumiu um assTexResetar
-static int assMainAliviar;       // ... ou um assTexAliviar: so as texturas saem, o quadro em tela fica
 
 static size_t ass_tc_tam(int w, int h) { return (size_t)w * (size_t)h; }
 
@@ -1511,7 +1449,7 @@ static unsigned long long *assPodH;
 static int assPodN, assPodCap;
 static long long assPodaLimite = LLONG_MIN;   // ate onde a poda tirou falas (ms)
 static int assPodaVoltar;                     // desenho -> worker: devolver as falas podadas
-#define ASS_POD_MAX ASSPERF_POD_MAX   // ~2-3 MB de texto no pior caso; as mais antigas saem
+#define ASS_POD_MAX 4000   // ~2-3 MB de texto no pior caso; as mais antigas saem
 static int ass_pod_guardar(const ASS_Event *e, unsigned long long h) {
   if (assPodN >= ASS_POD_MAX) {
     free(assPod[0].Name); free(assPod[0].Effect); free(assPod[0].Text); free(assPod[0].render_priv);
@@ -1795,7 +1733,7 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
 
 int assrender_carregar(const char *corpo, size_t tamanho, unsigned geracao) {
   pthread_mutex_lock(&assTrava);
-  assGlifoMsgs = 0; assQuadroMsgs = 0;
+  assGlifoMsgs = 0;
   pthread_mutex_unlock(&assTrava);
   return ass_carregar(corpo, tamanho, geracao, 0, 0);
 }
@@ -1887,7 +1825,6 @@ int assrender_fonte_local_transacao(const char *caminho, int (*confirmar)(void *
     snprintf(assFonteLocal, sizeof assFonteLocal, "%s", caminho);
     if (assLib) ass_fontes_reconstruir_locked(b, n);
     else assFonteRegistrada = 0;
-    ass_fonte_publicar_locked();
   }
   free(b);
   pthread_mutex_unlock(&assTrava);
@@ -1901,12 +1838,9 @@ int assrender_fonte_local_transacao(const char *caminho, int (*confirmar)(void *
   return 1;
 }
 int assrender_fonte_local_ativa(const char *caminho) {
-  /* Fio GL, a cada quadro: so assFonteTrava (ver assFonteAtiva), nunca assTrava,
-   * que o worker segura durante o ass_render_frame inteiro. */
-  int ativa;
-  pthread_mutex_lock(&assFonteTrava);
-  ativa = caminho && caminho[0] && !strcmp(assFonteAtiva, caminho);
-  pthread_mutex_unlock(&assFonteTrava);
+  pthread_mutex_lock(&assTrava);
+  int ativa = caminho && caminho[0] && assFonteRegistrada && !strcmp(assFonteLocal, caminho);
+  pthread_mutex_unlock(&assTrava);
   return ativa;
 }
 
@@ -1999,18 +1933,7 @@ void assrender_limpar_fontes(void) {
 // ass_set_fonts (bitmap/composite/outline/font/metrics + fontselect
 // refeito, o que tambem encerra o loop de fallback). Custa uma releitura
 // da pasta de fontes; aceitavel porque so roda no aviso.
-// O que e do app (nao do libass) tambem sai: a fila de quadros prontos (CPU,
-// ate ASSPERF_FILA_BYTES) e as texturas (o fio GL as solta no proximo desenho,
-// assTexAliviar). O quadro EM TELA fica, entao a legenda nao pisca; o desenho
-// pede o instante de novo (epoch novo, sem ultimo pedido) e o worker refaz o
-// que a fila tinha. Primeiro assFilaTrava sozinha, depois assTrava: nunca
-// aninhadas aqui (o worker pega assFilaTrava com assTrava na mao).
 void assrender_aliviar(void) {
-  pthread_mutex_lock(&assFilaTrava);
-  ass_fila_limpar_locked();
-  ++assEpoch; assTemUltimoPedido = 0;
-  assTexAliviar = 1;
-  pthread_mutex_unlock(&assFilaTrava);
   pthread_mutex_lock(&assTrava);
   if (assRenderer) ass_aplicar_fontes_locked();
   pthread_mutex_unlock(&assTrava);
@@ -2048,7 +1971,6 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
         } else assFonteRegistrada = 0;
         ass_carregar_pasta_locked();
         ass_aplicar_fontes_locked();
-        ass_fonte_publicar_locked();
         assNFontesVistas = 0; assBytesFontesVistas = 0;
       }
       ass_add_font(assLib, nome, (const char *)dados, (int)tamanho);
@@ -2104,18 +2026,9 @@ void assrender_aplicar_invalidacao(void) {
   pthread_mutex_lock(&assFilaTrava);
   if (assTexResetar) {
     assTexResetar = 0;
-#if !ASS_NOVO
     ass_apagar_texturas_locked();
-#else
-    assMainResetar = 1;   // o caminho novo solta o quadro e as texturas dele
-#endif
-  }
-  if (assTexAliviar) {
-    assTexAliviar = 0;
-#if !ASS_NOVO
-    ass_apagar_texturas_locked();
-#else
-    assMainAliviar = 1;
+#if ASS_NOVO
+    assMainResetar = 1;   // o caminho novo tambem solta o quadro e as texturas dele
 #endif
   }
   pthread_mutex_unlock(&assFilaTrava);
@@ -2145,11 +2058,9 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
       assMed.falas++; assMed.atrasoSoma += atraso;
       if (atraso > assMed.atrasoMax) assMed.atrasoMax = atraso;
       /* Uma linha por fala que entra: Start do evento, quando apareceu no
-       * relogio do video, e a diferenca. E a medida do "atrasada". So no
-       * motor antigo: com o motor novo (.tpk, webOS) os letreiros quadro a
-       * quadro comecam centenas de linhas por segundo, e o printf de uma
-       * linha (stdout e line-buffered: um write) estaria no fio GL. */
-#if !ASS_NOVO
+       * relogio do video, e a diferenca. E a medida do "atrasada". Not on the
+       * .tpk: frame-by-frame signs start hundreds of lines a second. */
+#ifndef NV_TPK
       printf("[ass] fala %lld.%03lld apareceu em %lld.%03lld (%+lld ms)\n",
              inicioMax / 1000, inicioMax % 1000, agora / 1000, agora % 1000, atraso);
 #endif
@@ -2165,7 +2076,7 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
              assMed.renders ? assMed.renderSomaUs / 1000.0 / assMed.renders : 0.0,
              assMed.renderMaxUs / 1000.0, assMed.piscas, assMed.vaziosPisca, assMed.falas,
              assMed.falas ? assMed.atrasoSoma / assMed.falas : 0, assMed.atrasoMax, assEventos);
-    /* Sem fflush: o stdout e line-buffered (main.c) e este e o fio GL. */
+    fflush(stdout);
     assMed.quadros = assMed.trocas = assMed.renders = assMed.iguais = 0;
     assMed.piscas = assMed.vaziosPisca = assMed.falas = 0;
     assMed.renderSomaUs = assMed.renderMaxUs = 0;
@@ -2210,10 +2121,7 @@ static int assParadoN;                // chamadas seguidas com o mesmo `agora`
 int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
                        float x, float y, float w, float h) {
   unsigned generation;
-  int i, n = 0, reset, aliviar, segurar, saltou = 0, quadroNovo = 0;
-#if !ASS_NOVO
-  int corChave, reenviar;
-#endif
+  int i, n = 0, reset, corChave, reenviar, segurar, saltou = 0, quadroNovo = 0;
   int corAtiva, cr, cg, cb, adiante = 0;
   long long agora, pedido;
   AssCpuFrame novo;
@@ -2244,7 +2152,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       /* Cena leve com quadros caros (mascaras do polegar: 50-65 ms no log 15):
        * 3 quadros a frente, senao dois seguidos chegam um quadro tarde. */
       { double pico; __atomic_load(&assRenderPico, &pico, __ATOMIC_RELAXED);
-        if (pico > ASSPERF_PICO_CARO_MS && q < ASSPERF_QUADROS_CAROS) q = ASSPERF_QUADROS_CAROS; }
+        if (pico > 40.0 && q < 3) q = 3; }
       pedido = ass_na_grade(agora + llround((double)q * 1000.0 / fps));
     } else pedido = ass_na_grade(agora + adiante); }
   pthread_mutex_lock(&assFilaTrava);
@@ -2320,22 +2228,20 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
       assMed.trocas++;
     } }
   reset = assTexResetar; assTexResetar = 0;
-  aliviar = assTexAliviar; assTexAliviar = 0;
   corAtiva = assCorAtiva; cr = assCorR; cg = assCorG; cb = assCorB;   // read under the lock (new path)
   assUltimoVistoMs = (double)pedido; assUltimoVistoGeracao = generation;
 #if !ASS_NOVO
   (void)corAtiva; (void)cr; (void)cg; (void)cb; (void)saltou;
 #endif
 
-#if !ASS_NOVO
-  {
+  if (!ASS_NOVO) {
     /* ---- o caminho de sempre (fora do .tpk e do webOS) ---- */
     if (quadroNovo) {
       ass_frame_liberar(&assAtual);
       assAtual = novo; memset(&novo, 0, sizeof novo);
       assAtualValido = 1;
     }
-    if (reset || aliviar) ass_apagar_texturas_locked();
+    if (reset) ass_apagar_texturas_locked();
     if (!assAtualValido) {
       ass_medir_locked(agora, 0, -1);
       pthread_mutex_unlock(&assFilaTrava);
@@ -2366,28 +2272,16 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     ass_medir_locked(agora, n > 0, assAtual.inicioMax);
     pthread_mutex_unlock(&assFilaTrava);
   }
-#else
-  {
+#if ASS_NOVO
+  else {
     /* ---- o caminho novo: upload e desenho fora da trava ---- */
     long long inicioMax;
     int temTexto;
     pthread_mutex_unlock(&assFilaTrava);
-    if (reset || assMainResetar) {
-      /* Faixa, documento ou fonte novos: o quadro e as texturas saem. */
+    if (reset || saltou || assMainResetar) {
       ass_main_soltar();
       ass_tc_apagar();
       assMainResetar = 0;
-    } else if (saltou) {
-      /* Seek: so o quadro em tela sai. O cache de texturas e pelo CONTEUDO
-       * (chave do bitmap) e limitado (ASSPERF_TC_*): continua valido, e a
-       * legenda que volta depois do seek nao sobe de novo para a GPU. */
-      ass_main_soltar();
-    }
-    if (aliviar || assMainAliviar) {
-      /* Aviso de memoria (assrender_aliviar): as texturas saem; o quadro em
-       * tela fica e sobe de novo agora (assMainEnviado 0), sem piscar. */
-      ass_tc_apagar();
-      assMainAliviar = 0;
     }
     if (assMainValido && assMain.generation != generation) ass_main_soltar();
     if (quadroNovo) {
