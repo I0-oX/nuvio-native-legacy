@@ -108,9 +108,11 @@ size_t assperf_fontes_teto(void) {
    * dinamica bajaba a 16-30 MB con el video abierto y las rechazaba. */
   return (size_t)64 * 1024u * 1024u;
 #elif defined(NV_WEBOS)
-  /* webOS: fixed 64 MB, same as the .tpk. When free memory leaves no headroom
-   * (under 128 MB), fall back to 1/8 of the free memory, clamped to 16..64 MB:
-   * the attachments block is one malloc and must not exhaust the TV. */
+  /* webOS: fixed 64 MB, same as the .tpk. When free memory is under 128 MB the
+   * cap drops to 1/8 of the free memory (floor 16 MB). This is ONLY an
+   * acceptance limit, checked in mkvass.c after the header is read and before
+   * the attachments Range is requested. It does not reserve memory, does not
+   * guard against OOM, and mkvass keeps a 16 MB floor of its own. */
   long pag = sysconf(_SC_AVPHYS_PAGES), tam = sysconf(_SC_PAGESIZE);
   unsigned long long livre = pag > 0 && tam > 0 ? (unsigned long long)pag * (unsigned long long)tam : 0;
   if (livre >= (128ull << 20)) return (size_t)64 * 1024u * 1024u;
