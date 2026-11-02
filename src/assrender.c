@@ -799,6 +799,13 @@ static int ass_estilo_autor_locked(void) {
   return ASS_NOVO_TPK && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
 
+/* Escalado solo del diálogo (Tamaño): vale en .tpk y webOS, porque es el motor
+ * y no la política de estilos. Los estilos del autor (ass_estilo_autor_locked)
+ * siguen siendo solo del .tpk: en webOS lo que la persona tocó gana. Sob assTrava. */
+static int ass_escala_dialogo_locked(void) {
+  return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
+}
+
 #if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
 /* Fios de blur do libass de tools/tpk/libass-nv: nucleos - 1 (um fica para a
  * UI e o video), de 1 a 4. Mesma regra no .tpk e no webOS, sem medir TV
@@ -946,7 +953,7 @@ static void *ass_worker_loop(void *unused) {
         if (ass_estilo_autor_locked()) ps.overrides = 0;   // estilos do autor de volta
         ass_plain_style_locked(&ps);
       }
-      if (ass_estilo_autor_locked())
+      if (ass_escala_dialogo_locked())
         ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
       ass_plain_reflow_locked(t);
       ass_pod_devolver_assTrava();   // seek para tras alem da poda: as falas voltam antes do render
