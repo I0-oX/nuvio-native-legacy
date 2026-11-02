@@ -1,6 +1,6 @@
 # libass for the Samsung .tpk (libass 0.17.5 + patches)
 
-Only the .tpk uses this. webOS, the .wgt and Android keep their own libass.
+The .tpk and webOS build this libass (tools/build-ass-arm.sh for webOS). The .wgt and Android keep their own libass.
 
 | Patch | What it does |
 |---|---|

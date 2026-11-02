@@ -13,8 +13,9 @@
 //
 // THE .wgt AND ANDROID DO NOT CHANGE. assrender.c is shared: there ASS_NOVO is
 // 0 and assperf_get returns 0, the behaviour from before 23/10. webOS has the
-// engine (ASS_NOVO = 1) with the options at their defaults and no sheet in
-// Subtitles > Style for them: see ASS_NOVO_TPK below for what stays out.
+// engine (ASS_NOVO = 1) and the Subtitles > Style rows for ASS tracks (faixas.c);
+// contrast and gamma are hidden there (calibrated on the Samsung picture).
+// See ASS_NOVO_TPK below for what stays Samsung-only.
 //
 // BLUR: libass's own, on the CPU (NEON, 3 threads). A GPU blur was tried on
 // the S95C (24-27/10) and removed: CPU only was faster and lighter there.
@@ -43,9 +44,9 @@
  *     touched in the Style bar still wins over the file, as before;
  *   - relay blocks parked ahead: the relay is the .tpk's local mkvfix server
  *     (video_tpk.c); webOS plays the file itself, so no block ever arrives;
- *   - attached fonts up to 64 MB: kept at 16 MB, the cap the webOS builds
- *     always had. 64 MB read into the memory of a 32-bit TV was never
- *     measured there.
+ *   - attached fonts: 64 MB fixed on the .tpk; on webOS 64 MB too, falling back
+ *     to 1/8 of the free memory (16..64 MB) under 128 MB free. This is only an
+ *     acceptance limit: it does not reserve memory and does not guard against OOM.
  * The frame grid, the picture sync, the GPU queue limit and the subtitle
  * edge (legimagem.c, telalag.c, tpkborda.c) are .tpk files and stay so. */
 #if defined(NV_TPK) || defined(NV_WEBOS) || defined(NV_ASS_NOVO)
@@ -83,8 +84,8 @@ void assperf_restaurar(void);
 unsigned assperf_versao(void);
 
 // Fixed values of the engine (0 / the old value where ASS_NOVO is 0). The attached
-// fonts cap is a function: on the .tpk and on webOS 1/8 of the memory free when
-// the file is read, clamped to 16..64 MB; 16 MB elsewhere.
+// fonts cap is a function: 64 MB fixed on the .tpk; on webOS 64 MB, or 1/8 of the
+// free memory (16..64 MB) under 128 MB free; 16 MB elsewhere.
 size_t assperf_fontes_teto(void);
 #define ASSPERF_FONTES_TETO assperf_fontes_teto()   // attached fonts, bytes
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead

@@ -808,10 +808,9 @@ static int ass_escala_dialogo_locked(void) {
 }
 
 #if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
-/* Fios de blur do libass de tools/tpk/libass-nv: nucleos - 1 (um fica para a
- * UI e o video), de 1 a 4. Mesma regra no .tpk e no webOS, sem medir TV
- * nenhuma: os fios dormem fora dos blurs grandes e a saida nao muda com o
- * numero. */
+/* Fios de blur do libass de tools/tpk/libass-nv. .tpk: 3 fixos (medido na S95C).
+ * webOS: nucleos - 1, de 1 a 4 (sem medir TV ainda). Os fios dormem fora dos
+ * blurs grandes e a saida nao muda com o numero. */
 static int ass_fios_blur(void) {
 #ifdef NV_TPK
   return 3;   /* S95C: valor medido; no depende de los nucleos en linea. */

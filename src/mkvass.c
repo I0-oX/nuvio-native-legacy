@@ -3494,6 +3494,9 @@ static void relayLimpar(void) {
 }
 
 static void relayLigar(Fio *f, int ligar) {
+#ifndef NV_TPK
+  (void)f; (void)ligar; return;   /* relay so no .tpk */
+#endif
   pthread_mutex_lock(&relayTrava);
   if (ligar) {
     if (relayDono) soltarEstado(relayDono);
@@ -3534,6 +3537,10 @@ static int relayDrenar(Fio *f, double pos, int *urgente) {
   RelayBloco loc[256];
   int n = 0, i, usados = 0, fonte;
   *urgente = 0;
+#ifndef NV_TPK
+  /* O relay e so do .tpk (mkvfix.c): fora dele nao ha bloco para drenar. */
+  (void)pos; return 0;
+#endif
   if (!f->pontos || f->varredura || f->imagem || f->faixa != __atomic_load_n(&relayFaixa, __ATOMIC_ACQUIRE)) {
     if (f->varredura || f->imagem) relayLimpar();
     return 0;

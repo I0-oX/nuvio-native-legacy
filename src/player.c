@@ -5535,8 +5535,8 @@ static double escalaFonteAss(void) {
   int pct = legEstilo.tamanho;
 #if defined(NV_TPK) || defined(NV_WEBOS)
   /* Styled ASS on the .tpk and webOS: its own dialogue size (Subtitles > Style),
-   * 100 % = as authored. .tpk: libass scales only the dialogue (selective font
-   * scale); webOS has no authored styles (ASS_NOVO_TPK), so libass scales the lot. */
+   * 100 % = as authored. .tpk and webOS: libass scales only the dialogue
+   * (selective font scale, ass_escala_dialogo_locked); signs keep their size. */
   if (ASS_NOVO) return assperf_get(AP_ASSTAM) / 100.0;
 #endif
   if (pct < TXT_LEG_PCT_MIN) pct = TXT_LEG_PCT_MIN;
