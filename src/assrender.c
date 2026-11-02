@@ -343,7 +343,7 @@ static void ass_atual_guardar_locked(const char *nome, const void *dados, size_t
   }
   unsigned char *copia = NULL;
   if (strlen(nome) < sizeof assFontesAtuais[0].nome && assNFontesAtuais < ASS_ATUAIS_MAX &&
-      n <= ASS_ATUAIS_BYTES - assBytesAtuais) copia = malloc(n);
+      assBytesAtuais <= ASS_ATUAIS_BYTES && n <= ASS_ATUAIS_BYTES - assBytesAtuais) copia = malloc(n);
   if (!copia) {
     ass_atuais_limpar_locked(); assAtuaisCompletas = 0;
     return; /* Keep the original renderer path; never replay a partial batch. */
