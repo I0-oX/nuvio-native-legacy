@@ -1970,7 +1970,6 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
   pthread_mutex_lock(&assTrava);
   ass_iniciar_locked(1);
   if (assLib) {
-    ass_atual_guardar_locked(nome, dados, tamanho);
     unsigned long long am = ass_amostra_fonte((const unsigned char *)dados, tamanho);
     int i, visto = 0;
     for (i = 0; i < assNFontesVistas; i++)
@@ -1982,8 +1981,11 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
        * logo apos o ass_clear_fonts, que e o par que mantem a conta do
        * ass_start_frame coerente. Nao ha faixa sendo desenhada com fonte
        * velha: adicionar fonte so acontece antes de carregar o documento. */
-      if (assNFontesVistas >= ASS_FONTES_MAX ||
-          assBytesFontesVistas + tamanho > ASS_FONTES_TETO_BYTES) {
+      int reiniciar = ((assNFontesVistas >= ASS_FONTES_MAX ||
+                        assBytesFontesVistas + tamanho > ASS_FONTES_TETO_BYTES) &&
+                       assNFontesVistas > assNFontesAtuais) ||
+                      assNFontesVistas >= ASS_VISTAS_CAP;
+      if (reiniciar) {
         ass_clear_fonts(assLib);
         // ass_clear_fonts removes every memory face, including the imported
         // device-local selection. Restore it before attachments and system
@@ -2007,14 +2009,17 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
           v->tam = f->tam; v->amostra = ass_amostra_fonte(f->dados, f->tam);
           assBytesFontesVistas += f->tam;
         }
-        ass_aplicar_fontes_locked();
       }
       ass_add_font(assLib, nome, (const char *)dados, (int)tamanho);
-      { AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
+      if (assNFontesVistas < ASS_VISTAS_CAP) {   /* never write past the array */
+        AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
         snprintf(v->nome, sizeof v->nome, "%s", nome);
-        v->tam = tamanho; v->amostra = am; }
+        v->tam = tamanho; v->amostra = am;
+      }
       assBytesFontesVistas += tamanho;
+      if (reiniciar) ass_aplicar_fontes_locked();
     }
+    ass_atual_guardar_locked(nome, dados, tamanho);
     assFontes++;
   }
   { int ok = assLib != NULL; pthread_mutex_unlock(&assTrava); return ok; }
