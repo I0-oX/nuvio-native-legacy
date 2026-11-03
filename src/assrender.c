@@ -831,9 +831,9 @@ static int ass_fios_blur(void) {
 }
 #endif
 
-/* The libass of tools/tpk/libass-nv (the .tpk and webOS): NEON engine, cores - 1
- * blur threads and the dialogue opacity. Under assTrava, on the worker, when the
- * options change (assperf_versao). Elsewhere nothing. */
+/* The libass of tools/tpk/libass-nv (the .tpk and webOS): NEON engine, 3 blur
+ * threads (webOS: 1 below 4 cores) and the dialogue opacity. Under assTrava,
+ * on the worker, when the options change (assperf_versao). Elsewhere nothing. */
 static unsigned assApVersao = ~0u;
 static int assApSimples = -1;
 static void ass_aplicar_assperf_locked(void) {
