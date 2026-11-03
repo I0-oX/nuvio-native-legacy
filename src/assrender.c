@@ -817,23 +817,14 @@ static int ass_escala_dialogo_locked(void) {
 }
 
 #if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
-/* Fios de blur do libass de tools/tpk/libass-nv. .tpk: 3 fixos (medido na S95C).
- * webOS: 3 fios; 1 fio se a TV tiver menos de 4 nucleos online. Os fios dormem
- * fora dos blurs grandes e a saida nao muda com o numero. Valor de webOS ainda
- * sem medida na LG. */
-static int ass_fios_blur(void) {
-#ifdef NV_TPK
-  return 3;   /* S95C: valor medido; nao depende dos nucleos. */
-#else
-  long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-  if (cpus >= 4) return 3;   /* 3 fios, como o .tpk */
-  return 1;                  /* respaldo: menos de 4 nucleos -> 1 fio */
-#endif
-}
+/* Fios de blur do libass de tools/tpk/libass-nv: 3 no .tpk (medido na S95C) e
+ * no webOS (mesmo valor; sem medida na LG ainda). Os fios dormem fora dos blurs
+ * grandes e a saida nao muda com o numero. */
+static int ass_fios_blur(void) { return 3; }
 #endif
 
 /* The libass of tools/tpk/libass-nv (the .tpk and webOS): NEON engine, 3 blur
- * threads (webOS: 1 below 4 cores) and the dialogue opacity. Under assTrava,
+ * threads (webOS too) and the dialogue opacity. Under assTrava,
  * on the worker, when the options change (assperf_versao). Elsewhere nothing. */
 static unsigned assApVersao = ~0u;
 static int assApSimples = -1;
