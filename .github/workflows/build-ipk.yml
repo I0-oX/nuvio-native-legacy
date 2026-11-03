@@ -146,13 +146,13 @@ jobs:
       # only): a prerelease tagged with the commit, shared by the .tpk and .ipk
       # workflows (whichever finishes first creates it, the other adds files).
       - name: Publish libass test prerelease
-        if: github.ref == 'refs/heads/libass-engine-rewrite-tizen'
+        if: github.ref == 'refs/heads/libass-engine-rewrite-tizen' || github.ref == 'refs/heads/feat/libass-lg'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="libass-${GITHUB_SHA::7}"
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
             --title "libass performance build ${GITHUB_SHA::7} (Tizen + webOS)" \
-            --notes "Performance build of the subtitle engine (patched libass: ARMv7 NEON engine, blur threads = cores - 1; new ASS draw path on webOS) for Samsung .tpk and LG webOS .ipk. Prerelease for testing on TVs." \
+            --notes "Performance build of the subtitle engine (patched libass: ARMv7 NEON engine, 3 blur threads on the .tpk and webOS with 4+ cores, 1 below; new ASS draw path on webOS) for Samsung .tpk and LG webOS .ipk. Prerelease for testing on TVs." \
             || gh release view "$tag" >/dev/null   # the other workflow created it first
           gh release upload "$tag" build/ipk/*.ipk --clobber
