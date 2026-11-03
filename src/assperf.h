@@ -83,11 +83,23 @@ void assperf_restaurar(void);
 // Changes with every assperf_definir (the worker re-applies).
 unsigned assperf_versao(void);
 
-// Fixed values of the engine (0 / the old value where ASS_NOVO is 0). The attached
-// fonts cap is a function: 64 MB fixed on the .tpk; on webOS 64 MB, or 1/8 of the
-// free memory (16..64 MB) under 128 MB free; 16 MB elsewhere.
-size_t assperf_fontes_teto(void);
-#define ASSPERF_FONTES_TETO assperf_fontes_teto()   // attached fonts, bytes
+// Attached fonts cap (bytes). 64 MB on the .tpk; on webOS 64 MB, or the 16 MB
+// floor while free memory is under 128 MB. It is inline so the host tests that
+// compile mkvass.c need no assperf.c. Acceptance limit only, not an OOM guard.
+// 16 MB elsewhere.
+#if defined(NV_WEBOS)
+#include <unistd.h>
+static inline size_t assperf_fontes_teto_webos(void) {
+  long pag = sysconf(_SC_AVPHYS_PAGES), tam = sysconf(_SC_PAGESIZE);
+  unsigned long long livre = pag > 0 && tam > 0 ? (unsigned long long)pag * (unsigned long long)tam : 0;
+  return (size_t)(livre >= (128ull << 20) ? 64ull << 20 : 16ull << 20);
+}
+#define ASSPERF_FONTES_TETO assperf_fontes_teto_webos()
+#elif ASS_NOVO_TPK
+#define ASSPERF_FONTES_TETO ((size_t)64 * 1024u * 1024u)
+#else
+#define ASSPERF_FONTES_TETO ((size_t)16 * 1024u * 1024u)
+#endif
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead
 #define ASSPERF_PODA_MS     (ASS_NOVO ? 120000L : 0L)   // drop events that ended this long ago
 #define ASSPERF_PARQUE      (ASS_NOVO_TPK ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes

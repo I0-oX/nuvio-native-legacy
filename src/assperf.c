@@ -102,30 +102,6 @@ int assperf_get(int id) {
 
 unsigned assperf_versao(void) { return __atomic_load_n(&versao, __ATOMIC_ACQUIRE); }
 
-size_t assperf_fontes_teto(void) {
-#if ASS_NOVO_TPK
-  /* S95C: 64 MB fijos, el valor que cargaba las fuentes del fansub. La regla
-   * dinamica bajaba a 16-30 MB con el video abierto y las rechazaba. */
-  return (size_t)64 * 1024u * 1024u;
-#elif defined(NV_WEBOS)
-  /* webOS: fixed 64 MB, same as the .tpk. When free memory is under 128 MB the
-   * cap drops to 1/8 of the free memory (floor 16 MB). This is ONLY an
-   * acceptance limit, checked in mkvass.c after the header is read and before
-   * the attachments Range is requested. It does not reserve memory, does not
-   * guard against OOM, and mkvass keeps a 16 MB floor of its own. */
-  long pag = sysconf(_SC_AVPHYS_PAGES), tam = sysconf(_SC_PAGESIZE);
-  unsigned long long livre = pag > 0 && tam > 0 ? (unsigned long long)pag * (unsigned long long)tam : 0;
-  if (livre >= (128ull << 20)) return (size_t)64 * 1024u * 1024u;
-  {
-    unsigned long long teto = livre / 8;
-    if (teto < (16ull << 20)) teto = 16ull << 20;
-    return (size_t)teto;
-  }
-#else
-  return (size_t)16 * 1024u * 1024u;
-#endif
-}
-
 void assperf_definir(int id, int v) {
 #ifdef AP_PERSISTE
   if (id < 0 || id >= AP_N || !valido(id, v)) return;

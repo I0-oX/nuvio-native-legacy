@@ -325,11 +325,11 @@ static int assFonteRegistrada;
  * mesmo teto de bytes (ASSPERF_FONTES_TETO) e o mesmo numero de fontes
  * (MKVASS_FONTES_MAX). Assim um lote nunca fica parcial por tamanho. */
 #define ASS_ATUAIS_MAX 256
-#define ASS_ATUAIS_BYTES ASSPERF_FONTES_TETO
+/* The batch cap is read once, at the first font of each batch (assTetoAtuais). */
 typedef struct { char nome[256]; unsigned char *dados; size_t tam; } AssFonteAtual;
 static AssFonteAtual assFontesAtuais[ASS_ATUAIS_MAX];
 static int assNFontesAtuais, assAtuaisCompletas = 1;
-static size_t assBytesAtuais;
+static size_t assBytesAtuais, assTetoAtuais;
 static void ass_atuais_limpar_locked(void) {
   for (int i = 0; i < assNFontesAtuais; i++) free(assFontesAtuais[i].dados);
   memset(assFontesAtuais, 0, sizeof assFontesAtuais);
@@ -337,13 +337,14 @@ static void ass_atuais_limpar_locked(void) {
 }
 static void ass_atual_guardar_locked(const char *nome, const void *dados, size_t n) {
   if (!assAtuaisCompletas) return;
+  if (assNFontesAtuais == 0) assTetoAtuais = ASSPERF_FONTES_TETO;
   for (int i = 0; i < assNFontesAtuais; i++) {
     const AssFonteAtual *f = &assFontesAtuais[i];
     if (f->tam == n && !strcmp(f->nome, nome) && !memcmp(f->dados, dados, n)) return;
   }
   unsigned char *copia = NULL;
   if (strlen(nome) < sizeof assFontesAtuais[0].nome && assNFontesAtuais < ASS_ATUAIS_MAX &&
-      assBytesAtuais <= ASS_ATUAIS_BYTES && n <= ASS_ATUAIS_BYTES - assBytesAtuais) copia = malloc(n);
+      assBytesAtuais <= assTetoAtuais && n <= assTetoAtuais - assBytesAtuais) copia = malloc(n);
   if (!copia) {
     ass_atuais_limpar_locked(); assAtuaisCompletas = 0;
     return; /* Keep the original renderer path; never replay a partial batch. */
