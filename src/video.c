@@ -2120,14 +2120,17 @@ static void *lerMkv(void *arg) {
 #ifdef NV_WEBOS
         // Grade de quadros da legenda (assrender_definir_fps, via
         // video_quadro_fps): sem DefaultDuration fica 0 e a grade desliga.
-        // Sessao velha nao escreve. 0 e valido: "desconhecida".
-        if (fx[j].quadroNs > 0 && mkvFioSessao == __atomic_load_n(&sessao, __ATOMIC_ACQUIRE)) {
-          mkvFps = 1e9 / (double)fx[j].quadroNs;
-          printf("[mkv] quadro: fps=%.3f (DefaultDuration %llu ns)\n", (double)mkvFps,
-                 (unsigned long long)fx[j].quadroNs);
-          fflush(stdout);
-        } else if (!fx[j].quadroNs) {
-          printf("[mkv] quadro: fps desconhecido (sem DefaultDuration); grade de quadros desligada\n");
+        // Sondagem velha nao escreve nem informa: a sessao e a URL tem de ser
+        // as do fio (a URL cobre a janela entre video_tocar e o aumento de
+        // sessao, como as escritas vizinhas). 0 e valido: "desconhecida".
+        if (mkvFioSessao == __atomic_load_n(&sessao, __ATOMIC_ACQUIRE) && !strcmp(url, urlAtual)) {
+          if (fx[j].quadroNs > 0) {
+            mkvFps = 1e9 / (double)fx[j].quadroNs;
+            printf("[mkv] quadro: fps=%.3f (DefaultDuration %llu ns)\n", (double)mkvFps,
+                   (unsigned long long)fx[j].quadroNs);
+          } else {
+            printf("[mkv] quadro: fps desconhecido (sem DefaultDuration); grade de quadros desligada\n");
+          }
           fflush(stdout);
         }
 #endif
