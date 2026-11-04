@@ -641,7 +641,7 @@ static char      midia[64];
 // Taxa de quadros do video (DefaultDuration do MKV, lida pelo fio lerMkv e
 // consumida pelo fio de desenho via video_quadro_fps): fio cruzado, por isso
 // o armazenamento dedicado. 0 = desconhecida. Zerada em video_tocar.
-static double mkvFps;
+static _Atomic double mkvFps;
 // Posicao/duracao/nativa: escritas no fio do LS2 (currentTime/duration,
 // eventoPayload) e lidas no de desenho por quadro (video_pos). Um double de
 // 8 bytes nao e atomico no ARMv7 (a leitura pode sair rasgada, metade de
@@ -2121,8 +2121,15 @@ static void *lerMkv(void *arg) {
         // Grade de quadros da legenda (assrender_definir_fps, via
         // video_quadro_fps): sem DefaultDuration fica 0 e a grade desliga.
         // Sessao velha nao escreve. 0 e valido: "desconhecida".
-        if (fx[j].quadroNs > 0 && mkvFioSessao == __atomic_load_n(&sessao, __ATOMIC_ACQUIRE))
+        if (fx[j].quadroNs > 0 && mkvFioSessao == __atomic_load_n(&sessao, __ATOMIC_ACQUIRE)) {
           mkvFps = 1e9 / (double)fx[j].quadroNs;
+          printf("[mkv] quadro: fps=%.3f (DefaultDuration %llu ns)\n", (double)mkvFps,
+                 (unsigned long long)fx[j].quadroNs);
+          fflush(stdout);
+        } else if (!fx[j].quadroNs) {
+          printf("[mkv] quadro: fps desconhecido (sem DefaultDuration); grade de quadros desligada\n");
+          fflush(stdout);
+        }
 #endif
         if (fx[j].dvPerfil)
           printf("[dv] file: profile=%d level=%d rpu=%d el=%d bl=%d compat=%d\n", fx[j].dvPerfil,
@@ -2685,6 +2692,9 @@ static int tocarInterno(const char *url, int comDV) {
   bufferandoDesde = 0;
   nAudio = nLeg = 0; audioAtual = 0; legAtual = -1; vidAtmos = 0;
   legUrlAtual[0] = 0; mkvPendente = 0;
+#ifdef NV_WEBOS
+  mkvFps = 0;   // recarregar reaprende a taxa; a grade desliga ate la
+#endif
   snprintf(vidHdr, sizeof vidHdr, "none");
   seiX0 = seiX1 = seiX2 = seiY0 = seiY1 = seiY2 = 0;
   seiBrancoX = seiBrancoY = seiMinLum = seiMaxLum = seiMaxCLL = seiMaxFALL = 0;

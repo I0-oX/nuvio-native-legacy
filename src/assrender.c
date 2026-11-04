@@ -2123,6 +2123,14 @@ static double assFps;   /* GL escreve, o worker le: __atomic */
 void assrender_definir_fps(double fps) {
   double v = fps > 1.0 && fps < 200.0 ? fps : 0.0;
   __atomic_store(&assFps, &v, __ATOMIC_RELAXED);
+#ifdef NV_WEBOS
+  { static double ultimo = -1.0;   /* so o fio GL escreve aqui */
+    if (v != ultimo) {
+      printf("[ass] grade de quadros: fps=%.3f (%s)\n", v, v > 0 ? "ligada" : "desligada");
+      fflush(stdout);
+      ultimo = v;
+    } }
+#endif
 }
 static double ass_fps(void) { double v; __atomic_load(&assFps, &v, __ATOMIC_RELAXED); return v; }
 static long long ass_na_grade(long long ms) {
