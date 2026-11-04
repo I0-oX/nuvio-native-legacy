@@ -435,10 +435,23 @@ static void ass_carregar_pasta_locked(void) {
           assPastaFontes, lidas, ignorados);
 }
 
+#ifdef NV_WEBOS
+/* Attached fonts added since the last ass_set_fonts. libass keeps the face it
+ * resolved for each family name in its font cache and ass_add_font alone never
+ * replaces it: if a sign family was first used before the attachments arrived
+ * (mkvass defers the Attachments Range until the subtitle window is collected),
+ * the fallback face sticks for the whole session. ass_set_fonts is the only
+ * call that empties that cache, so it runs once before the next full document
+ * load. Cleared by every ass_set_fonts. webOS only: the .tpk is unchanged. */
+static int assFontesNovas;
+#endif
 static void ass_aplicar_fontes_locked(void) {
   if (!assRenderer) return;
   ass_set_fonts(assRenderer, assFallbackFont[0] ? assFallbackFont : NULL, "Arial",
                 ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+#ifdef NV_WEBOS
+  assFontesNovas = 0;
+#endif
 }
 
 // Explicit selection changes only. Routine packet delivery keeps the original
@@ -1678,6 +1691,13 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   }
   ass_iniciar_locked(!simples);
   if (!assLib || !assRenderer) { pthread_mutex_unlock(&assTrava); return 0; }
+#ifdef NV_WEBOS
+  if (assFontesNovas) {
+    ass_aplicar_fontes_locked();
+    printf("[ass] fontes anexadas novas: seletor de fontes refeito antes de carregar o documento\n");
+    fflush(stdout);
+  }
+#endif
   copia = (char *)malloc(tamanho + 1u);
   if (!copia) { ass_diag("libass: memoria insuficiente para documento"); pthread_mutex_unlock(&assTrava); return 0; }
   memcpy(copia, corpo, tamanho); copia[tamanho] = 0;
@@ -2001,6 +2021,9 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
         }
       }
       ass_add_font(assLib, nome, (const char *)dados, (int)tamanho);
+#ifdef NV_WEBOS
+      assFontesNovas = 1;
+#endif
       if (assNFontesVistas < ASS_VISTAS_CAP) {   /* never write past the array */
         AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
         snprintf(v->nome, sizeof v->nome, "%s", nome);
