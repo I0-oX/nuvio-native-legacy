@@ -697,7 +697,7 @@ static int estiloPreservadoAss(int linha) {
   if (!campo || !assrender_ativo() || assrender_texto_simples()) return 0;
 #ifdef FX_ASSUI
   /* Styled ASS is drawn as the author made it (new engine, assperf.h). */
-  if (ASS_NOVO_TPK) return 1;
+  if (ASS_NOVO) return 1;
 #endif
   return !player_leg_estilo_tocado(campo);
 }

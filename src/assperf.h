@@ -37,11 +37,9 @@
  * webOS (NV_WEBOS) has the engine too: the same libass (tools/build-ass-arm.sh),
  * the 8-bit upload with the texture cache, render ahead, render only on
  * changes, incremental batches with the pruning, render resolution Auto, the
- * dialogue opacity and the app's cue copy every 10 s. The Samsung-only parts
+ * dialogue opacity, the authored ASS styles ("Preservado pelo ASS") and the
+ * app's cue copy every 10 s. The Samsung-only parts
  * stay out, each for a reason that is not about the engine (ASS_NOVO_TPK):
- *   - authored ASS styles: they go with the "Preservado pelo ASS" rows of
- *     faixas.c (.tpk). webOS keeps the sheet of the person: what the person
- *     touched in the Style bar still wins over the file, as before;
  *   - relay blocks parked ahead: the relay is the .tpk's local mkvfix server
  *     (video_tpk.c); webOS plays the file itself, so no block ever arrives;
  *   - attached fonts: 64 MB fixed on the .tpk; on webOS 64 MB too, falling back

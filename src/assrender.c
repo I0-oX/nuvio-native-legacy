@@ -798,20 +798,19 @@ static void ass_plain_reflow_locked(long long t) {
   plainNextBoundary = next; plainActiveSet = active;
 }
 
-/* Styled ASS on the .tpk is drawn as the author made it (colours, border,
+/* Styled ASS (.tpk and webOS) is drawn as the author made it (colours, border,
  * box, font of the Style sheet do NOT apply), and the size only scales the
  * dialogue (ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE, libass's and mpv's default).
- * Plain text follows the sheet as always. webOS has no "Preservado pelo ASS"
- * rows (faixas.c is .tpk): there what the person touched still wins over the
- * file, as before the engine. Under assTrava. */
+ * Plain text follows the sheet as always. The Style column hides the colour,
+ * font and border rows for styled ASS on both targets, so the person has no way
+ * to undo a stale "touched" flag: the author's styles must always win. Under
+ * assTrava. */
 static int ass_estilo_autor_locked(void) {
-  return ASS_NOVO_TPK && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
+  return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
 
-/* Selective dialogue font scale (the size row): applies on .tpk and webOS,
- * because it is engine behaviour, not the authored-style policy. Authored
- * styles (ass_estilo_autor_locked) stay .tpk-only: on webOS the person's
- * touches still win. Under assTrava. */
+/* Selective dialogue font scale (the size row), .tpk and webOS. Under
+ * assTrava. */
 static int ass_escala_dialogo_locked(void) {
   return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
