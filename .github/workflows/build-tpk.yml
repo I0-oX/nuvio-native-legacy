@@ -12,7 +12,7 @@ name: Build TPK
 
 on:
   push:
-    branches: [master, libass-engine-rewrite-tizen]
+    branches: [master, libass-engine-rewrite-tizen, feat/libass-lg]
     paths-ignore:
       - "docs/**"
       - "**/*.md"
