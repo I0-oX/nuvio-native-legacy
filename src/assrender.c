@@ -1226,6 +1226,14 @@ static int assMainTexCap, assMainEnviado;
 static int assMainResetar;       // assrender_aplicar_invalidacao consumiu um assTexResetar
 
 static size_t ass_tc_tam(int w, int h) { return (size_t)w * (size_t)h; }
+#if defined(NV_WEBOS)
+/* [ass-des]: quanto do `des` do [quadro] e o bloco de legendas, e do bloco o
+ * que foi upload e o que foi desenho. Sem esta separacao um pico de 46 ms nao
+ * se atribui: o mesmo cenario roda a 61 fps no `[ass] 10s`, entao o pico nao
+ * pode ser o custo fixo de desenhar o quadro. */
+static int assTcSubiu;          // texturas enviadas neste quadro
+static size_t assTcSubiuBytes;  // e os bytes delas
+#endif
 
 static void ass_tc_apagar(void) {
   int i;
@@ -1242,6 +1250,9 @@ static void ass_main_soltar(void) {
 /* Sobe `im` em `tex`. `novo` = a textura nao tem armazenamento desse tamanho
  * (glTexImage2D); senao glTexSubImage2D, sem realocar. */
 static void ass_tc_subir(GLuint tex, const AssCpuImage *im, int novo) {
+#if defined(NV_WEBOS)
+  assTcSubiu++; assTcSubiuBytes += ass_tc_tam(im->w, im->h);
+#endif
   glBindTexture(GL_TEXTURE_2D, tex);
   if (novo) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, im->w, im->h, 0, GL_ALPHA, GL_UNSIGNED_BYTE, im->bitmap);
@@ -1312,6 +1323,12 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
                              int quadroNovo) {
   int i;
   float kk = assMain.k > 1 ? (float)assMain.k : 1.0f, esc = assMain.esc > 0.01f ? assMain.esc : kk;
+#if defined(NV_WEBOS)
+  int desenhos = 0;
+  double tUp = 0.0, fillAntes = 0.0;
+  struct timespec d0, d1;
+  assTcSubiu = 0; assTcSubiuBytes = 0;
+#endif
   assGlQuadro++;
   if (quadroNovo || !assMainEnviado) {
     struct timespec t0, t1;
@@ -1337,7 +1354,12 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     clock_gettime(CLOCK_MONOTONIC, &t1);
     assMainEnviado = 1;
     /* Busy-scene load (picture sync, Auto): what a new frame cost here. */
+#if defined(NV_WEBOS)
+    tUp = ass_ms_entre(&t0, &t1);
+    if (quadroNovo) assperf_carga_gl(tUp);
+#else
     if (quadroNovo) assperf_carga_gl(ass_ms_entre(&t0, &t1));
+#endif
   } else {
     /* Quadro repetido: as texturas dele continuam "em uso" (a reciclagem
      * conta quadros GL sem desenho). */
@@ -1349,6 +1371,10 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
    * so processa o plano de video, nunca a nossa camada. Na mesma ordem da TV:
    * o ganho do contraste antes, a curva de gama depois. */
   const double gama = assperf_gama(), contraste = assperf_contraste();
+#if defined(NV_WEBOS)
+  fillAntes = gfx_fill;
+  clock_gettime(CLOCK_MONOTONIC, &d0);
+#endif
   for (i = 0; i < assMain.count; i++) {
     const AssCpuImage *im = &assMain.images[i];
     GLuint tex = assMainTex[i];
@@ -1362,14 +1388,35 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / esc;
     r = (float)((c >> 24) & 255u) / 255.0f; g = (float)((c >> 16) & 255u) / 255.0f;
     b = (float)((c >> 8) & 255u) / 255.0f; op = (float)(255u - (c & 255u)) / 255.0f;
+#if defined(NV_WEBOS)
+    /* Alfa 0 (evento com \alpha&HFF&, recorte vazio, camada ja opaca): o
+     * fragmento sai com alfa 0 e a mistura devolve o destino intacto, inclusive
+     * no canal alfa (ONE, ONE_MINUS_SRC_ALPHA). Nao desenhar e o MESMO pixel,
+     * sem bind, sem draw e sem preenchimento. */
+    if (op <= 0.0f) continue;
+#endif
     if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) { r = cr / 255.0f; g = cg / 255.0f; b = cb / 255.0f; }
     if (gama != 1.0 || contraste != 1.0) {
       r = (float)pow(r * contraste, gama); g = (float)pow(g * contraste, gama); b = (float)pow(b * contraste, gama);
     }
     gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
              0, 0, 0, 0, r, g, b, alpha * op);
+#if defined(NV_WEBOS)
+    desenhos++;
+#endif
   }
   gfx_tex_aspect_atual = 0.0f;
+#if defined(NV_WEBOS)
+  clock_gettime(CLOCK_MONOTONIC, &d1);
+  { double tDes = ass_ms_entre(&d0, &d1), fill = gfx_fill - fillAntes;
+    if (assMain.count > 0 && tUp + tDes >= 8.0) {
+      printf("[ass-des] quadro=%d novo=%d imgs=%d upload=%d/%.2fMB t=%.1fms | desenho=%d fill=%.2fx t=%.1fms"
+             " | bloco=%.1fms\n",
+             assMain.serial, quadroNovo, assMain.count, assTcSubiu, assTcSubiuBytes / 1048576.0, tUp,
+             desenhos, fill, tDes, tUp + tDes);
+      fflush(stdout);
+    } }
+#endif
   return assMain.count;
 }
 #endif   /* ASS_NOVO: o caminho novo do desenho */
@@ -2374,11 +2421,27 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     long long inicioMax;
     int temTexto;
     pthread_mutex_unlock(&assFilaTrava);
+#if defined(NV_WEBOS)
+    /* SEEK NAO JOGA A CACHE FORA. A chave e o CONTEUDO do bitmap
+     * (ass_chave_bitmap), entao um letreiro que volta igual nao sobe de novo; o
+     * ass_tc_apagar daqui reenviava o quadro inteiro (1,6-2,3 MB num letreiro
+     * denso, medido com o libass 0.17.4) a cada seek. O teto de 24 MB nao muda:
+     * a memoria que fica e a que ja ficava entre dois quadros quaisquer.
+     * Troca de faixa/geracao (reset) continua apagando tudo. */
+    if (reset || assMainResetar) {
+#else
+    /* .tpk: como era (o .tpk nao foi medido com esta mudanca). */
     if (reset || saltou || assMainResetar) {
+#endif
       ass_main_soltar();
       ass_tc_apagar();
       assMainResetar = 0;
     }
+#if defined(NV_WEBOS)
+    else if (saltou) {
+      ass_main_soltar();   /* o quadro sai; as texturas ficam para o proximo */
+    }
+#endif
     if (assMainValido && assMain.generation != generation) ass_main_soltar();
     if (quadroNovo) {
       ass_frame_liberar(&assMain);

@@ -1462,8 +1462,23 @@ static char *lerSidecar(Fio *f, int *fontesConfirmadas) {
   char *corpo;
   pthread_mutex_lock(&cacheTrava);
   corpo = dados_ler(f->sidecar);
+#ifdef NV_WEBOS
+  /* webOS: o cache dos anexos vale tambem quando o corpo e PARCIAL (ou nem
+   * existe, se o app morreu antes da primeira limpeza). Antes so o "completo"
+   * o lia; quem parava no meio da faixa (ou levava um seek) pagava de novo os
+   * ~10 s do bloco de fontes do fansub na abertura seguinte. O corpo continua
+   * sendo restaurado/colhido como sempre; so as fontes vem do disco. */
+  int fontes = lerFontesSidecar(f);
+  *fontesConfirmadas = sidecarCompleto(corpo) && fontes;
+#else
   *fontesConfirmadas = sidecarCompleto(corpo) && lerFontesSidecar(f);
+#endif
   pthread_mutex_unlock(&cacheTrava);
+#ifdef NV_WEBOS
+  if (fontes)
+    printf("[mkvass] fontes anexadas: %d do cache (%s)\n", f->nFontes,
+           sidecarCompleto(corpo) ? "sidecar completo" : "corpo parcial");
+#endif
   return corpo;
 }
 
@@ -1956,6 +1971,27 @@ static int avancarFontes(Fio *f, int esperar) {
     if (!ok) goto falhou;
   }
   f->fontesCompletas = 1;
+#ifdef NV_WEBOS
+  /* Guarda os anexos AGORA, sem esperar a faixa inteira. O .fonts e a unica
+   * fonte das fontes do fansub na proxima abertura: sem isto, um sidecar
+   * parcial (quem parou no meio, ou levou um seek) fazia o bloco de MB ser
+   * baixado outra vez, e a legenda ficava ~10 s na face de fallback. A
+   * transacao de cache e a mesma do corpo (ver gravarSidecar). */
+  if (f->sidecarFontes[0] && minhaVez(f)) {
+    int ok;
+    pthread_mutex_lock(&cacheTrava);
+    ok = gravarFontesSidecar(f);
+    pthread_mutex_unlock(&cacheTrava);
+    if (ok) {
+      printf("[mkvass] fontes anexadas: cache %s gravado (%d fontes, faixa aberta)\n",
+             f->sidecarFontes, f->nFontes);
+    } else {
+      printf("[mkvass] fontes anexadas: cache %s NAO gravado (%d fontes)\n",
+             f->sidecarFontes, f->nFontes);
+    }
+    fflush(stdout);
+  }
+#endif
   // A proxima entrega e "primeira" de novo: limpa, passa as fontes, recarrega.
   // Tambem numa retomada (herdar): o fio anterior pode ter caido antes das
   // fontes. Orfao (entregas < 0) continua orfao.
