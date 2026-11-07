@@ -3125,14 +3125,46 @@ static int entregarCorpoSeAtual(Fio *f, const char *corpo) {
       // Primeira carga: so se a legenda ainda e da geracao que a escolha
       // deixou. Outro dono no meio (externa, outra faixa, desligada) = este
       // corpo e de uma faixa que saiu.
+#ifdef NV_WEBOS
+      /* webOS: the whole first load (clear fonts, N attachments, document and,
+       * with late fonts, the libass font-selector rebuild) runs OUTSIDE the
+       * state lock, like every later delivery (#412). mkvass_passo/folga take
+       * that lock on the main thread every frame: a field log showed the frame
+       * that coincided with "fontes anexadas: 22" at upd=57.8 ms. Ownership is
+       * still safe: entregaTrava serialises the collectors and
+       * legenda_definir_corpo_se checks the owner generation itself. `f`
+       * belongs to this collector only. */
+      pthread_mutex_unlock(&estadoDoFio(f)->trava);
+      travado = 0;
+#endif
       if (legenda_geracao() == f->legG) {
         unsigned g;
+#ifdef NV_WEBOS
+        long tFontes = agoraMs(), tDoc;
+#endif
         assrender_limpar_fontes();
         for (i = 0; i < f->nFontes; i++)
           assrender_adicionar_fonte(f->fontes[i].nome, f->fontes[i].dados,
                                     (size_t)f->fontes[i].tam);
+#ifdef NV_WEBOS
+        tDoc = agoraMs();
+#endif
         g = legenda_definir_corpo_se(corpo, f->legG);
+#ifdef NV_WEBOS
+        printf("[mkvass] primeira entrega: limpar+%d fontes=%ldms documento=%ldms (fora da trava)\n",
+               f->nFontes, tDoc - tFontes, agoraMs() - tDoc);
+        fflush(stdout);
+        if (g) {
+          ok = 1;
+          pthread_mutex_lock(&estadoDoFio(f)->trava);
+          f->legG = g;
+          if (f->g == estadoDoFio(f)->geracao)
+            estadoDoFio(f)->fontesLegG = f->nFontes ? g : 0;
+          pthread_mutex_unlock(&estadoDoFio(f)->trava);
+        }
+#else
         if (g) { f->legG = g; ok = 1; estadoDoFio(f)->fontesLegG = f->nFontes ? g : 0; }
+#endif
       }
     } else {
       // #412: parse/recriacao do ASS pode levar >120 ms. O quadro usa

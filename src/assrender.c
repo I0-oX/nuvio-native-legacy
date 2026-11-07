@@ -321,6 +321,22 @@ static int assNFontesVistas;
 static size_t assBytesFontesVistas;
 static char assFallbackFont[768], assFonteLocal[768];
 static int assFonteRegistrada;
+#ifdef NV_WEBOS
+/* Snapshot of the local-font selection for assrender_fonte_local_ativa, which
+ * the GL thread calls on every drawn frame. Reading it under assTrava made the
+ * draw wait for the worker's whole ass_render_frame or document load (the
+ * worker holds assTrava for both). Written under assTrava right after every
+ * change of assFonteLocal / assFonteRegistrada; read under its own tiny lock. */
+static pthread_mutex_t assFonteLocalTrava = PTHREAD_MUTEX_INITIALIZER;
+static char assFonteLocalPub[768];
+static int assFonteLocalPubAtiva;
+static void ass_fonte_local_publicar_locked(void) {
+  pthread_mutex_lock(&assFonteLocalTrava);
+  memcpy(assFonteLocalPub, assFonteLocal, sizeof assFonteLocalPub);
+  assFonteLocalPubAtiva = assFonteRegistrada;
+  pthread_mutex_unlock(&assFonteLocalTrava);
+}
+#endif
 /* O lote e a entrega atual, e a entrega cabe no bloco de anexos aceito: o
  * mesmo teto de bytes (ASSPERF_FONTES_TETO) e o mesmo numero de fontes
  * (MKVASS_FONTES_MAX). Assim um lote nunca fica parcial por tamanho. */
@@ -460,6 +476,9 @@ static void ass_fontes_reconstruir_locked(const unsigned char *selecionada, size
   ass_clear_fonts(assLib);
   if (selecionada) ass_add_font(assLib, assFonteLocal, (const char *)selecionada, (int)n);
   assFonteRegistrada = selecionada != NULL;
+#ifdef NV_WEBOS
+  ass_fonte_local_publicar_locked();
+#endif
   ass_carregar_pasta_locked();
   assNFontesVistas = 0; assBytesFontesVistas = 0;
   for (int i = 0; i < assNFontesAtuais; i++) {
@@ -575,6 +594,9 @@ static void ass_iniciar_locked(int sistema) {
     else assFonteRegistrada = 0;
     free(b);
   }
+#ifdef NV_WEBOS
+  ass_fonte_local_publicar_locked();
+#endif
   ass_carregar_pasta_locked();
   snprintf(assFallbackFont, sizeof assFallbackFont, "%s", fallbackFont);
   ass_aplicar_fontes_locked();
@@ -1862,6 +1884,9 @@ int assrender_fonte_local_transacao(const char *caminho, int (*confirmar)(void *
     if (assLib) ass_fontes_reconstruir_locked(b, n);
     else assFonteRegistrada = 0;
   }
+#ifdef NV_WEBOS
+  ass_fonte_local_publicar_locked();
+#endif
   free(b);
   pthread_mutex_unlock(&assTrava);
   if (mudou) {
@@ -1874,9 +1899,15 @@ int assrender_fonte_local_transacao(const char *caminho, int (*confirmar)(void *
   return 1;
 }
 int assrender_fonte_local_ativa(const char *caminho) {
+#ifdef NV_WEBOS
+  pthread_mutex_lock(&assFonteLocalTrava);
+  int ativa = caminho && caminho[0] && assFonteLocalPubAtiva && !strcmp(assFonteLocalPub, caminho);
+  pthread_mutex_unlock(&assFonteLocalTrava);
+#else
   pthread_mutex_lock(&assTrava);
   int ativa = caminho && caminho[0] && assFonteRegistrada && !strcmp(assFonteLocal, caminho);
   pthread_mutex_unlock(&assTrava);
+#endif
   return ativa;
 }
 
@@ -2007,6 +2038,9 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
           assFonteRegistrada = local != NULL;
           free(local);
         } else assFonteRegistrada = 0;
+#ifdef NV_WEBOS
+        ass_fonte_local_publicar_locked();
+#endif
         assNFontesVistas = 0; assBytesFontesVistas = 0;
         ass_carregar_pasta_locked();
         /* Repoe o lote da entrega atual (como ass_fontes_reconstruir_locked):
