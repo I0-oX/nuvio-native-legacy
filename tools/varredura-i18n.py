@@ -177,10 +177,10 @@ IGNORAR_FUNCAO = {
     # tambem ficam em portugues no vetor e so viram ingles no desenho. i18n()
     # aqui prenderia a lista no idioma de quando a tela abriu.
     "ajustes.c:167",
-    # legendasui.c:325 (chaveIdioma) usa ling_nome() so como CHAVE de grupo
+    # legendasui.c:326 (chaveIdioma) usa ling_nome() so como CHAVE de grupo
     # ("en", "eng" e "en-US" no mesmo grupo), comparada com strcmp e nunca
     # desenhada; o nome na tela sai de nomeIdioma(), com i18n.
-    "legendasui.c:325",
+    "legendasui.c:326",
 }
 
 def achar_rotulo_sem_i18n(txt, linha_de, ctx_fn, re_desenho, re_nao_e_tela, nome_arq):

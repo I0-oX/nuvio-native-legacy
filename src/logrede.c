@@ -158,12 +158,12 @@ static const char *const F_ABRIR[] = {
   "escolha manual", "erro do player", "sonda apos recusa", "nao abriu", "sem sinal de abertura",
   "fonte escolhida", "automatico (verificado)", "tocando enquanto confere", "[voltafonte]", "failover",
   "[host] erro", "[host] abrir", "[host] interrompido", "[host] cabecalho", "[mkv]", "[dts-tpk]",
-  "[video] tpk", "[fonte-cdn]", "duration", "[partes]", "[mkvfix]", "[logrede]", NULL
+  "[video] tpk", "[fonte-cdn]", "duration", "[partes]", "[mkvfix]", "[tbburn]", "[logrede]", NULL
 };
 static const char *const F_TOCAR[] = {
   "[tocar-diag]", "[host] erro", "[host] interrompido", "[video]", "[player]", "[dts-tpk]", "[dts-range]",
   "[dts]", "[audio]", "[mkv]", "[tv] ", "reconex", "reconect", "failover", "escolha manual",
-  "tocando agora", "fonte escolhida", "pipeline open", "opened ok", "[abrir-diag] started", "[fonte-cdn]", "[partes]", "[mkvfix]", "[logrede]",
+  "tocando agora", "fonte escolhida", "pipeline open", "opened ok", "[abrir-diag] started", "[fonte-cdn]", "[partes]", "[mkvfix]", "[tbburn]", "[logrede]",
   "[seek]", NULL
 };
 static const char *const *const FILTROS[4] = { NULL, F_FONTE, F_ABRIR, F_TOCAR };

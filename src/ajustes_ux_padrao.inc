@@ -354,3 +354,5 @@
   0, /* hero logo and information size: Normal */
   0, /* folder hero details: On (V_LIGA 0) */
   1, /* audio sync samples the film on mobile data too: Off (V_LIGA 1) */
+  0, /* TorBox plan: Standard (V_TB_PLANO 0) */
+  0, /* burn embedded ASS in with TorBox: On (V_LIGA 0); only acts with plan Pro */

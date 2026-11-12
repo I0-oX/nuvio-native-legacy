@@ -728,6 +728,11 @@ typedef enum {
   // Sincronia por audio (Android): ler os trechos do filme a frente tambem em
   // rede movel (Reshaped: "sampling on mobile data"). LOCAL, append-only, Desligado.
   AJ_LEG_SYNC_AUDIO_MOVEL,
+  // TorBox burn-in (tbburn.h, owner 12/11): the TorBox plan (Standard / Pro)
+  // and "burn embedded ASS in with TorBox" (On by default, needs Pro + key).
+  // LOCAL, append-only; the .tpk only (foraDestaPlataforma).
+  AJ_TB_PLANO,
+  AJ_LEG_QUEIMAR,
   AJ_N
 } OpcaoId;
 _Static_assert(DEBRID_RD == 0 && DEBRID_TB == 1 && DEBRID_PM == 2 && DEBRID_AD == 3,
@@ -778,6 +783,8 @@ _Static_assert(sizeof V_FUNDO_DIN_COR / sizeof *V_FUNDO_DIN_COR == sizeof FUNDO_
                "V_FUNDO_DIN_COR: um nome por linha de FUNDO_DIN_TEMA");
 static const char *V_QUALIDADE[] = { "Automática", "4K", "1080p", "720p" };
 static const char *V_LIGA[]      = { "Ligado", "Desligado" };
+// Plano do TorBox (tbburn.h): so o Pro converte video, o que a legenda queimada precisa.
+static const char *V_TB_PLANO[]  = { "Standard", "Pro" };
 static const char *V_LIGA_AUTO[] = { "Ligado", "Desligado", "Automático" };
 // Estilo da fileira de formato do player; o indice e o PLR_FMT_* de ajustes.h
 // e o gravado em "plrFormatoLocal".
@@ -1867,6 +1874,8 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Tamanho do destaque", V_HERO_TAMANHO, 3),       // local: heroSizeLocal
   ESC("Mostrar detalhes da pasta no destaque", V_LIGA, 2),
   ESC("Sincronia por áudio em rede móvel", V_LIGA, 2),   // local: legendaSyncAudioMovelLocal (Android)
+  ESC("Plano do TorBox", V_TB_PLANO, 2),                 // local: torboxPlanoLocal
+  ESC("Queimar ASS pelo TorBox", V_LIGA, 2),             // local: legendaQueimarLocal
 };
 
 // Nome de cada opcao no arquivo. O formato era POSICIONAL — uma linha por
@@ -2201,6 +2210,8 @@ static const char *CHAVE[] = {
   "heroSizeLocal",
   "heroFolderDetailsLocal",
   "legendaSyncAudioMovelLocal",
+  "torboxPlanoLocal",
+  "legendaQueimarLocal",
 };
 // QUATRO VETORES PARALELOS indexados pelo mesmo enum AJ_*: OPCOES, CHAVE,
 // valor e as secoes. OPCOES ja e declarado [AJ_N], e `valor` aceita inicializacao
@@ -3198,6 +3209,38 @@ int ajustes_layout_lista(void) { return !ajLayoutSelecionavel() || valor[AJ_LAYO
 int ajustes_esconder_logo_trailer(void) { return lig(AJ_LOGO_TRAILER); }
 int ajustes_audio_offset_ms(void) { return audio_offset_ms(valor[AJ_AUDIO_OFFSET]); }
 int ajustes_legenda_sync_auto(void) { return lig(AJ_LEG_SYNC_AUTO); }
+static const char *rotuloOpcao(int op);
+static int passoAdiante(int op, int dir);
+static int definirValorDireto(int op, int novo);
+int ajustes_tb_pro(void) { return valor[AJ_TB_PLANO] == 1; }
+int ajustes_leg_queimar(void) {
+#ifdef NV_TPK
+  return lig(AJ_LEG_QUEIMAR) && ajustes_tb_pro();
+#else
+  return 0;
+#endif
+}
+// Generic read/step of a setting by op (the Style column's Second rows):
+// the same effect as Left/Right in Settings, saved and applied live.
+const char *ajustes_op_rotulo(int op) { return op >= 0 && op < AJ_N ? rotuloOpcao(op) : ""; }
+const char *ajustes_op_texto(int op) { return op >= 0 && op < AJ_N ? textoValor(op) : ""; }
+int ajustes_op_indice(int op) { return op >= 0 && op < AJ_N ? valor[op] : 0; }
+int ajustes_op_definir(int op, int v) { return op >= 0 && op < AJ_N ? definirValorDireto(op, v) : 0; }
+int ajustes_op_n(int op) { return op >= 0 && op < AJ_N ? nValores(op) : 0; }
+int ajustes_op_passo(int op, int dir) { return op >= 0 && op < AJ_N ? definirValorDireto(op, passoAdiante(op, dir < 0 ? -1 : 1)) : 0; }
+int ajustes_leg2_op(int campo) {
+  static const int OP[AJ2_N] = {
+    [AJ2_TAMANHO] = AJ_LEG2_TAMANHO, [AJ2_FONTE] = AJ_LEG2_FONTE, [AJ2_COR] = AJ_LEG2_COR,
+    [AJ2_OPACIDADE] = AJ_LEG2_OPACIDADE, [AJ2_FUNDO] = AJ_LEG2_FUNDO, [AJ2_POSICAO] = AJ_LEG2_POSICAO,
+    [AJ2_LUGAR] = AJ_LEG2_POS, [AJ2_BORDA] = AJ_LEG2_BORDA, [AJ2_COR_BORDA] = AJ_LEG2_COR_BORDA,
+    [AJ2_NEGRITO] = AJ_LEG2_NEGRITO };
+  return campo >= 0 && campo < AJ2_N ? OP[campo] : -1;
+}
+void ajustes_leg2_restaurar(void) {
+  int i;
+  for (i = 0; i < AJ2_N; i++) { int op = ajustes_leg2_op(i); if (op >= 0) valor[op] = valorPadrao[op]; }
+  gravar();
+}
 int ajustes_teclado_android(void) { int v = valor[AJ_TECLADO_ANDROID]; return v < 0 || v > 2 ? 0 : v; }   // 0 auto, 1 do app, 2 do Android
 int ajustes_mic_busca(void) { return valor[AJ_MIC_BUSCA]; }   // 0 auto, 1 ligado, 2 desligado
 int ajustes_trailer_zoom_tpk(void) { return lig(AJ_TRAILER_ZOOM_TPK); }   // 1 = Ligado
@@ -6130,6 +6173,7 @@ static int somenteDesteAparelho(int op) {
     case AJ_MIC_BUSCA:     /* o microfone e o controle sao desta TV */
     case AJ_TECLADO_ANDROID: /* o web nao tem; o teclado e deste aparelho */
     case AJ_LEG_SYNC_AUDIO: case AJ_LEG_SYNC_AUDIO_MOVEL: /* a reserva por audio e desta TV; o web nao tem */
+    case AJ_TB_PLANO: case AJ_LEG_QUEIMAR: /* TorBox burn-in: o web nao tem */
     case AJ_LEG_FORCADA:    /* #287: o web nao tem esta escolha */
     case AJ_LEG2_POS: case AJ_LEG2_TAMANHO: case AJ_LEG2_COR: case AJ_LEG2_FUNDO: case AJ_LEG2_BORDA: /* estilo da legenda e desta TV */
     case AJ_LEG_CONTORNO_COR: /* #475: idem */
@@ -6180,6 +6224,7 @@ static int soNaTv(int op) {
     case AJ_ESMAECER: case AJ_BRILHO_PLAYER: case AJ_PROPORCAO_PADRAO: case AJ_MANTER_VIDEO:
     case AJ_DESCANSO_ESTILO: case AJ_DESCANSO_FONTE:
     case AJ_CACHE_SEEK: case AJ_TRAILER_ZOOM_TPK: case AJ_LEG_SYNC_AUDIO: case AJ_LEG_SYNC_AUDIO_MOVEL:
+    case AJ_TB_PLANO: case AJ_LEG_QUEIMAR:
     case AJ_LIVETV_RES: case AJ_LIVETV_FORMATO: case AJ_LIVETV_ESPERA:
     case AJ_LIVETV_DIAG: case AJ_LIVETV_MODO: case AJ_LIVETV_PROXY:
     case AJ_P2P_LIGADO: case AJ_JF_LIGADO: case AJ_POSTER_PROV: case AJ_EPG_PAIS:
@@ -6770,6 +6815,10 @@ static int foraDestaPlataforma(int op) {
 #endif
 #ifndef NV_ANDROID
   if (op == AJ_FONTE_PRECARREGAR || op == AJ_LEG_SYNC_AUDIO || op == AJ_LEG_SYNC_AUDIO_MOVEL || op == AJ_TUNNELING) return 1;
+#endif
+#ifndef NV_TPK
+  // TorBox burn-in plays TorBox's HLS on the Samsung .tpk player only (tbburn.h).
+  if (op == AJ_TB_PLANO || op == AJ_LEG_QUEIMAR) return 1;
 #endif
 #if defined(NV_ANDROID) && !defined(NV_P2P_MOTOR)
   if (op == AJ_P2P_LIMITE || op == AJ_P2P_DESTINO) return 1;
@@ -7436,6 +7485,8 @@ static int inativa(int op) {
     case AJ_DESCOBRIR:    return 1;
     // Comentarios do Trakt no painel de pausa: a linha fica apagada sem o painel.
     case AJ_PAUSA_COMENTARIOS: return !lig(AJ_PAUSA_OVERLAY);
+    // TorBox burn-in: only with plan Pro and a TorBox key on this TV.
+    case AJ_LEG_QUEIMAR: return valor[AJ_TB_PLANO] != 1 || debrid_tb_disponivel() == 0;
     case AJ_PAUSA_NOTAS: return !lig(AJ_PAUSA_OVERLAY);
     case AJ_PAUSA_ELENCO: return !lig(AJ_PAUSA_OVERLAY);
     // A posicao da fileira de formato so vale com a fileira ligada.
@@ -7728,6 +7779,8 @@ static const char *ajudaOpcaoBase(int op) {
     case AJ_LEG_SYNC_AUTO: return "Ajusta a legenda automaticamente. Desligue para manter a escolhida. Vale só nesta TV.";
     case AJ_LEG_SYNC_AUDIO: return "Quando a legenda incorporada não serve para sincronizar, acerta a legenda externa pelas falas do áudio. Vale só nesta TV.";
     case AJ_LEG_SYNC_AUDIO_MOVEL: return "Para a sincronia por áudio: lê alguns trechos do filme à frente também em rede móvel (até 150 MB). Desligado, só no Wi-Fi ou cabo. Vale só nesta TV.";
+    case AJ_TB_PLANO: return "O seu plano no TorBox. Só o Pro converte o vídeo, que é o que a legenda queimada precisa. Vale só nesta TV.";
+    case AJ_LEG_QUEIMAR: return inativa(op) ? "Precisa do TorBox Pro e da chave do TorBox." : "Legendas ASS do arquivo, em fontes do TorBox, tocam como um vídeo do TorBox com a legenda dentro da imagem. Imagem com menos qualidade; tamanho, opacidade e atraso não valem nela. Vale só nesta TV.";
     case AJ_LEG_FORCADA: return "Quando o áudio já está no idioma da legenda, liga só a legenda forçada desse idioma (falas em outra língua e placas), ou nenhuma se o arquivo não tiver. Desligado, liga a legenda completa como antes.";
     case AJ_LEG_MOSTRAR: return valor[op] ? "Todas as legendas, com detalhes" : "Recomendadas";
     case AJ_LEG_LINGUA2: return "Segunda legenda, mostrada no alto da tela junto com a principal. Só arquivos SRT/VTT dos addons. \"Da conta\" segue o que está no seu perfil.";

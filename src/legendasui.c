@@ -26,6 +26,7 @@
 #include <strings.h>
 #include <ctype.h>
 #include "bidi.h"
+#include "tbburn.h"
 #include "layout.h"
 
 // --- identity -------------------------------------------------------------------
@@ -189,7 +190,7 @@ void legendasui_definir_sync(const LegendasSyncProvider *p) {
 // LR_IDIOMA slot 1 (06/11, dono): the SECOND subtitle's language in the
 // Recommended view; it replaced the "Combinacao atual" pair row. OK opens its
 // sources for the second, with Off on top.
-typedef enum { LR_CAND, LR_NENHUMA, LR_MAIS, LR_SYNC, LR_ALVO, LR_ATRASO, LR_IDIOMA } LuiTipo;
+typedef enum { LR_CAND, LR_NENHUMA, LR_MAIS, LR_SYNC, LR_ALVO, LR_ATRASO, LR_IDIOMA, LR_QUEIMAR } LuiTipo;
 typedef struct {
   LuiTipo tipo;
   int slot, cand;
@@ -445,6 +446,30 @@ static int bloqueadoNaSegunda(const char *idioma) {
   return !legendasui_principal_letreiros() && mesmoIdiomaConhecido(idiomaPrincipal(), idioma);
 }
 
+// TorBox burn-in (tbburn.h): "Burn in" On/Off for this playback. Shown only
+// when it can change something (plan Pro, a key, an embedded ASS track in a file
+// that is on TorBox or not looked up yet). Off/On re-applies the main subtitle.
+static int queimarVisivel(void) {
+#ifdef NV_TPK
+  return tbburn_linha_visivel() || video_tpk_queimada() >= 0;
+#else
+  return 0;
+#endif
+}
+static int queimarLigado(void) {
+#ifdef NV_TPK
+  return tbburn_pode();
+#else
+  return 0;
+#endif
+}
+static void queimarTrocar(void) {
+#ifdef NV_TPK
+  tbburn_definir_escolha(!queimarLigado());
+  faixas_legenda_reaplicar();
+#endif
+}
+
 static void montarLinhas(void) {
   char prim[24];
   const char *sec = legenda2_identidade();
@@ -496,6 +521,7 @@ static void montarLinhas(void) {
     if (sec[0]) linhaIdiomaCod(g2 ? g2->cod : si, g2 ? g2->n : 0, "s|", 1);
     for (slot = 0; slot < 2; slot++)
       if (estadoSync(slot)) linhaFixa(LR_SYNC, slot, slot ? "sync|s" : "sync|p");
+    if (queimarVisivel()) linhaFixa(LR_QUEIMAR, 0, "queimar");
     linhaFixa(LR_MAIS, 0, "mais");
   } else {
     // Todas as legendas: Usar como, Atraso, Desligada, Sincronizacao e um
@@ -504,6 +530,7 @@ static void montarLinhas(void) {
     linhaFixa(LR_ATRASO, alvo, "m|atraso");
     linhaFixa(LR_NENHUMA, alvo, "m|-");
     if (estadoSync(alvo)) linhaFixa(LR_SYNC, alvo, alvo ? "m|sync|s" : "m|sync|p");
+    if (!alvo && queimarVisivel()) linhaFixa(LR_QUEIMAR, 0, "m|queimar");
     // Usar como: Segunda — the main's language is not offered (except with a
     // Signs & Songs main); the rows mark what the chosen slot plays.
     for (g = 0; g < nGruposV && nLinhasV < LUI_MAX_LINHAS; g++)
@@ -782,6 +809,7 @@ int legendasui_evento(const SDL_Event *e) {
     int d = k == SDLK_RIGHT ? 1 : -1;
     if (l && l->tipo == LR_ALVO) { alvo = d > 0; return LEGUI_TRATADO; }
     if (l && l->tipo == LR_ATRASO) { mudarAtraso((e->key.repeat ? 500 : 100) * d); return LEGUI_TRATADO; }
+    if (l && l->tipo == LR_QUEIMAR) { if ((d > 0) != queimarLigado()) queimarTrocar(); return LEGUI_TRATADO; }
     if (l && l->tipo == LR_SYNC) {
       const char *rot[4];
       int n = nAcoes(l->slot, rot, 4);
@@ -802,6 +830,7 @@ int legendasui_evento(const SDL_Event *e) {
       case LR_CAND: escolher(l->slot, l->cand >= 0 ? &cand[l->cand] : NULL); break;
       case LR_ALVO: alvo = !alvo; break;
       case LR_ATRASO: break;
+      case LR_QUEIMAR: queimarTrocar(); break;
       case LR_SYNC: {
         const char *rot[4];
         int n = nAcoes(l->slot, rot, 4);
@@ -1026,6 +1055,11 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
       snprintf(sub, ts, "%s", s ? s : "");
       *icone = "aj_wand";
       break; }
+    case LR_QUEIMAR:
+      snprintf(nome, tn, "%s", i18n("Queimar na imagem"));
+      snprintf(sub, ts, "%s \xc2\xb7 TorBox Pro", i18n(queimarLigado() ? "Ligado" : "Desligado"));
+      *icone = "pl_captions";
+      break;
     case LR_ALVO:
       snprintf(nome, tn, "%s", i18n("Usar como"));
       *icone = "pl_captions";

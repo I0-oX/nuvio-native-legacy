@@ -41,6 +41,7 @@
 #include "mkvfix.h"
 #include <SDL2/SDL.h>
 #include <math.h>
+#include "tbburn.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -179,6 +180,15 @@ static int reconAlvoMs = -1;
 // MESMO arquivo: o que foi lido continua valendo.
 // mkvEstado: 0 nada a fazer, 1 procurando, 2 fio na rede, 3 lido (ou desistiu).
 static MkvFaixa mkvFx[MKV_MAX_FAIXAS];
+// TorBox burn-in state (see the TORBOX BURN-IN block below).
+static struct {
+  int ativo, pend, desistiu, voltar;
+  int leg, sub, audio;          // the burned menu entry, TorBox's subtitle/audio indices
+  Uint32 pediuEm, abriuEm, logEm;
+  double alvo, durOrig;
+  int tocouLog;
+  char url[4096];
+} tb;
 static volatile int mkvN, mkvEstado, faixasNovas;
 // #269: a folha pediu a sonda ja (video_sondar_mkv_agora); `mkvNaoMkv`: a
 // sonda pela rede voltou sem TrackEntry nenhuma (nao e MKV).
@@ -297,6 +307,7 @@ void video_escolher_audio(int i);
 
 static int convPossivel(void);
 static int faixasDaTv(void);
+static void montarListaQueimada(void);
 // A ORDEM DO AUDIO (audioescolha.h) sobre a lista do menu: as faixas que a TV
 // toca e as DTS/TrueHD do arquivo que o menu acrescenta (acrescentarRecusadas;
 // escolhida, converte). Sem escolha da regra, fica a do arquivo.
@@ -356,6 +367,14 @@ void nv_tpk_video_faixas_fim(int selAudio, int selLeg) {
   // Depois de sair: a lista e do player que ja fechou; nao repovoa o menu nem
   // dispara a ordem do audio (video_parar ja zerou tudo).
   if (!ativo) { nNovasA = nNovasL = 0; return; }
+  // TorBox's burned stream: its own list (one audio, no subtitles) is not the
+  // menu; the file's tracks stay, with the burned one chosen.
+  if (tb.ativo && mkvN > 0) {
+    printf("[tbburn] TorBox's stream lists %d audio, %d subtitle(s); the menu keeps the file's tracks\n", nNovasA, nNovasL);
+    nNovasA = nNovasL = 0; faixasLidas = 1; faixasEm = SDL_GetTicks(); reconFaixasPend = 0; faixasNovas = 0;
+    montarListaQueimada();
+    return;
+  }
   memcpy(faixaAudio, novasA, sizeof novasA);
   audioAtual = selAudio >= 0 ? selAudio : 0;
   if (!releitura) {
@@ -610,6 +629,7 @@ void video_tpk_cdn_arquivo(const char *url, int usenet, int item, int file) {
   if (!ativo || !url || strcmp(url, urlAtual) || item <= 0 || file < 0) return;
   cdn.arquivo = 1; cdn.usenet = usenet; cdn.item = item; cdn.file = file;
   cdn.usado = 1; cdn.em = SDL_GetTicks();
+  tbburn_ids(url, usenet, item, file);
 }
 
 __attribute__((visibility("default")))
@@ -736,7 +756,7 @@ static void mfLigar(double alvo, const char *porque) {
 // A sonda: so filme/episodio, so o arquivo original (nao o conversor) e so
 // link http(s) de fora. Uma vez por fonte.
 static int mfPode(void) {
-  return reconPermitida && !cv.ativo && !emTrailer && !mf.sondou && hostUrl[0] &&
+  return reconPermitida && !cv.ativo && !tb.ativo && !emTrailer && !mf.sondou && hostUrl[0] &&
          (!strncmp(hostUrl, "http://", 7) || !strncmp(hostUrl, "https://", 8)) &&
          !strstr(hostUrl, "://127.0.0.1") && !strstr(hostUrl, "://localhost");
 }
@@ -757,6 +777,115 @@ static int mkvTemAss(void) {
                                 !strcmp(mkvFx[i].codec, "S_ASS") || !strcmp(mkvFx[i].codec, "S_SSA"))) return 1;
   return 0;
 }
+// TORBOX BURN-IN (tbburn.h, owner 12/11). An embedded ASS track on a TorBox
+// source plays as TorBox's HLS with the track burned into the picture. Only the
+// URL given to the TV player changes: urlAtual stays the original file, so
+// video_url_atual() (auto-sync's reference, resume, chapters, thumbnails) keeps
+// reading the MKV. The menu lists the FILE's tracks (like the converter) and
+// nothing is written to the player for subtitles. A player error on TorBox's
+// stream goes back to the original at the same position, once per source.
+// (state `tb`: declared near mkvFx, above)
+static int tbLegAss(int i) {
+  const char *c = i >= 0 && i < nLeg ? faixaLeg[i].codec : "";
+  return !strncmp(c, "S_TEXT/ASS", 10) || !strncmp(c, "S_TEXT/SSA", 10) || !strcmp(c, "S_ASS") || !strcmp(c, "S_SSA");
+}
+// The audio's place among the file's audio tracks (TorBox counts the audio
+// tracks of the file in order, from 0). Without the track id: its list place.
+static int tbIdxAudioDe(const VideoFaixa *f, int porLista) {
+  int i, k = 0;
+  if (f && f->stream_id > 0)
+    for (i = 0; i < mkvN; i++) {
+      if (mkvFx[i].tipo != 2) continue;
+      if (mkvFx[i].numero == f->stream_id) return k;
+      k++;
+    }
+  return porLista;
+}
+static int tbIdxAudio(void) {
+  return audioAtual >= 0 && audioAtual < nAudio ? tbIdxAudioDe(&faixaAudio[audioAtual], audioAtual) : 0;
+}
+static void legendaLimpar(int bloquear);
+static void legendaMarcarEnvio(int i);
+// Reopens the player at `alvo` (for the app it is a seek, like mfLigar).
+static void tbReabrir(double alvo) {
+  reconAudio = audioAtual; reconLeg = legAtual; reconFaixasPend = 1;
+  reconBuscarMs = alvo > 1.0 ? (int)(alvo * 1000.0) : -1;
+  cv.reabrindo = 1; cv.posMantida = alvo; cv.reabriuEm = SDL_GetTicks(); cv.reabTocandoEm = 0;
+  abrirSessao();
+}
+static void tbDesligar(const char *porque, int desistir) {
+  double alvo = video_pos();
+  if (!tb.ativo) return;
+  tb.ativo = 0;
+  if (desistir) { tb.desistiu = 1; tb.voltar = 1; }
+  printf("[tbburn] back to the original file at %.1f s: %s\n", alvo, porque);
+  fflush(stdout);
+  tbReabrir(alvo);
+}
+int video_tpk_queimar(int i) {
+  if (!ativo || !reconPermitida || emTrailer || !urlAtual[0]) return 0;
+  if (i >= 0 && i < nLeg && !tb.desistiu && mkvN > 0 && tbLegAss(i) && faixaLeg[i].ordinalMkv >= 0 && tbburn_pode()) {
+    int sub = faixaLeg[i].ordinalMkv, aud = tbIdxAudio();
+    legAtual = i; legPend = -1; legendaLimpar(1); legendaMarcarEnvio(-1);
+    if ((tb.ativo || tb.pend) && tb.sub == sub && tb.audio == aud) { tb.leg = i; return 1; }
+    tb.leg = i; tb.sub = sub; tb.audio = aud; tb.pend = 1; tb.pediuEm = SDL_GetTicks();
+    if (!tb.ativo) tb.durOrig = durMs / 1000.0;
+    printf("[tbburn] subtitle %d (%s, %s) is embedded ASS on this source: asking TorBox to burn it in "
+           "(TorBox subtitle %d, audio %d; playing %s)\n", i, faixaLeg[i].rotulo, faixaLeg[i].codec, sub, aud,
+           tb.ativo ? "TorBox's stream" : "the original file");
+    fflush(stdout);
+    tbburn_pedir(urlAtual, sub, aud);
+    return 1;
+  }
+  if (tb.pend) {
+    tb.pend = 0; tbburn_cancelar();
+    printf("[tbburn] request dropped: another subtitle was chosen\n");
+    fflush(stdout);
+  }
+  if (tb.ativo) { legAtual = i; tbDesligar("another subtitle was chosen", 0); }
+  return 0;
+}
+int video_tpk_queimada(void) { return tb.ativo || tb.pend ? tb.leg : -1; }
+int video_tpk_queimar_voltou(void) { int v = tb.voltar; tb.voltar = 0; return v; }
+static void tbBombear(void) {
+  static char m[4096];
+  char motivo[160];
+  int e;
+  tbburn_arquivo_tem_ass(mkvN > 0 && mkvTemAss());
+  if (tb.pend) {
+    e = tbburn_resultado(m, sizeof m, motivo, sizeof motivo);
+    if (e == TBB_PRONTO) {
+      tb.pend = 0;
+      snprintf(tb.url, sizeof tb.url, "%s", m);
+      tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = video_pos(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
+      printf("[tbburn] opening TorBox's burned stream at %.1f s (%u ms after the request)\n", tb.alvo,
+             (unsigned)(SDL_GetTicks() - tb.pediuEm));
+      fflush(stdout);
+      tbReabrir(tb.alvo);
+    } else if (e == TBB_FALHOU || SDL_GetTicks() - tb.pediuEm > 30000u) {
+      tb.pend = 0; tb.desistiu = 1; tb.voltar = !tb.ativo;
+      tbburn_cancelar();
+      printf("[tbburn] not burning in on this source: %s%s\n", e == TBB_FALHOU ? motivo : "no answer in 30 s",
+             tb.ativo ? " (TorBox's stream keeps the previous choice)" : "; Nuvio draws the subtitle");
+      fflush(stdout);
+    }
+  }
+  if (tb.ativo && !tb.tocouLog && pronto && tocando && !cv.reabrindo) {
+    tb.tocouLog = 1;
+    printf("[tbburn] burned stream playing %u ms after opening | timeline check: asked %.1f s, player at %.1f s; "
+           "duration TorBox %.1f s vs file %.1f s\n", (unsigned)(SDL_GetTicks() - tb.abriuEm), tb.alvo, video_pos(),
+           durMs / 1000.0, tb.durOrig);
+    fflush(stdout);
+  }
+  if (tb.ativo && SDL_GetTicks() - tb.logEm >= 10000u) {
+    int pico = 0, agora = rede_torbox_em_voo(&pico);
+    tb.logEm = SDL_GetTicks();
+    printf("[tbburn] 10s: playing TorBox's stream at %.1f s | Nuvio's own connections to TorBox now %d, most %d "
+           "(the TV player not counted)\n", video_pos(), agora, pico);
+    fflush(stdout);
+  }
+}
+
 static int mfEsperarAntes(const char *url, const char *cab) {
   if (!mfPode() || mf.ativo || mkvfix_e_url(url)) return 0;
   // #648: o Tizen.Multimedia.Player so entrega User-Agent e Cookie na rede
@@ -854,7 +983,7 @@ static void abrirSessao(void) {
   // nao mudam com o player: troca, seek do progressivo e reconexao abrem outro
   // player, mas a legenda escolhida (overlay do app) e o menu ficam. As
   // faixas_fim do player novo so trocam o audio (0 legendas = releitura).
-  if (!(cv.ativo && mkvN > 0)) {
+  if (!((cv.ativo || tb.ativo) && mkvN > 0)) {
     nAudio = 0; audioAtual = 0;
     // Pelo servidor com as legendas escondidas: a lista e a do arquivo e fica.
     if (!(legOcultas() && mkvN > 0)) { nLeg = 0; legAtual = -1; }
@@ -874,7 +1003,13 @@ static void abrirSessao(void) {
   sessao++;
   velEnviada = 100;   // Player novo no host: nasce em 1x
   if (!hAbrir) { falhou = 1; printf("[video] tpk: host sem player\n"); return; }
-  if (cv.ativo) {
+  if (tb.ativo) {
+    // TorBox burn-in: the player reads TorBox's HLS (its token is in the URL);
+    // no add-on headers go there.
+    printf("[tbburn] player opens TorBox's stream (the original stays the media URL)\n");
+    fflush(stdout);
+    abrirHost(tb.url, "");
+  } else if (cv.ativo) {
     // O player le do servidor local; os cabecalhos do addon sao da fonte (o
     // servidor ja os usa), nao do 127.0.0.1.
     cv.abriuEm = SDL_GetTicks(); cv.tocou = 0;
@@ -911,6 +1046,8 @@ int video_tocar(const char *u) {
   parado = 0; resgateAte = 0;
   if (cv.ativo || cv.sondando) dts_tpk_fechar();
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
+  if (tb.pend) tbburn_cancelar();
+  memset(&tb, 0, sizeof tb);
   // As listas do titulo anterior nao passam para o convertido (que as mantem
   // em abrirSessao); no caminho de sempre abrirSessao ja as zerava.
   nAudio = nLeg = 0; audioAtual = 0; legAtual = -1;
@@ -1005,7 +1142,7 @@ int video_tpk_codec_recusado(const char *codecId) {
 // por http(s) e sem desistencia nesta fonte. MKV decide pelo cabecalho; MP4 (e o
 // que nao e MKV) pela sonda do conversor, ao lado do original (convSondar).
 static int convPossivel(void) {
-  if (!reconPermitida || cv.desistiu || emTrailer || !urlAtual[0]) return 0;
+  if (!reconPermitida || cv.desistiu || emTrailer || !urlAtual[0] || tb.ativo || tb.pend) return 0;
   if (strncmp(urlAtual, "http://", 7) && strncmp(urlAtual, "https://", 8)) return 0;
   if (proxyts_e_url(urlAtual) || dts_tpk_e_url(urlAtual)) return 0;
   if (ajustes_dts_tpk_modo() == DTSTPK_DESLIGADO || !videoConvertivel()) return 0;
@@ -1160,6 +1297,21 @@ static void legendasDoArquivo(void) {
   if (ordLeg >= 0) for (i = 0; i < nl; i++) if (l[i].ordinalMkv == ordLeg) legAtual = i;
   printf("[mkvfix] subtitle menu: %d subtitle(s) from the file (hidden from the TV, drawn by the app)%s\n",
          nl, legAtual >= 0 ? i18n(", legenda escolhida mantida") : "");
+  fflush(stdout);
+}
+
+// TorBox burn-in: the file's tracks, the burned subtitle and the audio TorBox
+// plays chosen (by their places among the file's tracks of their kind).
+static void montarListaQueimada(void) {
+  static VideoFaixa a[MAX_FAIXAS], l[MAX_FAIXAS];
+  int na, nl, i;
+  listaDoArquivo(a, &na, l, &nl);
+  memcpy(faixaAudio, a, sizeof faixaAudio); memcpy(faixaLeg, l, sizeof faixaLeg);
+  nAudio = na; nLeg = nl; audioAtual = 0; legAtual = -1;
+  for (i = 0; i < na; i++) if (tbIdxAudioDe(&a[i], i) == tb.audio) audioAtual = i;
+  for (i = 0; i < nl; i++) if (l[i].ordinalMkv == tb.sub) legAtual = i;
+  if (legAtual >= 0) tb.leg = legAtual;
+  printf("[tbburn] menu: %d audio and %d subtitle(s) from the file; burned subtitle %d, audio %d\n", na, nl, legAtual, audioAtual);
   fflush(stdout);
 }
 
@@ -1413,6 +1565,10 @@ static void sondaMkv(double pos) {
         else { free(p); mkvEstado = 3; }
       }
     }
+  }
+  if (tb.ativo) {
+    if (faixasNovas && mkvN > 0) { faixasNovas = 0; montarListaQueimada(); }
+    return;
   }
   if (cv.ativo) {
     // Convertido: a lista e a do arquivo, montada quando o player responde.
@@ -1725,6 +1881,7 @@ void video_bombear(void) {
   }
   cdnBombear();
   mfBombear();
+  tbBombear();
   convBombear();
   reabrindoVigiar();
   escolhasPendentes();
@@ -1787,6 +1944,13 @@ void video_bombear(void) {
   if (!falhou && !parado && (!pronto || reconBuscarMs >= 0 || (!pausaPedida && bufferando)) &&
       nv_recon_expirou(&recon, SDL_GetTicks())) {
     reconErroCod = NV_RECON_TPK_CONNECTION_FAILED; reconErroPend = 1;
+  }
+  if (reconErroPend && tb.ativo && !parado) {
+    printf("[tbburn] player error 0x%x on TorBox's burned stream\n", (unsigned)reconErroCod);
+    fflush(stdout);
+    reconErroPend = 0; reconLinhaRede = 0;
+    nv_recon_zerar(&recon);
+    tbDesligar("the TV player failed on TorBox's stream", 1);
   }
   if (reconErroPend && !cv.ativo && !parado) {
     Uint32 agora = SDL_GetTicks();
@@ -1862,6 +2026,8 @@ void video_parar(void) {
   atomic_fetch_add(&cdnGer, 1);
   if (cv.ativo || cv.sondando) dts_tpk_fechar();
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
+  if (tb.pend) tbburn_cancelar();
+  memset(&tb, 0, sizeof tb);
   emTrailer = emCartao = 0;
   cartaoSemCover = 0;
   planoW = planoH = 0;
@@ -2339,6 +2505,18 @@ int  video_audio_atual(void) { return audioAtual; }
 int  video_legenda_atual(void) { return legAtual; }
 void video_escolher_audio(int i) {
   if (i < 0 || i >= nAudio) return;
+  // TorBox burn-in: another audio = another burned stream from TorBox.
+  if (tb.ativo || tb.pend) {
+    int aud;
+    if (i == audioAtual) return;
+    audioAtual = i; aud = tbIdxAudio();
+    if (aud == tb.audio) return;
+    tb.audio = aud; tb.pend = 1; tb.pediuEm = SDL_GetTicks();
+    printf("[tbburn] audio %d (%s) chosen: asking TorBox for subtitle %d with audio %d\n", i, faixaAudio[i].rotulo, tb.sub, aud);
+    fflush(stdout);
+    tbburn_pedir(urlAtual, tb.sub, aud);
+    return;
+  }
   // Faixa DTS/TrueHD do arquivo (a TV nao a lista): converte essa.
   if (faixaAudio[i].numero < 0 && faixaAudio[i].stream_id > 0) {
     const MkvFaixa *m = mkvTrack(faixaAudio[i].stream_id);
@@ -2363,6 +2541,8 @@ void video_escolher_audio(int i) {
 }
 void video_escolher_legenda(int i) {
   if (i >= nLeg) return;
+  // TorBox's burned stream has no subtitle tracks: nothing goes to the player.
+  if (i >= 0 && tb.ativo) { legAtual = i; legPend = -1; legendaLimpar(1); legendaMarcarEnvio(-1); return; }
   // Convertendo, as legendas sao as do arquivo: texto vai ao overlay do app
   // (faixas.c/mkvass, lendo a fonte original); o fluxo convertido nao tem
   // legenda nenhuma, entao nada vai ao player.

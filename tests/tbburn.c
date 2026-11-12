@@ -1,0 +1,92 @@
+// TorBox burn-in (tbburn.h): the pure helpers. Stubs stand in for settings,
+// debrid, the account lookup and the network.
+#include "tbburn.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+static int falhas;
+#define CHECA(c) do { if (!(c)) { printf("FALHOU %s:%d: %s\n", __FILE__, __LINE__, #c); falhas++; } } while (0)
+
+// ---- stubs -----------------------------------------------------------------
+static int pro = 1, ligado = 1, chave = 1;
+int ajustes_tb_pro(void) { return pro; }
+int ajustes_leg_queimar(void) { return ligado && pro; }
+int debrid_tb_disponivel(void) { return chave; }
+int debrid_eh_sem_plano(int st, const char *c) { return st == 403 && c && strstr(c, "PLAN"); }
+void debrid_tb_redigir(char *t) {
+  char *p;
+  while (t && (p = strstr(t, "SECRETKEY")) != NULL) { memcpy(p, "***", 3); memmove(p + 3, p + 9, strlen(p + 9) + 1); }
+}
+char *debrid_tb_api_get(const char *r, int p, int *st) { (void)r; (void)p; if (st) *st = 0; return NULL; }
+int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, char *c, unsigned n) {
+  (void)u; (void)h; (void)a; (void)b; (void)i; (void)f; (void)c; (void)n; return 0;
+}
+char *rede_baixar_st(const char *u, int s, const char *const *c, int *st) { (void)u; (void)s; (void)c; (void)st; return NULL; }
+int rede_torbox_em_voo(int *p) { if (p) *p = 0; return 0; }
+
+int main(void) {
+  char out[4096], tmp[256];
+
+  // 1) The playlist URL inside JSON, escaped slashes, after other URLs.
+  CHECA(tbburn_achar_m3u8("{\"success\":true,\"data\":{\"poster\":\"https:\\/\\/x.io\\/a.jpg\","
+                          "\"hls_url\":\"https:\\/\\/flux-007.wnam.tb-cdn.io\\/stream\\/abc\\/null\\/0\\/1\\/playlist.m3u8?token=SECRETKEY&scrobbling_enabled=False\"}}",
+                          out, sizeof out));
+  CHECA(!strcmp(out, "https://flux-007.wnam.tb-cdn.io/stream/abc/null/0/1/playlist.m3u8?token=SECRETKEY&scrobbling_enabled=False"));
+  // ".m3u8" only in the query is not a playlist.
+  CHECA(!tbburn_achar_m3u8("{\"u\":\"https://a.io/x?file=y.m3u8\"}", out, sizeof out) && !out[0]);
+  // Plain text answer.
+  CHECA(tbburn_achar_m3u8("ok https://h.tb-cdn.io/s/1/playlist.m3u8\n", out, sizeof out) &&
+        !strcmp(out, "https://h.tb-cdn.io/s/1/playlist.m3u8"));
+  CHECA(!tbburn_achar_m3u8(NULL, out, sizeof out));
+  CHECA(!tbburn_achar_m3u8("{\"data\":null}", out, sizeof out));
+  // Unterminated string: no crash, nothing found.
+  CHECA(!tbburn_achar_m3u8("{\"u\":\"https://a.io/p.m3u8", out, sizeof out));
+
+  // 2) JSON string fields anywhere; non-string values skipped.
+  CHECA(tbburn_json_texto("{\"data\":{\"presigned_token\":\"p\\/q\",\"token\":\"tt\"}}", "presigned_token", tmp, sizeof tmp) &&
+        !strcmp(tmp, "p/q"));
+  CHECA(tbburn_json_texto("{\"token\": 5, \"x\":{\"token\" : \"abc\"}}", "token", tmp, sizeof tmp) && !strcmp(tmp, "abc"));
+  CHECA(!tbburn_json_texto("{\"token\":null}", "token", tmp, sizeof tmp) && !tmp[0]);
+  // A key that is a suffix of another is not matched ("user_token" vs "token").
+  CHECA(!tbburn_json_texto("{\"user_token\":\"u\"}", "token", tmp, sizeof tmp));
+
+  // 3) The createstream route: indices per kind, scrobbling off, never the key.
+  tbburn_rota_criar(tmp, sizeof tmp, 123, 4, 0, 1, 0);
+  CHECA(!strcmp(tmp, "stream/createstream?id=123&file_id=4&type=torrent&chosen_subtitle_index=1&chosen_audio_index=0&scrobbling_enabled=false"));
+  tbburn_rota_criar(tmp, sizeof tmp, 9, 0, 1, 2, -1);
+  CHECA(strstr(tmp, "type=usenet") && strstr(tmp, "chosen_audio_index=0"));
+
+  // 4) Plan refusals.
+  CHECA(tbburn_eh_recusa_plano(403, "{\"error\":\"PLAN_RESTRICTED_FEATURE\"}"));
+  CHECA(tbburn_eh_recusa_plano(200, "{\"detail\":\"This feature is only available for Pro users.\"}"));
+  CHECA(!tbburn_eh_recusa_plano(200, "{\"success\":true}"));
+  CHECA(!tbburn_eh_recusa_plano(500, NULL));
+
+  // 5) Eligibility: Settings, plan, key, playback row.
+  pro = 1; ligado = 1; chave = 1;
+  CHECA(tbburn_pode());
+  tbburn_definir_escolha(0); CHECA(!tbburn_pode());          // playback row Off
+  tbburn_definir_escolha(1); ligado = 0; CHECA(tbburn_pode()); // row On beats Settings Off
+  tbburn_definir_escolha(-1); CHECA(!tbburn_pode());          // follows Settings (Off)
+  ligado = 1; pro = 0; tbburn_definir_escolha(1); CHECA(!tbburn_pode());   // Standard: never
+  pro = 1; chave = 0; CHECA(!tbburn_pode());                  // no key
+  chave = 1;
+  // The row carries to the next episode, and resets on a real exit.
+  tbburn_definir_escolha(0); tbburn_manter_proximo(); tbburn_sessao_nova(); CHECA(tbburn_escolha() == 0);
+  tbburn_sessao_nova(); CHECA(tbburn_escolha() == -1);
+
+  // 6) Row visibility: needs an embedded ASS track in the playing file.
+  tbburn_fonte("https://a/b.mkv", "", "b.mkv", 1);
+  CHECA(!tbburn_linha_visivel());
+  tbburn_arquivo_tem_ass(1); CHECA(tbburn_linha_visivel());
+  pro = 0; CHECA(!tbburn_linha_visivel()); pro = 1;
+  // Known file ids skip the lookup (a part picked in "files of the source").
+  tbburn_ids("https://a/b.mkv", 0, 77, 3);
+  CHECA(tbburn_linha_visivel());
+
+  if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
+  printf("tbburn: ok\n");
+  return 0;
+}
