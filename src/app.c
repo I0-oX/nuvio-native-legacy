@@ -1344,6 +1344,9 @@ static int tocarFonteGuardada(void) {
   marco("abrir: fonte guardada, sem busca");
   stream_definir_atual(-1);
   voltaFonte = s;
+#ifdef NV_TPK
+  tbburn_fonte_guardada(s.url, s.hashTorrent[0] ? s.hashTorrent : s.infoHash, s.arquivo, s.tamanhoBytes);
+#endif
   video_definir_dv(s.dolbyVision);
   video_definir_cabecalhos(s.cabecalhos);
   video_definir_mp4(stream_e_mp4(&s));

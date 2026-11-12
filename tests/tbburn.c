@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 static int falhas;
 #define CHECA(c) do { if (!(c)) { printf("FALHOU %s:%d: %s\n", __FILE__, __LINE__, #c); falhas++; } } while (0)
@@ -20,8 +21,11 @@ void debrid_tb_redigir(char *t) {
   while (t && (p = strstr(t, "SECRETKEY")) != NULL) { memcpy(p, "***", 3); memmove(p + 3, p + 9, strlen(p + 9) + 1); }
 }
 char *debrid_tb_api_get(const char *r, int p, int *st) { (void)r; (void)p; if (st) *st = 0; return NULL; }
+static char viuArquivo[512]; static uint64_t viuBytes;
 int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, char *c, unsigned n) {
-  (void)u; (void)h; (void)a; (void)b; (void)i; (void)f; (void)c; (void)n; return 0;
+  (void)u; (void)h; (void)i; (void)f; (void)c; (void)n;
+  snprintf(viuArquivo, sizeof viuArquivo, "%s", a ? a : ""); viuBytes = b;
+  return 0;
 }
 char *rede_baixar_st(const char *u, int s, const char *const *c, int *st) { (void)u; (void)s; (void)c; (void)st; return NULL; }
 int rede_torbox_em_voo(int *p) { if (p) *p = 0; return 0; }
@@ -85,6 +89,23 @@ int main(void) {
   // Known file ids skip the lookup (a part picked in "files of the source").
   tbburn_ids("https://a/b.mkv", 0, 77, 3);
   CHECA(tbburn_linha_visivel());
+
+  // 7) Reuse last link: the player opens the saved URL with no add-on details;
+  // the saved record fills them (owner's log 12/11, file=- size=0).
+  tbburn_fonte_guardada("https://x/saved.mkv", "", "S01E08.mkv", 7074247003ULL);
+  tbburn_fonte("https://x/saved.mkv", "", "", 0);
+  tbburn_arquivo_tem_ass(1);
+  CHECA(tbburn_linha_visivel());
+  tbburn_pedir("https://x/saved.mkv", 0, 1);
+  for (int k = 0; k < 200 && tbburn_resultado(NULL, 0, NULL, 0) == TBB_BUSCANDO; k++) { struct timespec t = {0, 10000000}; nanosleep(&t, NULL); }
+  CHECA(tbburn_resultado(NULL, 0, NULL, 0) == TBB_FALHOU);
+  CHECA(!strcmp(viuArquivo, "S01E08.mkv") && viuBytes == 7074247003ULL);
+  // A different URL does not take the saved record.
+  tbburn_fonte("https://x/other.mkv", "", "", 0);
+  viuArquivo[0] = 0; viuBytes = 1;
+  tbburn_pedir("https://x/other.mkv", 0, 1);
+  for (int k = 0; k < 200 && tbburn_resultado(NULL, 0, NULL, 0) == TBB_BUSCANDO; k++) { struct timespec t = {0, 10000000}; nanosleep(&t, NULL); }
+  CHECA(!viuArquivo[0] && viuBytes == 0);
 
   if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
   printf("tbburn: ok\n");

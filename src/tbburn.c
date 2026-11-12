@@ -124,8 +124,26 @@ static struct {
   char m3u8[TBB_URL_MAX], motivo[160];
 } res;
 
+// The saved last link ("Reuse last link", fontevolta) opens without the add-on's
+// list: app.c hands its saved record here first, and an empty tbburn_fonte for
+// the same URL takes it (owner's log 12/11: file=- size=0 -> not found).
+static struct { char url[TBB_URL_MAX], hash[48], arquivo[512]; uint64_t bytes; } guardada;
+void tbburn_fonte_guardada(const char *url, const char *hash, const char *arquivo, uint64_t bytes) {
+  pthread_mutex_lock(&trava);
+  snprintf(guardada.url, sizeof guardada.url, "%s", url ? url : "");
+  snprintf(guardada.hash, sizeof guardada.hash, "%s", hash ? hash : "");
+  snprintf(guardada.arquivo, sizeof guardada.arquivo, "%s", arquivo ? arquivo : "");
+  guardada.bytes = bytes;
+  pthread_mutex_unlock(&trava);
+}
+
 void tbburn_fonte(const char *url, const char *hash, const char *arquivo, uint64_t bytes) {
   pthread_mutex_lock(&trava);
+  if (url && url[0] && !strcmp(url, guardada.url) && !(hash && hash[0]) && !(arquivo && arquivo[0]) && !bytes) {
+    hash = guardada.hash; arquivo = guardada.arquivo; bytes = guardada.bytes;
+    printf("[tbburn] source details from the saved last link (Reuse last link)\n");
+    fflush(stdout);
+  }
   if (!url || strcmp(url, fonte.url)) {
     snprintf(fonte.url, sizeof fonte.url, "%s", url ? url : "");
     snprintf(fonte.hash, sizeof fonte.hash, "%s", hash ? hash : "");

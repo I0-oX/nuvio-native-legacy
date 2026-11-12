@@ -26,6 +26,10 @@ void tbburn_fonte(const char *url, const char *hash, const char *arquivo, uint64
 // "files of the source": video_tpk_cdn_arquivo). Skips the account lookup.
 void tbburn_ids(const char *url, int usenet, int item, int arquivo);
 
+// The saved last link about to play (app.c, "Reuse last link"): its file name,
+// size and hash, used when the player opens that URL without the add-on list.
+void tbburn_fonte_guardada(const char *url, const char *hash, const char *arquivo, uint64_t bytes);
+
 // Settings On + plan Pro + a TorBox key, not refused by TorBox this app
 // session, and not switched Off for this playback.
 int  tbburn_pode(void);
