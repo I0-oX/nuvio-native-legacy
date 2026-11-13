@@ -55,8 +55,10 @@ void tbburn_cancelar(void);
 // TorBox refused the plan (not Pro): burn-in stays off for this app session.
 int  tbburn_recusado(void);
 
-#ifdef NV_TPK
-// video_tpk.c. _queimada: the burned menu entry (-1 none). _voltou, once:
+#if defined(NV_TPK) || defined(NV_WEBOS)
+// The video_tpk_* names are historical: the .tpk (video_tpk.c) and webOS
+// (video.c) backends share this API. _queimada: the burned menu entry
+// (-1 none). _voltou, once:
 // 1 = burn-in gave up on this source (toast), 2 = Burn in turned Off; either
 // way the ASS tracks are back in Main's list (the caller re-picks Main).
 int  video_tpk_queimada(void);
@@ -82,9 +84,10 @@ void tbburn_lembrar(const TbFaixa *f);
 // (`m`); `pref`: the subtitle language from Settings ("" none). Pure.
 int  tbburn_escolher_auto(const TbFaixa *f, int n, int mem, const TbFaixa *m, const char *pref);
 
-#ifdef NV_TPK
-// video_tpk.c. The Burn in list (legendasui.c): `i` = a subtitle menu index of
-// a burnable track, -1 = Off. _ligar: On = the automatic choice, Off = -1.
+#if defined(NV_TPK) || defined(NV_WEBOS)
+// video_tpk.c / video.c. The Burn in list (legendasui.c): `i` = a subtitle
+// menu index of a burnable track, -1 = Off. _ligar: On = the automatic choice,
+// Off = -1.
 void video_tpk_queimar_faixa(int i);
 void video_tpk_queimar_ligar(int ligar);
 // 1 = subtitle `i` is a burnable (embedded ASS) track of this file.

@@ -2206,7 +2206,7 @@ static void tocarFonteInterno(const char *url) {
     comVideo = video_tocar(proxyts_resolver(url, px, sizeof px));
 #endif
   }
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   // TorBox burn-in (tbburn.h): what the add-on said about this source, to find
   // the file in the TorBox account if an embedded ASS track is chosen.
   if (comVideo && !ehCanal()) {
@@ -2612,7 +2612,7 @@ static void lembrarFonte(void) {
 }
 
 static void fecharSessao(int manter, int trocaFonte) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   if (!trocaFonte) tbburn_sessao_nova();   // the playback "Burn in" row ends with the session
 #endif
 #ifdef NV_TPK

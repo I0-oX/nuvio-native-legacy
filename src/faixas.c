@@ -1289,7 +1289,7 @@ static void legendaAutomatica(Uint32 agora) {
   for (i = 0; i < nEmb; i++) {
     const VideoFaixa *f = video_legenda(i);
     emb[i] = f ? f->idioma : "";
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     // Burned in (tbburn.h): every burnable ASS track is out of Main's pick.
     if (video_tpk_leg_oculta(i)) emb[i] = "zxx";
 #endif
@@ -1565,7 +1565,7 @@ void faixas_legenda_reaplicar(void) {
 
 void faixas_atualizar(float dt, Uint32 agora) {
   if (aberta && modo && coluna == 1) legendasui_atualizar(dt);
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   // Burned in stopped (TorBox failed: toast; or Burn in Off): the ASS tracks
   // are back in Main's list, so with Main off the automatic pick runs again
   // (e.g. Signs & Songs drawn by Nuvio).
