@@ -15,3 +15,4 @@ int  tbburn_resultado(char *m, unsigned n, char *mo, unsigned mn) {
 }
 void tbburn_cancelar(void) {}
 int  rede_torbox_em_voo(int *p) { if (p) *p = 0; return 0; }
+int  ajustes_leg_queimar(void) { return 0; }

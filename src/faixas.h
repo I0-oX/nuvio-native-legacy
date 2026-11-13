@@ -23,6 +23,8 @@ void faixas_abrir(void);
 // The main subtitle chosen again (TorBox burn-in switched On/Off in the
 // Subtitles menu): it burns in, or goes back to Nuvio's renderer.
 void faixas_legenda_reaplicar(void);
+// An embedded ASS track comes on as the main subtitle (Off | On | Burn in).
+int  faixas_legenda_ass_ligar(void);
 // Abre com o foco JA na coluna pedida: 0 = audio, 1 = legenda. O player tem um
 // icone para cada, e abrir sempre no audio fazia os dois parecerem o mesmo
 // botao.

@@ -190,7 +190,7 @@ void legendasui_definir_sync(const LegendasSyncProvider *p) {
 // LR_IDIOMA slot 1 (06/11, dono): the SECOND subtitle's language in the
 // Recommended view; it replaced the "Combinacao atual" pair row. OK opens its
 // sources for the second, with Off on top.
-typedef enum { LR_CAND, LR_NENHUMA, LR_MAIS, LR_SYNC, LR_ALVO, LR_ATRASO, LR_IDIOMA, LR_QUEIMAR } LuiTipo;
+typedef enum { LR_CAND, LR_NENHUMA, LR_MAIS, LR_SYNC, LR_ALVO, LR_ATRASO, LR_IDIOMA } LuiTipo;
 typedef struct {
   LuiTipo tipo;
   int slot, cand;
@@ -446,9 +446,12 @@ static int bloqueadoNaSegunda(const char *idioma) {
   return !legendasui_principal_letreiros() && mesmoIdiomaConhecido(idiomaPrincipal(), idioma);
 }
 
-// TorBox burn-in (tbburn.h): "Burn in" On/Off for this playback. Shown only
-// when it can change something (plan Pro, a key, an embedded ASS track in a file
-// that is on TorBox or not looked up yet). Off/On re-applies the main subtitle.
+// TorBox burn-in (tbburn.h, owner 13/11): the main slot's Off row becomes
+// "Off | On | Burn in" when the file has an embedded ASS track and burn-in can
+// change something (plan Pro, a key, the file on TorBox or not looked up yet).
+// Off = no subtitle; On = the subtitle drawn by Nuvio (libass); Burn in = an
+// embedded ASS track burned into the picture by TorBox. The choice lasts for
+// the playback and the next episodes (tbburn_definir_escolha).
 static int queimarVisivel(void) {
 #ifdef NV_TPK
   return tbburn_linha_visivel() || video_tpk_queimada() >= 0;
@@ -456,17 +459,25 @@ static int queimarVisivel(void) {
   return 0;
 #endif
 }
-static int queimarLigado(void) {
-#ifdef NV_TPK
-  return tbburn_pode();
-#else
-  return 0;
-#endif
+static int triVisivel(const LuiLinha *l) {
+  return l && l->tipo == LR_NENHUMA && l->slot == 0 && queimarVisivel();
 }
-static void queimarTrocar(void) {
+static int triEstado(void) {
 #ifdef NV_TPK
-  tbburn_definir_escolha(!queimarLigado());
-  faixas_legenda_reaplicar();
+  if (video_tpk_queimada() >= 0) return 2;
+#endif
+  return legendasui_slot_identidade(0)[0] ? 1 : 0;
+}
+static void desligar(const LuiLinha *l);
+static void triAplicar(const LuiLinha *l, int e) {
+  if (e == triEstado()) return;
+  if (e == 0) { desligar(l); return; }
+#ifdef NV_TPK
+  tbburn_definir_escolha(e == 2);
+  // On with a subtitle already drawn by Nuvio changes nothing; otherwise the
+  // embedded ASS track comes on (burned for Burn in, drawn by Nuvio for On).
+  if (e == 1 && triEstado() == 1) return;
+  faixas_legenda_ass_ligar();
 #endif
 }
 
@@ -521,7 +532,6 @@ static void montarLinhas(void) {
     if (sec[0]) linhaIdiomaCod(g2 ? g2->cod : si, g2 ? g2->n : 0, "s|", 1);
     for (slot = 0; slot < 2; slot++)
       if (estadoSync(slot)) linhaFixa(LR_SYNC, slot, slot ? "sync|s" : "sync|p");
-    if (queimarVisivel()) linhaFixa(LR_QUEIMAR, 0, "queimar");
     linhaFixa(LR_MAIS, 0, "mais");
   } else {
     // Todas as legendas: Usar como, Atraso, Desligada, Sincronizacao e um
@@ -530,7 +540,6 @@ static void montarLinhas(void) {
     linhaFixa(LR_ATRASO, alvo, "m|atraso");
     linhaFixa(LR_NENHUMA, alvo, "m|-");
     if (estadoSync(alvo)) linhaFixa(LR_SYNC, alvo, alvo ? "m|sync|s" : "m|sync|p");
-    if (!alvo && queimarVisivel()) linhaFixa(LR_QUEIMAR, 0, "m|queimar");
     // Usar como: Segunda — the main's language is not offered (except with a
     // Signs & Songs main); the rows mark what the chosen slot plays.
     for (g = 0; g < nGruposV && nLinhasV < LUI_MAX_LINHAS; g++)
@@ -774,7 +783,10 @@ int legendasui_evento(const SDL_Event *e) {
     if (!menu) {
       // Apply the identity captured on keydown, even if addons arrived meanwhile.
       if (okLinha.tipo == LR_CAND) escolher(okLinha.slot, &okCand);
-      else if (okLinha.tipo == LR_NENHUMA) desligar(&okLinha);
+      else if (okLinha.tipo == LR_NENHUMA) {
+        if (triVisivel(&okLinha)) triAplicar(&okLinha, (triEstado() + 1) % 3);
+        else desligar(&okLinha);
+      }
       // Grupo de idioma no SOLTAR: a TV entrega o OK segurado como varios
       // KEYDOWN; abrir no primeiro faria os seguintes cairem numa fonte.
       else if (okLinha.tipo == LR_IDIOMA) abrirIdioma(&okLinha);
@@ -809,7 +821,10 @@ int legendasui_evento(const SDL_Event *e) {
     int d = k == SDLK_RIGHT ? 1 : -1;
     if (l && l->tipo == LR_ALVO) { alvo = d > 0; return LEGUI_TRATADO; }
     if (l && l->tipo == LR_ATRASO) { mudarAtraso((e->key.repeat ? 500 : 100) * d); return LEGUI_TRATADO; }
-    if (l && l->tipo == LR_QUEIMAR) { if ((d > 0) != queimarLigado()) queimarTrocar(); return LEGUI_TRATADO; }
+    if (l && triVisivel(l)) {
+      int e = triEstado() + d;
+      if (e >= 0 && e <= 2) { triAplicar(l, e); return LEGUI_TRATADO; }
+    }
     if (l && l->tipo == LR_SYNC) {
       const char *rot[4];
       int n = nAcoes(l->slot, rot, 4);
@@ -825,12 +840,11 @@ int legendasui_evento(const SDL_Event *e) {
         mais = 1; alvo = 0; rolagemZerar(); focoChave[0] = 0; foco = 0;
         montarLinhas(); focar(nLinhasV > 3 ? 3 : 0);
         break;
-      case LR_NENHUMA: desligar(l); break;
+      case LR_NENHUMA: if (triVisivel(l)) triAplicar(l, (triEstado() + 1) % 3); else desligar(l); break;
       case LR_IDIOMA: abrirIdioma(l); break;
       case LR_CAND: escolher(l->slot, l->cand >= 0 ? &cand[l->cand] : NULL); break;
       case LR_ALVO: alvo = !alvo; break;
       case LR_ATRASO: break;
-      case LR_QUEIMAR: queimarTrocar(); break;
       case LR_SYNC: {
         const char *rot[4];
         int n = nAcoes(l->slot, rot, 4);
@@ -870,6 +884,11 @@ static void ponteiroAlvoSeg(int i, int seg) {
   if (!ponteiroAqui(i) || linhas[i].tipo != LR_ALVO) return;
   ponteiroLinha(i, 0);
   alvo = seg ? 1 : 0;
+}
+static void ponteiroTriSeg(int i, int seg) {
+  if (!ponteiroAqui(i) || !triVisivel(&linhas[i])) return;
+  ponteiroLinha(i, 0);
+  triAplicar(&linhas[i], seg);
 }
 static void ponteiroSyncPasso(int i, int d) {
   const char *rot[4];
@@ -1004,6 +1023,13 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
   nome[0] = sub[0] = 0; *idioma = NULL; *icone = NULL; *ativo = 0; *apagada = 0;
   switch (l->tipo) {
     case LR_NENHUMA:
+      if (triVisivel(l)) {
+        int e = triEstado();
+        snprintf(nome, tn, "%s", i18n("Legenda ASS"));
+        snprintf(sub, ts, "%s", i18n(e == 2 ? "Queimada pelo TorBox" : e == 1 ? "Desenhada pelo Nuvio" : "Sem legenda"));
+        *icone = "pl_captions";
+        break;
+      }
       // The Off on top of the second's sources (Recommended) reads "Desligada".
       snprintf(nome, tn, "%s", i18n(l->slot && !(ver && !mais) ? "Sem segunda legenda" : "Desligada"));
       snprintf(sub, ts, "%s", i18n("Sem legenda"));
@@ -1055,11 +1081,6 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
       snprintf(sub, ts, "%s", s ? s : "");
       *icone = "aj_wand";
       break; }
-    case LR_QUEIMAR:
-      snprintf(nome, tn, "%s", i18n("Queimar na imagem"));
-      snprintf(sub, ts, "%s \xc2\xb7 TorBox Pro", i18n(queimarLigado() ? "Ligado" : "Desligado"));
-      *icone = "pl_captions";
-      break;
     case LR_ALVO:
       snprintf(nome, tn, "%s", i18n("Usar como"));
       *icone = "pl_captions";
@@ -1135,6 +1156,17 @@ static void desenharLinha(const LuiLinha *l, int idx, int sel, float x, float y,
       ponteiro_alvo(dir - sw, y + (LU_LN_H - 54.0f) * 0.5f, w0, 54.0f, ponteiroLinha, ponteiroAlvoSeg, idx, 0);
       ponteiro_alvo(dir - sw + w0, y + (LU_LN_H - 54.0f) * 0.5f, sw - w0, 54.0f, ponteiroLinha, ponteiroAlvoSeg, idx, 1);
     }
+    dir -= sw + 12.0f;
+  } else if (triVisivel(l)) {
+    const char *rot[3] = { "Desligado", "Ligado", "Queimar na imagem" };
+    int cont[3] = { -1, -1, -1 }, e = triEstado(), k;
+    float sw = plrui_seg(rot, cont, 3, (float)e, sel, -1.0f, 0, a), x0 = dir - sw;
+    plrui_seg(rot, cont, 3, (float)e, sel, x0, y + (LU_LN_H - 54.0f) * 0.5f, a);
+    if (pont)
+      for (k = 0; k < 3; k++) {
+        float w1 = plrui_seg(rot, cont, k + 1, (float)e, sel, -1.0f, 0, a), w0 = k ? plrui_seg(rot, cont, k, (float)e, sel, -1.0f, 0, a) : 0.0f;
+        ponteiro_alvo(x0 + w0, y + (LU_LN_H - 54.0f) * 0.5f, w1 - w0, 54.0f, ponteiroLinha, ponteiroTriSeg, idx, k);
+      }
     dir -= sw + 12.0f;
   } else if (!mais && !ver && (l->tipo == LR_CAND || l->tipo == LR_NENHUMA)) {
     // (No pill on the AutoSync row: only the primary syncs, and the title

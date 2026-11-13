@@ -1048,6 +1048,7 @@ static const char *rotuloLegenda(int i, const char **marca) {
 // as de addon). E o OK da folha, e tambem o que a legenda automatica usa: os
 // dois tem de passar pelo mesmo caminho, senao uma faixa ASS escolhida sozinha
 // iria a TV sem o overlay e sem a linha de log que a folha deixa.
+static int ultimaAss = -1;   // the last embedded ASS track picked (faixas_legenda_ass_ligar)
 static void escolherLegenda(int i) {
   {
     int emb = video_n_legenda();
@@ -1062,6 +1063,8 @@ static void escolherLegenda(int i) {
     // aqui jogaria isso fora.
     if (!vaiAoApp) mkvass_parar();
     legOverlay = -1; legOverlayEsperando = -1; legOverlayRetomar = 0; legOverlayTV = 0;
+    if (i >= 0 && i < emb && fe && (!strncmp(fe->codec, "S_TEXT/ASS", 10) || !strncmp(fe->codec, "S_TEXT/SSA", 10)))
+      ultimaAss = i;
 #ifdef NV_TPK
     // TORBOX BURN-IN (tbburn.h): an embedded ASS track on a TorBox source is
     // drawn by TorBox into the picture. No overlay, no harvesting; anything
@@ -1546,6 +1549,26 @@ static void avisarQueda(int e) {
 void faixas_legenda_reaplicar(void) {
   int a = legendaAtiva();
   if (a >= 0) escolherLegenda(a);
+}
+
+// The main slot's "Off | On | Burn in" (legendasui.c): an embedded ASS track
+// comes on — the one playing if it is ASS, else the last ASS track picked in
+// this playback, else the file's first. escolherLegenda then burns it in or
+// hands it to Nuvio's renderer (tbburn_pode). 0 = the file has none.
+static int legEhAss(int i) {
+  const VideoFaixa *f = i >= 0 && i < video_n_legenda() ? video_legenda(i) : NULL;
+  return f && (!strncmp(f->codec, "S_TEXT/ASS", 10) || !strncmp(f->codec, "S_TEXT/SSA", 10) ||
+               !strcmp(f->codec, "S_ASS") || !strcmp(f->codec, "S_SSA"));
+}
+int faixas_legenda_ass_ligar(void) {
+  int a = legendaAtiva(), i, n = video_n_legenda();
+  if (!legEhAss(a)) {
+    a = legEhAss(ultimaAss) ? ultimaAss : -1;
+    for (i = 0; a < 0 && i < n; i++) if (legEhAss(i)) a = i;
+  }
+  if (a < 0) return 0;
+  escolherLegenda(a);
+  return 1;
 }
 
 void faixas_atualizar(float dt, Uint32 agora) {
