@@ -855,6 +855,7 @@ static int iniciarPoliticaFonte(int preferida, int manual) {
 #include "segurar.h"
 #include "servidores.h"
 #include "partes.h"
+#include "tbburn.h"
 #include "logrede.h"
 #include <stdio.h>
 
@@ -1343,6 +1344,9 @@ static int tocarFonteGuardada(void) {
   marco("abrir: fonte guardada, sem busca");
   stream_definir_atual(-1);
   voltaFonte = s;
+#ifdef NV_TPK
+  tbburn_fonte_guardada(s.url, s.hashTorrent[0] ? s.hashTorrent : s.infoHash, s.arquivo, s.tamanhoBytes);
+#endif
   video_definir_dv(s.dolbyVision);
   video_definir_cabecalhos(s.cabecalhos);
   video_definir_mp4(stream_e_mp4(&s));
@@ -2435,6 +2439,9 @@ static void abrirProximoEpisodio(int t, int e, int apontar) {
   // Consumir/adotar vem antes do encerramento: posplay_fechar e video_parar
   // so podem cancelar os trabalhos que ainda pertencem ao episodio antigo.
   diagnostico_cancelar_vazao();
+#ifdef NV_TPK
+  tbburn_manter_proximo();   // the playback "Burn in" choice carries to the next episode
+#endif
   player_encerrar();
   limparFonteVOD();
   if (!nv_perfil_sessao_atual(sessaoPerfil)) {

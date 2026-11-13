@@ -97,6 +97,7 @@ extern int trakt_scrobble_alvo(int, const TraktScrobbleAlvo *, double, double,
 #include "plrguia.h"
 #include "episodios.h"
 #include "streams.h"
+#include "tbburn.h"
 #include "addons.h"
 #include "duracaook.h"
 #include "partes.h"
@@ -2204,6 +2205,15 @@ static void tocarFonteInterno(const char *url) {
     comVideo = video_tocar(proxyts_resolver(url, px, sizeof px));
 #endif
   }
+#ifdef NV_TPK
+  // TorBox burn-in (tbburn.h): what the add-on said about this source, to find
+  // the file in the TorBox account if an embedded ASS track is chosen.
+  if (comVideo && !ehCanal()) {
+    const Stream *fs = stream_atual() >= 0 ? stream_item(stream_atual()) : NULL;
+    tbburn_fonte(video_url_atual(), fs ? (fs->hashTorrent[0] ? fs->hashTorrent : fs->infoHash) : "",
+                 fs ? fs->arquivo : "", fs ? fs->tamanhoBytes : 0);
+  }
+#endif
   zerarAssistido();
   mkvass_video_aberto(comVideo);
   aspArmar();
@@ -2596,6 +2606,9 @@ static void lembrarFonte(void) {
 }
 
 static void fecharSessao(int manter, int trocaFonte) {
+#ifdef NV_TPK
+  if (!trocaFonte) tbburn_sessao_nova();   // the playback "Burn in" row ends with the session
+#endif
 #ifdef NV_TPK
   // The crash after Back (27-28/10) came with no report: before the teardown,
   // make sure our SIGSEGV handler is the one on top (the main loop also checks
@@ -4785,9 +4798,11 @@ void player_atualizar(float dt, Uint32 agora) {
     { double bf = video_buffer_fim();
       mkvass_folga(bf > 0.5 ? bf - (double)posSeg : -1.0);
       // F05: troca de fonte, seek e buffer curto cancelam/pausam o AutoSync.
-      // F06: o ajuste local decide se "Por audio" existe (padrao desligado).
+      // Reserva por audio (Android): os ajustes locais ligam a reserva e a
+      // leitura dos trechos do filme em rede movel.
       legsync_auto_habilitar(ajustes_legenda_sync_auto());
       legsync_audio_habilitar(ajustes_legenda_sync_audio());
+      legsync_audio_dados_moveis(ajustes_legenda_sync_audio_movel());
       legsync_passo(xtream_url_limitada(video_url_atual()) ? "" : video_url_atual(), posSeg, bf > 0.5 ? bf - (double)posSeg : -1.0,
                     scrubbing || video_bufferando_ms() > 0, agora); }
     if (d > 1.0) {
@@ -5593,7 +5608,7 @@ static void desenharLegendaExternaCorpo(void) {
 #endif
   PlrRect av = areaVideoLegenda();
   int junto = ajustes_leg2_junto();
-  LegendasGeo g2 = { av.x, av.y, av.w, av.h, anim * entrada, entrada, posLegenda(), junto, 0.0f };
+  LegendasGeo g2 = { av.x, av.y, av.w, av.h, anim * entrada, entrada, posLegenda(), junto, 0.0f, 0 };
   float topo = -1.0f;
   // "Junto da principal": A SECUNDARIA FICA EMBAIXO (dono, 05/10/2026; antes
   // ia em cima). A principal sobe a altura dela e ela termina onde a principal
@@ -5601,6 +5616,15 @@ static void desenharLegendaExternaCorpo(void) {
   // continua em cima, estimada como sempre.
   leg2Reserva = 0.0f;
   g2.baseY = baseLegendaPrincipal();   // safe anchor for an explicit secondary position
+  if (legendasui_principal_letreiros()) {
+    // 06/11 (dono): a Signs & Songs main (libass places the signs) leaves the
+    // dialogue spot to the second, which ends where the main's text would.
+    legendasui_banda_zerar();
+    desenharLegendaPrincipal(&topo);
+    g2.lugarPrincipal = 1;
+    legendasui_desenhar_secundaria(&g2);
+    return;
+  }
   if (junto) legendasui_banda_zerar(); else legendasui_desenhar_secundaria(&g2);
   if (junto && (!assrender_ativo() || assrender_texto_simples())) {
     float h2 = legendasui_altura_secundaria(&g2);

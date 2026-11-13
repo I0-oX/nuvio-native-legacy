@@ -246,6 +246,9 @@ int rede_resto_recusado(void);
 // conexao. O primeiro Range lateral que da certo solta a pausa. Vale para o
 // fio inteiro: chamar no comeco de um fio proprio.
 void rede_lateral(int sim);
+// Nuvio's own requests in flight to TorBox hosts now; *pico (may be NULL)
+// gets the most since the last call (tbburn logs). The TV player is not counted.
+int rede_torbox_em_voo(int *pico);
 
 // Teto de bytes da transferencia corrente (0 = sem teto). E interno ao modulo;
 // esta exposto so porque rede_baixar_trecho o usa. Nao mexer de fora.

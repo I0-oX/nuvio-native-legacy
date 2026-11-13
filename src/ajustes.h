@@ -600,7 +600,25 @@ int ajustes_leg2_definir_atraso(int ms);
 int   ajustes_legenda_forcada_auto(void);    // #287: 1 = audio in the subtitle language -> only the forced track (local, default on)
 int   ajustes_legenda_sync_auto(void);       // local, ligada por padrão
 int   ajustes_audio_offset_ms(void);        // Converted audio presentation, -500..500 ms; default 0.
-int   ajustes_legenda_sync_audio(void);      // 1 = offer "Por audio" in subtitle AutoSync (F06; local, default off)
+int   ajustes_legenda_sync_audio(void);      // 1 = audio fallback of subtitle sync (Android, Reshaped; local, default on)
+int   ajustes_legenda_sync_audio_movel(void); // 1 = it may sample the film on mobile data (local, default off)
+// TorBox burn-in (tbburn.h). _tb_pro: "TorBox plan" is Pro. _leg_queimar: burn
+// embedded ASS in with TorBox is On AND the plan is Pro (.tpk only; else 0).
+int   ajustes_tb_pro(void);
+int   ajustes_leg_queimar(void);
+// The second subtitle's style fields, for the player's Style column (Main /
+// Second). _leg2_op gives the setting behind a field (-1 none); _op_* read and
+// step any setting like Left/Right in Settings (saved, applied live).
+enum { AJ2_TAMANHO, AJ2_FONTE, AJ2_COR, AJ2_OPACIDADE, AJ2_FUNDO, AJ2_POSICAO, AJ2_LUGAR,
+       AJ2_BORDA, AJ2_COR_BORDA, AJ2_NEGRITO, AJ2_N };
+int         ajustes_leg2_op(int campo);
+const char *ajustes_op_rotulo(int op);
+const char *ajustes_op_texto(int op);
+int         ajustes_op_passo(int op, int dir);
+int         ajustes_op_indice(int op);          // the stored value (index of the choice)
+int         ajustes_op_definir(int op, int v);  // saved and applied like Settings
+int         ajustes_op_n(int op);               // how many choices
+void        ajustes_leg2_restaurar(void);
 int   ajustes_trailer_zoom_tpk(void);        // #241: 1 = experimental trailer zoom on the native .tpk (local, default off)
 int   ajustes_teclado_na_tela(void);         // times the Teclado option is on the Ajustes list (0 = hidden here)
 int   ajustes_teclado_android(void);          // Android keyboard: 0 automatic, 1 app grid, 2 system IME (local)
