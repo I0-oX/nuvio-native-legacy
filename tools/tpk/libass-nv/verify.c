@@ -11,7 +11,8 @@
  * Also checks the NEON engine with 4 blur threads, that the dialogue opacity
  * (ass_nv_set_dialogue_alpha, 0003) only changes colours, and the blur scale
  * (ass_nv_set_blur_scale, 0003): 1.0 must reproduce the plain C pass byte for
- * byte, 0.0 must change the blur-heavy samples.
+ * byte, 0.0 must change at least one sample (samples without blur stay as
+ * they are, which is correct).
  */
 /* 64-bit inodes (CI overlay fs): without this, 32-bit readdir() fails with
  * EOVERFLOW and no font gets loaded. */
@@ -186,7 +187,8 @@ static int run_alpha(ASS_Library *lib, const char *file, int alpha, int noalpha,
 }
 
 /* Blur scale (0003): 1.0 must be the default pass byte for byte; 0.0 must
- * change the blur-heavy samples (the API would be dead otherwise). */
+ * change something over all the samples (the API would be dead otherwise). A
+ * sample with no blur legitimately stays the same at 0.0. */
 static int run_blur_scale(ASS_Library *lib, const char *file, double scale,
                           Frame *out, int frames)
 {
@@ -211,7 +213,7 @@ int main(int argc, char **argv)
     load_fonts(lib, argv[1]);
 
     static Frame a[MAX_FRAMES], b[MAX_FRAMES], c[MAX_FRAMES], d[MAX_FRAMES];
-    int bad = 0;
+    int bad = 0, blur_mudou_total = 0;
     double tc = 0, tn = 0;
     for (int i = 2; i < argc; i++) {
         int na = 0, nb = 0, nc = 0;
@@ -269,12 +271,13 @@ int main(int argc, char **argv)
             printf("  blur scale: 1.0 %s, 0.0 changes %d/%d frames\n",
                    same ? "FAIL" : "identical", mudou0, na);
             diff += same;
-            if (!mudou0) { printf("  blur scale: 0.0 changed nothing\n"); diff++; }
+            blur_mudou_total += mudou0;
         }
         bad |= diff != 0;
     }
     printf("total C %.0f ms, NEON %.0f ms (x%.2f; emulated, not TV speed)\n", tc, tn, tn > 0 ? tc / tn : 0);
     if (!faded_total) { printf("no image was faded: the dialogue opacity check tested nothing\n"); bad = 1; }
+    if (!blur_mudou_total) { printf("blur scale 0.0 changed no frame of any sample: the API did nothing\n"); bad = 1; }
     printf(bad ? "RESULT: FAIL\n" : "RESULT: NEON engine (1 and 4 threads) bit-identical to C;"
                  " dialogue opacity changes alpha only\n");
     ass_library_done(lib);
