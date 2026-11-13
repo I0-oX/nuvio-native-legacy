@@ -603,7 +603,7 @@ int   ajustes_audio_offset_ms(void);        // Converted audio presentation, -50
 int   ajustes_legenda_sync_audio(void);      // 1 = audio fallback of subtitle sync (Android, Reshaped; local, default on)
 int   ajustes_legenda_sync_audio_movel(void); // 1 = it may sample the film on mobile data (local, default off)
 // TorBox burn-in (tbburn.h). _tb_pro: "TorBox plan" is Pro. _leg_queimar: burn
-// embedded ASS in with TorBox is On AND the plan is Pro (.tpk only; else 0).
+// embedded ASS in with TorBox is On AND the plan is Pro (.tpk and webOS; else 0).
 int   ajustes_tb_pro(void);
 int   ajustes_leg_queimar(void);
 // The second subtitle's style fields, for the player's Style column (Main /

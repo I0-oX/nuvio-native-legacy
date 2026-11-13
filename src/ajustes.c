@@ -730,7 +730,8 @@ typedef enum {
   AJ_LEG_SYNC_AUDIO_MOVEL,
   // TorBox burn-in (tbburn.h, owner 12/11): the TorBox plan (Standard / Pro)
   // and "burn embedded ASS in with TorBox" (On by default, needs Pro + key).
-  // LOCAL, append-only; the .tpk only (foraDestaPlataforma).
+  // LOCAL, append-only; native TV players only (.tpk and webOS,
+  // foraDestaPlataforma).
   AJ_TB_PLANO,
   AJ_LEG_QUEIMAR,
   AJ_N
@@ -3214,7 +3215,7 @@ static int passoAdiante(int op, int dir);
 static int definirValorDireto(int op, int novo);
 int ajustes_tb_pro(void) { return valor[AJ_TB_PLANO] == 1; }
 int ajustes_leg_queimar(void) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   return lig(AJ_LEG_QUEIMAR) && ajustes_tb_pro();
 #else
   return 0;
@@ -6816,8 +6817,8 @@ static int foraDestaPlataforma(int op) {
 #ifndef NV_ANDROID
   if (op == AJ_FONTE_PRECARREGAR || op == AJ_LEG_SYNC_AUDIO || op == AJ_LEG_SYNC_AUDIO_MOVEL || op == AJ_TUNNELING) return 1;
 #endif
-#ifndef NV_TPK
-  // TorBox burn-in plays TorBox's HLS on the Samsung .tpk player only (tbburn.h).
+#if !defined(NV_TPK) && !defined(NV_WEBOS)
+  // TorBox burn-in plays TorBox's HLS on the native TV players (.tpk and webOS, tbburn.h).
   if (op == AJ_TB_PLANO || op == AJ_LEG_QUEIMAR) return 1;
 #endif
 #if defined(NV_ANDROID) && !defined(NV_P2P_MOTOR)

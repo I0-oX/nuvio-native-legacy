@@ -671,8 +671,8 @@ static int estAlvo;          // 0 = the main subtitle, 1 = the second
 static int estAlvoMexeu;     // the person picked; burn-in no longer opens on Second
 static int estSegunda(void) { return legenda2_estado() == LEG2_ATIVA; }
 static int estQueimada(void) {
-#ifdef NV_TPK
-  return video_tpk_queimada() >= 0;
+#if defined(NV_TPK) || defined(NV_WEBOS)
+  return video_queimada() >= 0;
 #else
   return 0;
 #endif
@@ -1091,11 +1091,11 @@ static void escolherLegenda(int i) {
     // aqui jogaria isso fora.
     if (!vaiAoApp) mkvass_parar();
     legOverlay = -1; legOverlayEsperando = -1; legOverlayRetomar = 0; legOverlayTV = 0;
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     // TORBOX BURN-IN (tbburn.h): an embedded ASS track on a TorBox source is
     // drawn by TorBox into the picture. No overlay, no harvesting; anything
     // else chosen (another track, an add-on subtitle, Off) leaves the burn.
-    if (video_tpk_queimar(i >= 0 && i < emb ? i : -1)) {
+    if (video_queimar(i >= 0 && i < emb ? i : -1)) {
       mkvass_parar();
       legenda_desligar(); legExterna = -1; legExternaId[0] = 0;
       legsync_primaria_outra(1);   // the embedded track follows the video
@@ -1579,10 +1579,10 @@ void faixas_legenda_reaplicar(void) {
 
 void faixas_atualizar(float dt, Uint32 agora) {
   if (aberta && modo && coluna == 1) legendasui_atualizar(dt);
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   // TorBox burn-in gave up on this source (TorBox refused, no answer, or the
   // TV player failed on its stream): the same subtitle goes to Nuvio's renderer.
-  if (video_tpk_queimar_voltou()) {
+  if (video_queimar_voltou()) {
     int a = legendaAtiva();
     player_toast_ex(i18n("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda"), 6000, "pl_captions", 1);
     if (a >= 0) escolherLegenda(a);

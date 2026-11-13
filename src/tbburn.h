@@ -7,9 +7,9 @@
 // "TorBox plan" = Pro, "Burn in ASS with TorBox" On (default) and a TorBox key.
 //
 // The playing URL stays the ORIGINAL file for everything else (sync, resume,
-// chapters, thumbnails: video_url_atual() in video_tpk.c); only the URL handed
-// to the TV player changes. This module finds the file in the account, asks
-// TorBox for the stream and logs everything with the key redacted.
+// chapters, thumbnails: video_url_atual() in video_tpk.c and video.c); only the
+// URL handed to the TV player changes. This module finds the file in the
+// account, asks TorBox for the stream and logs everything with the key redacted.
 //
 // TorBox's web player URL is .../stream/<id>/<resolution>/<subtitle>/<audio>/
 // playlist.m3u8 (owner's screenshot, 12/11): each index counts only the tracks
@@ -41,7 +41,8 @@ void tbburn_sessao_nova(void);
 // The next close is the step to the next episode: keep the playback choice.
 void tbburn_manter_proximo(void);
 // The row is worth showing: plan Pro, a key, and the file is on TorBox (found)
-// or not looked up yet. Set by video_tpk.c when the file has an embedded ASS.
+// or not looked up yet. Set by video_tpk.c / video.c when the file has an
+// embedded ASS.
 int  tbburn_linha_visivel(void);
 void tbburn_arquivo_tem_ass(int sim);
 
@@ -55,14 +56,15 @@ void tbburn_cancelar(void);
 // TorBox refused the plan (not Pro): burn-in stays off for this app session.
 int  tbburn_recusado(void);
 
-#ifdef NV_TPK
-// video_tpk.c. _queimar: the subtitle `i` (menu index, -1 = none/add-on) was
-// just chosen; 1 = it is burned in (or being asked for), the caller draws
-// nothing. _queimada: the burned menu entry (-1 none). _voltou: 1 once after
-// burn-in gave up on this source (the caller re-picks the subtitle).
-int  video_tpk_queimar(int i);
-int  video_tpk_queimada(void);
-int  video_tpk_queimar_voltou(void);
+#if defined(NV_TPK) || defined(NV_WEBOS)
+// video_tpk.c (.tpk) and video.c (webOS). _queimar: the subtitle `i` (menu
+// index, -1 = none/add-on) was just chosen; 1 = it is burned in (or being
+// asked for), the caller draws nothing. _queimada: the burned menu entry
+// (-1 none). _voltou: 1 once after burn-in gave up on this source (the
+// caller re-picks the subtitle).
+int  video_queimar(int i);
+int  video_queimada(void);
+int  video_queimar_voltou(void);
 #endif
 
 // ---- pure (tests) ----------------------------------------------------------

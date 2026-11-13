@@ -74,7 +74,7 @@ static const Item TELA[] = {
     ROT("Idiomas"),
       OPC(AJ_IDIOMA), OPC(AJ_AUD_LINGUA), OPC(AJ_AUD_LINGUA2), OPC(AJ_LEG_LINGUA), OPC(AJ_LEG_FORCADA),
       OPC(AJ_LEG_MOSTRAR), OPC(AJ_LEG_SYNC_AUTO),
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
       OPC(AJ_LEG_QUEIMAR),   // TorBox burn-in (tbburn.h), greyed without plan Pro + key
 #endif
 #ifdef NV_ANDROID
@@ -109,7 +109,7 @@ static const Item TELA[] = {
       OPC(AJ_PROVEDORES_ESCOPO), OPC(AJ_DEBRID_RD), OPC(AJ_DEBRID_TB), OPC(AJ_DEBRID_PM), OPC(AJ_DEBRID_AD),
       OPC(AJ_DEBRID_AD_TESTAR), OPC(AJ_DEBRID_RD_TESTAR),
       OPC(AJ_DEBRID_TB_TESTAR), OPC(AJ_DEBRID_PM_TESTAR),
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
       OPC(AJ_TB_PLANO),      // TorBox burn-in needs Pro (tbburn.h)
 #endif
     ROT("Servidores pessoais"),

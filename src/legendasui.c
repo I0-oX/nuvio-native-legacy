@@ -450,21 +450,21 @@ static int bloqueadoNaSegunda(const char *idioma) {
 // when it can change something (plan Pro, a key, an embedded ASS track in a file
 // that is on TorBox or not looked up yet). Off/On re-applies the main subtitle.
 static int queimarVisivel(void) {
-#ifdef NV_TPK
-  return tbburn_linha_visivel() || video_tpk_queimada() >= 0;
+#if defined(NV_TPK) || defined(NV_WEBOS)
+  return tbburn_linha_visivel() || video_queimada() >= 0;
 #else
   return 0;
 #endif
 }
 static int queimarLigado(void) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   return tbburn_pode();
 #else
   return 0;
 #endif
 }
 static void queimarTrocar(void) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   tbburn_definir_escolha(!queimarLigado());
   faixas_legenda_reaplicar();
 #endif

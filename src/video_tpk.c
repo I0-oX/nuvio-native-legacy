@@ -822,7 +822,7 @@ static void tbDesligar(const char *porque, int desistir) {
   fflush(stdout);
   tbReabrir(alvo);
 }
-int video_tpk_queimar(int i) {
+int video_queimar(int i) {
   if (!ativo || !reconPermitida || emTrailer || !urlAtual[0]) return 0;
   if (i >= 0 && i < nLeg && !tb.desistiu && mkvN > 0 && tbLegAss(i) && faixaLeg[i].ordinalMkv >= 0 && tbburn_pode()) {
     int sub = faixaLeg[i].ordinalMkv, aud = tbIdxAudio();
@@ -845,8 +845,8 @@ int video_tpk_queimar(int i) {
   if (tb.ativo) { legAtual = i; tbDesligar("another subtitle was chosen", 0); }
   return 0;
 }
-int video_tpk_queimada(void) { return tb.ativo || tb.pend ? tb.leg : -1; }
-int video_tpk_queimar_voltou(void) { int v = tb.voltar; tb.voltar = 0; return v; }
+int video_queimada(void) { return tb.ativo || tb.pend ? tb.leg : -1; }
+int video_queimar_voltou(void) { int v = tb.voltar; tb.voltar = 0; return v; }
 static void tbBombear(void) {
   static char m[4096];
   char motivo[160];
