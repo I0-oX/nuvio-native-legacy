@@ -3020,6 +3020,7 @@
   T("Modo do player da Live TV", "Mode du lecteur Live TV"),
   T("Modo do player dos canais", "Mode du lecteur des chaînes"),
   T("Modo lista", "Mode liste"),
+  T("Modo rendimento (experimental)", "Mode performance (expérimental)"),
   T("Modo seguro ligado", "Mode sûr activé"),
   T("Monumento", "Monument"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Affiche la note IMDb dans le coin des affiches de l'Accueil."),

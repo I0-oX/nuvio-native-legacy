@@ -7,9 +7,10 @@
 // now fixed here (the TPK column of assperf.c) and the test panel is gone.
 //
 // What the person can still change lives in Subtitles > Style on an ASS/SSA
-// track (faixas.c, .tpk only): size and opacity of the dialogue, contrast and
-// gamma to match the TV, render resolution and libass itself (on/off). They
-// are kept in assperf.txt (data), on this TV only.
+// track (faixas.c, .tpk and webOS): size and opacity of the dialogue, contrast
+// and gamma to match the TV (Samsung only), render resolution, libass itself
+// (on/off) and the performance mode (experimental, off by default). They are
+// kept in assperf.txt (data), on this TV only.
 //
 // THE .wgt AND ANDROID DO NOT CHANGE. assrender.c is shared: there ASS_NOVO is
 // 0 and assperf_get returns 0, the behaviour from before 23/10. webOS has the
@@ -58,7 +59,7 @@
 #define ASS_NOVO_TPK 0
 #endif
 
-// The person's options (Subtitles > Style on an ASS/SSA track, .tpk):
+// The person's options (Subtitles > Style on an ASS/SSA track, .tpk and webOS):
 enum {
   AP_ESCALA,       // render resolution: 0 100%, 2 75%, 5 Auto (100%, 75% while busy)
   AP_GAMA,         // gamma like the TV's slider: 0 off, 1..5 = -1..-5, 6..10 = +5..+1
@@ -66,6 +67,7 @@ enum {
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
+  AP_RENDIMENTO,   // "Modo rendimento (experimental)": 0 off (default), 1 on
   AP_N
 };
 
@@ -117,6 +119,27 @@ void   assperf_carga_gl(double ms);          // GL thread: cost of a new frame (
 // 0.5 s ahead (render resolution Auto only, so it drops to 75 % just before).
 void   assperf_previsao(int inicios, long chars, int imagens, int iniciosCedo, long charsCedo);
 int    assperf_pesado(void);                 // 1 = busy scene now
+
+/* ---- Performance mode (experimental, "Modo rendimento") -------------------
+ * AP_RENDIMENTO, off by default. The busy detector above drives a ladder of
+ * one level at a time, on the worker:
+ *   0 normal; 1 render resolution 75 % (Auto only, as AP_ESCALA allows);
+ *   2 the frame grid on every other video frame; 3 no blur.
+ * Up one level after REND_SOBE_S of busy scene, down one after REND_DESCE_S
+ * of calm, both restarted on every change; a new track or a seek is back
+ * to 0. Off: the level is always 0 and nothing of this changes a pass.
+ * Levels 1 and 2 are read by the worker and the GL thread; level 3 is pushed
+ * to libass by the worker (ass_nv_set_blur_scale). */
+int    assperf_rendimento_nivel(void);       // current level; 0 when off
+int    assperf_rendimento_passo(void);       // worker: advance the ladder, returns the level
+double assperf_rendimento_blur(void);        // libass blur scale for the level: 1.0 or 0.0
+/* New track or seek: back to level 0, dwells forgotten. assperf_escala_reset
+ * calls it (a new track), and the seek path calls it alone so a seek does not
+ * touch the Auto -- with the option OFF nothing changes. */
+void   assperf_rendimento_reset(void);
+#define ASSPERF_REND_NIVEIS 4                // 0..3
+#define ASSPERF_REND_BLUR   3                // level that turns the blur off
+#define ASSPERF_REND_GRADE  2                // level of the every-other-frame grid
 
 #ifdef NV_ASSPERF_TESTE
 void assperf_teste_definir(int id, int v);   // tests on the computer

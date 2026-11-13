@@ -24,6 +24,7 @@
 static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __attribute__((unused)) = {
   [AP_ESCALA] = { "escala", 0, 5, 5 }, [AP_GAMA] = { "gama", 0, 10, 0 }, [AP_CONTRASTE] = { "contraste", 0, 30, 0 },
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
+  [AP_RENDIMENTO] = { "rendimento", 0, 1, 0 },
 };
 
 static int val[AP_N] __attribute__((unused));   // off the .tpk and webOS: read only by the tests
@@ -243,8 +244,102 @@ static struct { int em75; double desde; } A;
 
 static void auto_trocar_locked(int em75, double t) { A.em75 = em75; A.desde = t; }
 
+/* ---- Performance mode (experimental, "Modo rendimento") --------------------
+ * AP_RENDIMENTO, off by default. The same busy detector walks one level at a
+ * time and stops where the scene allows:
+ *   0 normal;
+ *   1 render resolution 75 % (the Auto fallback);
+ *   2 the frame grid on every other video frame (assrender.c, fps/2);
+ *   3 no blur (ass_nv_set_blur_scale 0, the 0003 patch of tools/tpk/libass-nv).
+ * Levels are cumulative: at 3 the 1 and 2 are still in force.
+ *
+ * Up one level after REND_SOBE_S of busy scene; down one after REND_DESCE_S
+ * of calm. Both are the Auto dwells (AUTO_MIN100_S / AUTO_MIN75_S) reused as
+ * starting values: they were measured for the 100 %<->75 % switch of the
+ * Auto, not for this ladder, and not on an LG. The change is logged once per
+ * level with the load that caused it, so a TV log says whether the dwells
+ * are too short or too long.
+ *
+ * "Busy" is the detector's flag plus its 0.5 s forecast (assperf_previsao),
+ * the same condition the Auto uses to drop to 75 % before the scene instead
+ * of in its first frames. The accumulators take the time between evaluations
+ * (one per rendered frame on the worker), clamped to 0.25 s so a pause -- no
+ * frame, no evaluation -- does not walk the ladder on its own.
+ *
+ * OFF: assperf_rendimento_nivel is 0 and the ladder changes nothing; the
+ * worker still calls assperf_rendimento_passo, which only clears the state. */
+#define REND_SOBE_S  AUTO_MIN100_S
+#define REND_DESCE_S AUTO_MIN75_S
+static struct { int nivel, ligado; double ult, sobeAcum, desceAcum; int avisou; } RD;
+static pthread_mutex_t rdTrava = PTHREAD_MUTEX_INITIALIZER;
+
+int assperf_rendimento_nivel(void) {
+  int n = __atomic_load_n(&RD.nivel, __ATOMIC_RELAXED);
+  return n > 0 && assperf_get(AP_RENDIMENTO) ? n : 0;
+}
+
+int assperf_rendimento_passo(void) {
+  int nivel, pesado, mudou = -1, avisar = 0;
+  double t, dt, carga = 0;
+  if (!assperf_get(AP_RENDIMENTO)) {
+    /* OFF is the default and must cost and change nothing: no lock, no write,
+     * once the option has never been on. If it was just turned off, the level
+     * goes back to 0 and the dwells are forgotten. */
+    if (!__atomic_load_n(&RD.ligado, __ATOMIC_RELAXED)) return 0;
+    pthread_mutex_lock(&rdTrava);
+    __atomic_store_n(&RD.ligado, 0, __ATOMIC_RELAXED);
+    RD.ult = 0; RD.sobeAcum = RD.desceAcum = 0;
+    __atomic_store_n(&RD.nivel, 0, __ATOMIC_RELAXED);
+    pthread_mutex_unlock(&rdTrava);
+    return 0;
+  }
+  t = agoraS();
+  /* The detector's flag and the forecast, with the same lock the Auto uses.
+   * The load reading is 20 additions and only reaches the log on a change. */
+  pthread_mutex_lock(&autoTrava);
+  pesado = pesado_locked(t) || CG.prevCedo;
+  carga = carga_locked(t);
+  pthread_mutex_unlock(&autoTrava);
+  pthread_mutex_lock(&rdTrava);
+  if (!RD.ligado) {   /* turned on: the dwells start now, never from before */
+    __atomic_store_n(&RD.ligado, 1, __ATOMIC_RELAXED);
+    RD.ult = 0; RD.sobeAcum = RD.desceAcum = 0;
+    avisar = !RD.avisou; RD.avisou = 1;
+  }
+  dt = RD.ult > 0 ? t - RD.ult : 0;
+  if (dt < 0 || dt > 0.25) dt = 0;
+  RD.ult = t;
+  if (pesado) { RD.sobeAcum += dt; RD.desceAcum = 0; }
+  else        { RD.desceAcum += dt; RD.sobeAcum = 0; }
+  nivel = __atomic_load_n(&RD.nivel, __ATOMIC_RELAXED);
+  if (nivel < ASSPERF_REND_NIVEIS - 1 && RD.sobeAcum >= REND_SOBE_S) {
+    nivel++; RD.sobeAcum = RD.desceAcum = 0; mudou = nivel;
+  } else if (nivel > 0 && RD.desceAcum >= REND_DESCE_S) {
+    nivel--; RD.sobeAcum = RD.desceAcum = 0; mudou = nivel;
+  }
+  __atomic_store_n(&RD.nivel, nivel, __ATOMIC_RELAXED);
+  pthread_mutex_unlock(&rdTrava);
+  if (avisar)
+    printf("[ass] modo rendimento: ligado (sobe a cada %.1f s de cena pesada, desce a cada %.1f s de cena leve)\n",
+           REND_SOBE_S, REND_DESCE_S);
+  if (mudou >= 0) printf("[ass] modo rendimento: nivel %d (carga %.0f ms/s)\n", mudou, carga);
+  if (avisar || mudou >= 0) fflush(stdout);
+  return nivel;
+}
+
+double assperf_rendimento_blur(void) {
+  return assperf_rendimento_nivel() >= ASSPERF_REND_BLUR ? 0.0 : 1.0;
+}
+
+void assperf_rendimento_reset(void) {
+  pthread_mutex_lock(&rdTrava);
+  RD.ult = 0; RD.sobeAcum = RD.desceAcum = 0;
+  __atomic_store_n(&RD.nivel, 0, __ATOMIC_RELAXED);
+  pthread_mutex_unlock(&rdTrava);
+}
+
 double assperf_escala_quadro(void) {
-  int v = assperf_get(AP_ESCALA);
+  int v = assperf_get(AP_ESCALA), niv = assperf_rendimento_nivel();
   double t, r;
   if (v != 5) {
     pthread_mutex_lock(&autoTrava);
@@ -254,10 +349,18 @@ double assperf_escala_quadro(void) {
   }
   t = agoraS();
   pthread_mutex_lock(&autoTrava);
-  { int pesado = pesado_locked(t) || CG.prevCedo;
+  if (niv >= 1) {
+    /* Level 1: Auto stays at 75 % while the ladder is degraded. The person's
+     * explicit 100 % or 75 % (v != 5) is not overridden: AP_ESCALA keeps its
+     * meaning, as before this option existed. */
+    if (!A.em75) auto_trocar_locked(1, t);
+    r = 0.75;
+  } else {
+    int pesado = pesado_locked(t) || CG.prevCedo;
     if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t);
-    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t); }
-  r = A.em75 ? 0.75 : 1.0;
+    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t);
+    r = A.em75 ? 0.75 : 1.0;
+  }
   pthread_mutex_unlock(&autoTrava);
   return r;
 }
@@ -267,11 +370,17 @@ void assperf_escala_reset(void) {
   A.em75 = 0; A.desde = agoraS();
   memset(&CG, 0, sizeof CG);   /* new track: the load starts from zero */
   pthread_mutex_unlock(&autoTrava);
+  /* A new track also starts the performance mode at level 0: the scene
+   * before it says nothing about the next one. */
+  assperf_rendimento_reset();
 }
 
 double assperf_escala(void) {
   int v = assperf_get(AP_ESCALA), em75;
   if (v != 5) return v == 2 ? 0.75 : 1.0;
+  /* Same answer the worker is using: the ladder's level 1 pins Auto at 75 %
+   * even before the worker rendered with it (telalag.c's picture sync). */
+  if (assperf_rendimento_nivel() >= 1) return 0.75;
   pthread_mutex_lock(&autoTrava); em75 = A.em75; pthread_mutex_unlock(&autoTrava);
   return em75 ? 0.75 : 1.0;
 }

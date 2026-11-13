@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Režim přehrávače Live TV"),
   T("Modo do player dos canais", "Režim přehrávače kanálů"),
   T("Modo lista", "Režim seznamu"),
+  T("Modo rendimento (experimental)", "Režim výkonu (experimentální)"),
   T("Modo seguro ligado", "Nouzový režim zapnut"),
   T("Monumento", "Monument"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Zobrazí hodnocení IMDb v rohu plakátů na úvodní obrazovce."),

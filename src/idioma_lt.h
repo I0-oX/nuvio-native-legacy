@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Live TV grotuvo režimas"),
   T("Modo do player dos canais", "Kanalų grotuvo režimas"),
   T("Modo lista", "Sąrašo režimas"),
+  T("Modo rendimento (experimental)", "Našumo režimas (eksperimentinis)"),
   T("Modo seguro ligado", "Saugusis režimas įjungtas"),
   T("Monumento", "Monumentas"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Rodo IMDb įvertinimą Pradžios plakatų kampe."),

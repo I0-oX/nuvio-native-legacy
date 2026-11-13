@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Live TV oynatıcı modu"),
   T("Modo do player dos canais", "Kanal oynatıcı modu"),
   T("Modo lista", "Liste modu"),
+  T("Modo rendimento (experimental)", "Performans modu (deneysel)"),
   T("Modo seguro ligado", "Güvenli mod açık"),
   T("Monumento", "Anıt"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Ana ekran afişlerinin köşesinde IMDb puanını gösterir."),

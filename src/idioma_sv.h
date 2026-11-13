@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Spelarläge för Live TV"),
   T("Modo do player dos canais", "Spelarläge för kanaler"),
   T("Modo lista", "Listläge"),
+  T("Modo rendimento (experimental)", "Prestandaläge (experimentellt)"),
   T("Modo seguro ligado", "Säkert läge på"),
   T("Monumento", "Monument"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Visar IMDb-betyget i hörnet på affischerna på Hem."),

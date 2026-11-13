@@ -3020,6 +3020,7 @@
   T("Modo do player da Live TV", "Режим плеєра Live TV"),
   T("Modo do player dos canais", "Режим плеєра каналів"),
   T("Modo lista", "Режим списку"),
+  T("Modo rendimento (experimental)", "Режим продуктивності (експериментальний)"),
   T("Modo seguro ligado", "Безпечний режим увімкнено"),
   T("Monumento", "Монумент"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Показує оцінку IMDb у кутку постерів на головній."),

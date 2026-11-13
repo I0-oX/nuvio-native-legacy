@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Modo do leitor da Live TV"),
   T("Modo do player dos canais", "Modo do leitor dos canais"),
   T("Modo lista", "Modo lista"),
+  T("Modo rendimento (experimental)", "Modo rendimento (experimental)"),
   T("Modo seguro ligado", "Modo seguro ligado"),
   T("Monumento", "Monumento"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Mostra a classificação do IMDb no canto dos cartazes do Início."),

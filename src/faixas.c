@@ -623,13 +623,14 @@ static int nLinhas(int col) {
 // linha restaura o conjunto inteiro sem exigir dezenas de toques no controle.
 enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
 #ifdef FX_ASSUI
-       /* ASS/SSA tracks on the .tpk (owner 26-27/10): with libass on, the
+       /* ASS/SSA tracks (.tpk and webOS, owner 26-27/10): with libass on, the
         * column is size and opacity of the dialogue, delay, contrast, gamma,
-        * render resolution, picture sync, libass itself and Restore
-        * defaults (always the last cell). With libass off it is the ordinary
-        * column plus the libass row, Restore defaults last. On webOS EST_SINC
-        * is only a placeholder (no frame grid there): the menu never lists it. */
-       EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
+        * render resolution, performance mode (experimental), picture sync,
+        * libass itself and Restore defaults (always the last cell). With
+        * libass off it is the ordinary column plus the libass row, Restore
+        * defaults last. EST_SINC is .tpk only (the webOS grid has no picture
+        * sync row): the menu never lists it there. */
+       EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_REND, EST_SINC,
 #endif
        /* MAIN / SECOND (owner 12/11): "Edit" switches the column between the
         * main subtitle and the second one (shown only while a second subtitle
@@ -644,7 +645,8 @@ static const char *const EST_ROT[EST_TOTAL] = {
   "Tamanho", "Fonte OpenSubtitles", "Cor", "Opacidade", "Fundo", "Posição", "Borda", "Atraso",
   "Negrito", "Restaurar padrão", "Cor da borda"
 #ifdef FX_ASSUI
-  , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
+  , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas",
+  "Modo rendimento (experimental)", "Sincronia com a imagem"
 #endif
   , "Editar", "Legenda queimada",
   "Tamanho", "Fonte da legenda", "Cor", "Opacidade", "Fundo", "Posição", "Posição da segunda legenda",
@@ -721,8 +723,8 @@ static void estMapa(void) {
 #ifdef FX_ASSUI
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
-      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CALIB_LINHAS EST_ESCALA, EST_SINC_LINHA
-                               EST_LIBASS, EST_RESTAURAR };
+      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CALIB_LINHAS EST_ESCALA, EST_REND,
+                               EST_SINC_LINHA EST_LIBASS, EST_RESTAURAR };
       for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) estLinhas[estNLinhas++] = L[i];
       return;
     }
@@ -819,6 +821,7 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
       snprintf(dst, tam, "%s", v == 5 ? i18n("Automático") : v == 2 ? "75%" : "100%");
       break; }
+    case EST_REND: snprintf(dst, tam, "%s", i18n(assperf_get(AP_RENDIMENTO) ? "Ligado" : "Desligado")); break;
 #endif
 #ifdef NV_TPK
     case EST_SINC: { int lv, ps, ag;
@@ -878,6 +881,9 @@ static void ciclarEstilo(int linha) {
       int v = assperf_get(AP_ESCALA);
       assperf_definir(AP_ESCALA, v == 5 ? 0 : v == 0 ? 2 : 5);
       return; }
+    case EST_REND:   // performance mode: off <-> on; the worker starts at level 0
+      assperf_definir(AP_RENDIMENTO, !assperf_get(AP_RENDIMENTO));
+      return;
     case EST_LIBASS:
       /* The same track again, so libass takes it (or lets it go). */
       assperf_definir(AP_LIBASS, !assperf_get(AP_LIBASS));

@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Режим на плейъра за Live TV"),
   T("Modo do player dos canais", "Режим на плейъра за канали"),
   T("Modo lista", "Режим на списък"),
+  T("Modo rendimento (experimental)", "Режим за производителност (експериментален)"),
   T("Modo seguro ligado", "Безопасният режим е включен"),
   T("Monumento", "Монумент"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Показва оценката от IMDb в ъгъла на плакатите в Начало."),

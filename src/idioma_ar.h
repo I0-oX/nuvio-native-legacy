@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "وضع مشغل التلفاز المباشر"),
   T("Modo do player dos canais", "وضع مشغل القنوات"),
   T("Modo lista", "وضع القائمة"),
+  T("Modo rendimento (experimental)", "وضع الأداء (تجريبي)"),
   T("Modo seguro ligado", "الوضع الآمن مفعّل"),
   T("Monumento", "النصب"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "يعرض تقييم IMDb في زاوية ملصقات الرئيسية."),

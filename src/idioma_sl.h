@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Način predvajalnika Live TV"),
   T("Modo do player dos canais", "Način predvajalnika kanalov"),
   T("Modo lista", "Način seznama"),
+  T("Modo rendimento (experimental)", "Način delovanja (poskusno)"),
   T("Modo seguro ligado", "Varni način vklopljen"),
   T("Monumento", "Spomenik"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Prikaže oceno IMDb v kotu plakatov na domačem zaslonu."),

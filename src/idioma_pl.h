@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Tryb odtwarzacza Live TV"),
   T("Modo do player dos canais", "Tryb odtwarzacza kanałów"),
   T("Modo lista", "Tryb listy"),
+  T("Modo rendimento (experimental)", "Tryb wydajności (eksperymentalny)"),
   T("Modo seguro ligado", "Tryb awaryjny włączony"),
   T("Monumento", "Monument"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Pokazuje ocenę IMDb w rogu plakatów na ekranie głównym."),

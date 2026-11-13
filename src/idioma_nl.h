@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Spelermodus voor Live TV"),
   T("Modo do player dos canais", "Spelermodus voor zenders"),
   T("Modo lista", "Lijstmodus"),
+  T("Modo rendimento (experimental)", "Prestatiemodus (experimenteel)"),
   T("Modo seguro ligado", "Veilige modus aan"),
   T("Monumento", "Monument"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Toont de IMDb-beoordeling in de hoek van de posters op Start."),

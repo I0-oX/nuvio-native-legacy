@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Λειτουργία αναπαραγωγής Live TV"),
   T("Modo do player dos canais", "Λειτουργία προγράμματος καναλιών"),
   T("Modo lista", "Λειτουργία λίστας"),
+  T("Modo rendimento (experimental)", "Λειτουργία απόδοσης (πειραματική)"),
   T("Modo seguro ligado", "Ασφαλής λειτουργία ενεργή"),
   T("Monumento", "Μνημείο"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Δείχνει τη βαθμολογία IMDb στη γωνία των αφισών της Αρχικής."),

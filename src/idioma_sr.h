@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Način plejera za Live TV"),
   T("Modo do player dos canais", "Režim plejera za kanale"),
   T("Modo lista", "Režim liste"),
+  T("Modo rendimento (experimental)", "Režim performansi (eksperimentalno)"),
   T("Modo seguro ligado", "Bezbedni režim uključen"),
   T("Monumento", "Spomenik"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Prikazuje IMDb ocenu u uglu postera na Početnoj."),

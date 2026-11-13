@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Chế độ trình phát Live TV"),
   T("Modo do player dos canais", "Chế độ trình phát kênh"),
   T("Modo lista", "Chế độ danh sách"),
+  T("Modo rendimento (experimental)", "Chế độ hiệu năng (thử nghiệm)"),
   T("Modo seguro ligado", "Chế độ an toàn đang bật"),
   T("Monumento", "Tượng đài"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Hiển thị điểm IMDb ở góc poster của Trang chủ."),

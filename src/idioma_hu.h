@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Live TV lejátszómód"),
   T("Modo do player dos canais", "Csatornalejátszó módja"),
   T("Modo lista", "Listamód"),
+  T("Modo rendimento (experimental)", "Teljesítmény mód (kísérleti)"),
   T("Modo seguro ligado", "Biztonságos mód bekapcsolva"),
   T("Monumento", "Monumentum"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Megjeleníti az IMDb-értékelést a főoldali posztereken, a sarokban."),

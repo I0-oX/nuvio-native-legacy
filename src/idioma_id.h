@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Mode pemutar Live TV"),
   T("Modo do player dos canais", "Mode pemutar saluran"),
   T("Modo lista", "Mode daftar"),
+  T("Modo rendimento (experimental)", "Mode performa (eksperimental)"),
   T("Modo seguro ligado", "Mode aman nyala"),
   T("Monumento", "Monumen"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Menampilkan rating IMDb di pojok poster Beranda."),

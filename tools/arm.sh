@@ -140,7 +140,7 @@ ctr_run --rm --platform "$BUILD_PLATFORM" --env-file "$ENVF" \
   ASS_LIBS=""
   if [ "${NUVIO_ASS_LIBASS:-1}" = "1" ]; then
     [ -f "$ASS/include/ass/ass.h" ] || { echo "libass ARM ausente na imagem; reconstrua tools/Dockerfile ou use NUVIO_ASS_LIBASS=0" >&2; exit 2; }
-    grep -q ASS_NV_API "$ASS/include/ass/ass.h" || { echo "libass ARM sem os patches NV na imagem; reconstrua: docker build --platform linux/arm64 -t nuvio-webos-sdk tools/" >&2; exit 2; }
+    grep -q ass_nv_set_blur_scale "$ASS/include/ass/ass.h" || { echo "libass ARM sem os patches NV (ou anterior ao modo rendimento) na imagem; reconstrua: docker build --platform linux/arm64 -t nuvio-webos-sdk tools/" >&2; exit 2; }
     ASS_CFLAGS="-DNV_ASS_LIBASS -I$ASS/include"
     ASS_LIBS="-L$ASS/lib -Wl,--start-group -lass -lharfbuzz -lfribidi -lfreetype -Wl,--end-group"
   fi

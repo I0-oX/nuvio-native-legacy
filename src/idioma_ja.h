@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Live TV のプレーヤーモード"),
   T("Modo do player dos canais", "チャンネル再生モード"),
   T("Modo lista", "リストモード"),
+  T("Modo rendimento (experimental)", "パフォーマンスモード（実験的）"),
   T("Modo seguro ligado", "セーフモード オン"),
   T("Monumento", "モニュメント"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "ホームのポスターの隅に IMDb の評価を表示します。"),

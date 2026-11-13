@@ -3021,6 +3021,7 @@
   T("Modo do player da Live TV", "Live TV 播放器模式"),
   T("Modo do player dos canais", "频道播放器模式"),
   T("Modo lista", "列表模式"),
+  T("Modo rendimento (experimental)", "性能模式（实验性）"),
   T("Modo seguro ligado", "安全模式已开启"),
   T("Monumento", "丰碑"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "在主页海报的角落显示 IMDb 评分。"),

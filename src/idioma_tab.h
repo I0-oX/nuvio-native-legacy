@@ -3020,6 +3020,7 @@
   { "Modo do player da Live TV", "Live TV player mode" },
   { "Modo do player dos canais", "Channel player mode" },
   { "Modo lista", "List mode" },
+  { "Modo rendimento (experimental)", "Performance mode (experimental)" },
   { "Modo seguro ligado", "Safe mode on" },
   { "Monumento", "Monument" },
   { "Mostra a nota do IMDb no canto dos cartazes da Home.", "Shows the IMDb rating in the corner of Home posters." },

@@ -8,8 +8,10 @@
  * bitmap engine, then again with the NEON engine (ass_nv_set_engine, cold
  * caches both times), and compares every ASS_Image byte for byte: position,
  * size, colour and the w bytes of every row. Exit status 1 on any difference.
- * Also checks the NEON engine with 4 blur threads, and that the dialogue
- * opacity (ass_nv_set_dialogue_alpha, 0003) only changes colours.
+ * Also checks the NEON engine with 4 blur threads, that the dialogue opacity
+ * (ass_nv_set_dialogue_alpha, 0003) only changes colours, and the blur scale
+ * (ass_nv_set_blur_scale, 0003): 1.0 must reproduce the plain C pass byte for
+ * byte, 0.0 must change the blur-heavy samples.
  */
 /* 64-bit inodes (CI overlay fs): without this, 32-bit readdir() fails with
  * EOVERFLOW and no font gets loaded. */
@@ -183,6 +185,23 @@ static int run_alpha(ASS_Library *lib, const char *file, int alpha, int noalpha,
     return 0;
 }
 
+/* Blur scale (0003): 1.0 must be the default pass byte for byte; 0.0 must
+ * change the blur-heavy samples (the API would be dead otherwise). */
+static int run_blur_scale(ASS_Library *lib, const char *file, double scale,
+                          Frame *out, int frames)
+{
+    ASS_Renderer *r = renderer(lib, 0);
+    if (!r) return -1;
+    ass_nv_set_blur_scale(r, scale);
+    ASS_Track *t = ass_read_file(lib, (char *) file, NULL);
+    if (!t) { ass_renderer_done(r); return -1; }
+    for (int i = 0; i < frames; i++)
+        out[i] = hash_frame(ass_render_frame(r, t, (long long) i * STEP_MS, NULL));
+    ass_free_track(t);
+    ass_renderer_done(r);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) { fprintf(stderr, "usage: verify <font dir> <file.ass>...\n"); return 2; }
@@ -234,6 +253,23 @@ int main(int argc, char **argv)
                    adiff ? "FAIL" : "identical", odiff ? "FAIL" : "yes", faded);
             diff += adiff + odiff;
             faded_total += faded;
+        }
+        /* Blur scale: 1.0 identical to the plain C pass, 0.0 removes blur. */
+        {
+            static Frame h1[MAX_FRAMES], h0[MAX_FRAMES];
+            int same = 0, mudou0 = 0;
+            if (run_blur_scale(lib, argv[i], 1.0, h1, na) ||
+                run_blur_scale(lib, argv[i], 0.0, h0, na)) {
+                printf("  blur scale: FAIL to run\n"); bad = 1; continue;
+            }
+            for (int k = 0; k < na; k++) {
+                if (h1[k].hash != a[k].hash || h1[k].imgs != a[k].imgs) same++;
+                if (h0[k].hash != a[k].hash) mudou0++;
+            }
+            printf("  blur scale: 1.0 %s, 0.0 changes %d/%d frames\n",
+                   same ? "FAIL" : "identical", mudou0, na);
+            diff += same;
+            if (!mudou0) { printf("  blur scale: 0.0 changed nothing\n"); diff++; }
         }
         bad |= diff != 0;
     }

@@ -217,6 +217,9 @@ static int assEventos, assFontes, assResolucaoFonte;
 static long long assCoberturaIni, assCoberturaFim;
 static ASS_Library *assLib;
 static ASS_Renderer *assRenderer;
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
+static double assBlurAplicado = 1.0;   // worker: last ass_nv_set_blur_scale() (1.0 = libass default)
+#endif
 static ASS_Track *assTrack;
 static unsigned assTrackGeracao;
 static AssTex *assTex;
@@ -513,6 +516,9 @@ static void ass_iniciar_locked(int sistema) {
     ass_library_done(assLib); assLib = NULL;
     ass_diag("libass: falha ao iniciar renderer"); return;
   }
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
+  assBlurAplicado = 1.0;   // a new renderer starts with the author's blur
+#endif
   ass_set_shaper(assRenderer, ASS_SHAPING_COMPLEX);
   /* Fontes anexadas continuam tendo prioridade. A pasta da plataforma ajuda
    * o libass a resolver familias instaladas; Inter, distribuida com o app,
@@ -930,6 +936,10 @@ static void *ass_worker_loop(void *unused) {
     while (!assWorkerParar && !assPedidoPendente)
       pthread_cond_wait(&assFilaCond, &assFilaTrava);
     if (assWorkerParar) { pthread_mutex_unlock(&assFilaTrava); break; }
+    /* Modo rendimento (assperf.c): one ladder step per rendered frame. It runs
+     * here, before the grid below reads ass_fps(), so level 2 applies to this
+     * very frame. Off, it only clears the state. */
+    if (ASS_NOVO) assperf_rendimento_passo();
     generation = assPedidoGeracao; serial = assPedidoSerial; epoch = assEpoch; ms = assPedidoMs;
     /* Quadro a quadro (ver assSeqUltMs): o proximo da grade depois do ultimo
      * feito, nunca um que ja saiu da tela, ate o pedido. */
@@ -976,6 +986,14 @@ static void *ass_worker_loop(void *unused) {
         assTrack && assRenderer) {
       long long t = (long long)llround(ms);
       ass_aplicar_assperf_locked();
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
+      /* Modo rendimento level 3: no blur. libass keys its composite cache on
+       * the effective blur/\be, so no cache has to be emptied; 1.0 is the
+       * default and leaves every pass of a person without the option as it
+       * was. */
+      { double b = assperf_rendimento_blur();
+        if (b != assBlurAplicado) { ass_nv_set_blur_scale(assRenderer, b); assBlurAplicado = b; } }
+#endif
       if (lw != layAplW || lh != layAplH) {
         ass_set_frame_size(assRenderer, lw, lh);
         assFrameW = layAplW = lw; assFrameH = layAplH = lh;
@@ -2236,7 +2254,18 @@ void assrender_definir_fps(double fps) {
     } }
 #endif
 }
-static double ass_fps(void) { double v; __atomic_load(&assFps, &v, __ATOMIC_RELAXED); return v; }
+static double ass_fps(void) {
+  double v;
+  __atomic_load(&assFps, &v, __ATOMIC_RELAXED);
+#if ASS_NOVO
+  /* Modo rendimento level 2: the grid runs on every other video frame
+   * (fps/2), for the snap and for the render ahead. fps/2 lands on odd video
+   * frames, so a cue starts at most one video frame from its time; the video
+   * itself is untouched. Outside the engine (.wgt, Android) this is 0. */
+  if (v > 0 && assperf_rendimento_nivel() >= ASSPERF_REND_GRADE) v *= 0.5;
+#endif
+  return v;
+}
 static long long ass_na_grade(long long ms) {
   /* O meio do quadro que contem `ms`. Folga de 0,02 quadro (<1 ms: o PTS
    * arredondado ao ms). Era 0,1 (4 ms): o letreiro trocava um tico ANTES do
@@ -2322,6 +2351,11 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     ass_frame_liberar(&assAtual); assAtualValido = 0;
     ++assEpoch;
     ++assSerial;
+    /* Modo rendimento: a seek starts the ladder at level 0 (the scene before
+     * the jump says nothing about the one after). Only the ladder, and only
+     * while the option is on: the Auto keeps its state, so with the option
+     * off nothing changes. */
+    if (ASS_NOVO && assperf_get(AP_RENDIMENTO)) assperf_rendimento_reset();
     saltou = 1;
   }
   /* Seek para tras alem da poda: as falas de la voltam pelo mkvass. */

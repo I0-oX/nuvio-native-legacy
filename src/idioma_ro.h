@@ -3020,6 +3020,7 @@
   T("Modo do player da Live TV", "Modul playerului Live TV"),
   T("Modo do player dos canais", "Modul playerului de canale"),
   T("Modo lista", "Mod listă"),
+  T("Modo rendimento (experimental)", "Mod de performanță (experimental)"),
   T("Modo seguro ligado", "Mod sigur activat"),
   T("Monumento", "Monument"),
   T("Mostra a nota do IMDb no canto dos cartazes da Home.", "Arată nota IMDb în colțul afișelor de pe Acasă."),
