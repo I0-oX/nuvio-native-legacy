@@ -628,7 +628,7 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
         * is on). The second's cells are the same saved values as Settings >
         * Second subtitle. EST_QUEIMADA: the main is burned in by TorBox
         * (tbburn.h), nothing of it to style here. */
-       EST_ALVO, EST_QUEIMADA,
+       EST_ALVO,
        EST2_TAM, EST2_FONTE, EST2_COR, EST2_OPAC, EST2_FUNDO, EST2_POSICAO, EST2_LUGAR,
        EST2_BORDA, EST2_COR_BORDA, EST2_NEGRITO, EST2_ATRASO, EST2_RESTAURAR,
        EST_TOTAL };
@@ -638,7 +638,7 @@ static const char *const EST_ROT[EST_TOTAL] = {
 #ifdef NV_TPK
   , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
 #endif
-  , "Editar", "Legenda queimada",
+  , "Editar",
   "Tamanho", "Fonte da legenda", "Cor", "Opacidade", "Fundo", "Posição", "Posição da segunda legenda",
   "Borda", "Cor da borda", "Negrito", "Atraso", "Restaurar padrão"
 };
@@ -662,13 +662,7 @@ static int est2Op(int i) {
 static int estAlvo;          // 0 = the main subtitle, 1 = the second
 static int estAlvoMexeu;     // the person picked; burn-in no longer opens on Second
 static int estSegunda(void) { return legenda2_estado() == LEG2_ATIVA; }
-static int estQueimada(void) {
-#ifdef NV_TPK
-  return video_tpk_queimada() >= 0;
-#else
-  return 0;
-#endif
-}
+
 
 /* The rows on screen (positions in the grid) -> row ids above. */
 static int estLinhas[EST_TOTAL], estNLinhas;
@@ -686,15 +680,13 @@ static void estMapa(void) {
   estNLinhas = 0;
   if (!estSegunda()) { estAlvo = 0; estAlvoMexeu = 0; }
   else {
-    // With the main burned in, the column opens on the second (owner 12/11).
-    if (estQueimada() && !estAlvoMexeu) estAlvo = 1;
     estLinhas[estNLinhas++] = EST_ALVO;
   }
   if (estAlvo == 1) {
     for (i = EST2_TAM; i <= EST2_RESTAURAR; i++) estLinhas[estNLinhas++] = i;
     return;
   }
-  if (estQueimada()) { estLinhas[estNLinhas++] = EST_QUEIMADA; return; }
+
 #ifdef NV_TPK
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
@@ -803,7 +795,6 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       break; }
 #endif
     case EST_ALVO: snprintf(dst, tam, "%s", i18n(estAlvo ? "Segunda legenda" : "Legenda principal")); break;
-    case EST_QUEIMADA: snprintf(dst, tam, "TorBox Pro"); break;
     case EST2_ATRASO: {
       int a = legenda2_offset_manual();
       if (!a) snprintf(dst, tam, "0 s");
@@ -822,7 +813,6 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
 static void ciclarEstilo(int linha) {
   VideoLegendaEstilo *e = player_leg_estilo();
   if (linha == EST_ALVO) { estAlvo = !estAlvo; estAlvoMexeu = 1; foco[FX_COL_ESTILO] = 0; return; }
-  if (linha == EST_QUEIMADA) return;
   if (linha == EST2_RESTAURAR) {
     ajustes_leg2_restaurar();
     legenda2_definir_offset_manual(0);
@@ -1048,7 +1038,6 @@ static const char *rotuloLegenda(int i, const char **marca) {
 // as de addon). E o OK da folha, e tambem o que a legenda automatica usa: os
 // dois tem de passar pelo mesmo caminho, senao uma faixa ASS escolhida sozinha
 // iria a TV sem o overlay e sem a linha de log que a folha deixa.
-static int ultimaAss = -1;   // the last embedded ASS track picked (faixas_legenda_ass_ligar)
 static void escolherLegenda(int i) {
   {
     int emb = video_n_legenda();
@@ -1063,22 +1052,6 @@ static void escolherLegenda(int i) {
     // aqui jogaria isso fora.
     if (!vaiAoApp) mkvass_parar();
     legOverlay = -1; legOverlayEsperando = -1; legOverlayRetomar = 0; legOverlayTV = 0;
-    if (i >= 0 && i < emb && fe && (!strncmp(fe->codec, "S_TEXT/ASS", 10) || !strncmp(fe->codec, "S_TEXT/SSA", 10)))
-      ultimaAss = i;
-#ifdef NV_TPK
-    // TORBOX BURN-IN (tbburn.h): an embedded ASS track on a TorBox source is
-    // drawn by TorBox into the picture. No overlay, no harvesting; anything
-    // else chosen (another track, an add-on subtitle, Off) leaves the burn.
-    if (video_tpk_queimar(i >= 0 && i < emb ? i : -1)) {
-      mkvass_parar();
-      legenda_desligar(); legExterna = -1; legExternaId[0] = 0;
-      legsync_primaria_outra(1);   // the embedded track follows the video
-      pilEmbutida(i18n("Embutida"), pilAgora());
-      printf("[legenda] faixa %d (%s) -> TorBox burn-in: no overlay\n", i, fe ? fe->rotulo : "?");
-      fflush(stdout);
-      return;
-    }
-#endif
     if (i < 0)        { pilZerar(); pil.espera = 0; video_escolher_legenda(-1); legenda_desligar(); legExterna = -1; legExternaId[0] = 0;
                         legsync_primaria_outra(0); }   // F05: sem externa, sem AutoSync
     else if (i < emb) {
@@ -1282,6 +1255,10 @@ static void legendaAutomatica(Uint32 agora) {
   for (i = 0; i < nEmb; i++) {
     const VideoFaixa *f = video_legenda(i);
     emb[i] = f ? f->idioma : "";
+#ifdef NV_TPK
+    // Burned in (tbburn.h): every burnable ASS track is out of Main's pick.
+    if (video_tpk_leg_oculta(i)) emb[i] = "zxx";
+#endif
     tipos[i] = !f ? LING_LEG_COMUM : f->tipoLeg ? f->tipoLeg : f->letreiro ? LING_LEG_LETREIROS : LING_LEG_COMUM;
     formatos[i] = ling_formato_legenda(f ? f->codec : "");
   }
@@ -1551,36 +1528,16 @@ void faixas_legenda_reaplicar(void) {
   if (a >= 0) escolherLegenda(a);
 }
 
-// The main slot's "Off | On | Burn in" (legendasui.c): an embedded ASS track
-// comes on — the one playing if it is ASS, else the last ASS track picked in
-// this playback, else the file's first. escolherLegenda then burns it in or
-// hands it to Nuvio's renderer (tbburn_pode). 0 = the file has none.
-static int legEhAss(int i) {
-  const VideoFaixa *f = i >= 0 && i < video_n_legenda() ? video_legenda(i) : NULL;
-  return f && (!strncmp(f->codec, "S_TEXT/ASS", 10) || !strncmp(f->codec, "S_TEXT/SSA", 10) ||
-               !strcmp(f->codec, "S_ASS") || !strcmp(f->codec, "S_SSA"));
-}
-int faixas_legenda_ass_ligar(void) {
-  int a = legendaAtiva(), i, n = video_n_legenda();
-  if (!legEhAss(a)) {
-    a = legEhAss(ultimaAss) ? ultimaAss : -1;
-    for (i = 0; a < 0 && i < n; i++) if (legEhAss(i)) a = i;
-  }
-  if (a < 0) return 0;
-  escolherLegenda(a);
-  return 1;
-}
 
 void faixas_atualizar(float dt, Uint32 agora) {
   if (aberta && modo && coluna == 1) legendasui_atualizar(dt);
 #ifdef NV_TPK
-  // TorBox burn-in gave up on this source (TorBox refused, no answer, or the
-  // TV player failed on its stream): the same subtitle goes to Nuvio's renderer.
-  if (video_tpk_queimar_voltou()) {
-    int a = legendaAtiva();
-    player_toast_ex(i18n("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda"), 6000, "pl_captions", 1);
-    if (a >= 0) escolherLegenda(a);
-  }
+  // Burned in stopped (TorBox failed: toast; or Burn in Off): the ASS tracks
+  // are back in Main's list, so with Main off the automatic pick runs again
+  // (e.g. Signs & Songs drawn by Nuvio).
+  { int v = video_tpk_queimar_voltou();
+    if (v == 1) player_toast_ex(i18n("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda"), 6000, "pl_captions", 1);
+    if (v && legendaAtiva() < 0) { legAuto = 1; legAutoDesde = 0; } }
 #endif
   // #202: the platform refused the speed (LG/.tpk answer after the request):
   // the row is gone and playback is back at 1x; say it once.

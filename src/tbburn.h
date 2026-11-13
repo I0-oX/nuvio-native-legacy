@@ -56,13 +56,41 @@ void tbburn_cancelar(void);
 int  tbburn_recusado(void);
 
 #ifdef NV_TPK
-// video_tpk.c. _queimar: the subtitle `i` (menu index, -1 = none/add-on) was
-// just chosen; 1 = it is burned in (or being asked for), the caller draws
-// nothing. _queimada: the burned menu entry (-1 none). _voltou: 1 once after
-// burn-in gave up on this source (the caller re-picks the subtitle).
-int  video_tpk_queimar(int i);
+// video_tpk.c. _queimada: the burned menu entry (-1 none). _voltou, once:
+// 1 = burn-in gave up on this source (toast), 2 = Burn in turned Off; either
+// way the ASS tracks are back in Main's list (the caller re-picks Main).
 int  video_tpk_queimada(void);
 int  video_tpk_queimar_voltou(void);
+#endif
+
+// ---- the burned layer (owner 13/11) -------------------------------------------
+// Burned in is its own layer next to Main and Second. At open: the track
+// remembered for the show (or Off), else Signs & Songs, else the dialogue ASS
+// track. A burnable track = an embedded ASS/SSA track of the file.
+typedef struct {
+  char idioma[16], nome[96];
+  int  tipo;        // LING_LEG_* (COMUM / FORCADA / LETREIROS)
+  int  letreiro;    // the forced/signs flag of the track
+} TbFaixa;
+// The show of this playback (legmem_id_titulo form: imdb of the series).
+void tbburn_titulo(const char *titulo);
+// What the show remembers: 0 = nothing, 1 = Off, 2 = a track (*m filled).
+int  tbburn_memoria(TbFaixa *m);
+// A pick in the Burn in list: `f` NULL = Off. Saved per show and profile.
+void tbburn_lembrar(const TbFaixa *f);
+// Which of `f[0..n)` to burn: -1 = none. `mem`: 0 nothing / 1 Off / 2 track
+// (`m`); `pref`: the subtitle language from Settings ("" none). Pure.
+int  tbburn_escolher_auto(const TbFaixa *f, int n, int mem, const TbFaixa *m, const char *pref);
+
+#ifdef NV_TPK
+// video_tpk.c. The Burn in list (legendasui.c): `i` = a subtitle menu index of
+// a burnable track, -1 = Off. _ligar: On = the automatic choice, Off = -1.
+void video_tpk_queimar_faixa(int i);
+void video_tpk_queimar_ligar(int ligar);
+// 1 = subtitle `i` is a burnable (embedded ASS) track of this file.
+int  video_tpk_leg_queimavel(int i);
+// 1 = burned in is on (or being asked for) and `i` is burnable: hidden from Main/Second.
+int  video_tpk_leg_oculta(int i);
 #endif
 
 // ---- pure (tests) ----------------------------------------------------------

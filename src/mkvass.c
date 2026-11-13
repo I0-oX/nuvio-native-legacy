@@ -9,6 +9,7 @@
 #include "imgsub.h"
 #include "pgs.h"
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3649,6 +3650,18 @@ static int grupoFim(const Fio *f, int i) {
   return j;
 }
 
+// TorBox burn-in (tbburn.h, owner 12/11: a 5th connection to TorBox's CDN
+// crashed it): while TorBox's stream plays, the TV player holds one connection
+// and auto-sync may read once, so the reader keeps to `tetoConexoes` in total
+// (its own read + prefetches). 0 = no cap (the usual MKVASS_PARALELOS).
+static atomic_int tetoConexoes;
+void mkvass_teto_conexoes(int n) { atomic_store(&tetoConexoes, n < 0 ? 0 : n); }
+static int preBuscaMax(const Fio *f) {
+  int p = f->paralelos, t = atomic_load(&tetoConexoes);
+  if (t > 0 && p > t - 1) p = t - 1;
+  return p;
+}
+
 // Mantem ate MKVASS_PARALELOS Ranges no ar: os proximos grupos pela mesma
 // prioridade do laco (reservados com colhido = 3 so durante a escolha).
 static void preBuscar(Fio *f, double pos) {
@@ -3678,7 +3691,7 @@ static void preBuscar(Fio *f, double pos) {
   // pre-busca nenhuma, o fio pede um Range por vez e o servidor ve UMA
   // conexao alem da do video. (Com a pre-busca de 1, o cabecalho de Cluster e
   // o palpite que o fio pede por conta propria ainda saiam em paralelo.)
-  for (k = 0; k < n && f->paralelos > 1 && foraDoTeto(f) && noAr < f->paralelos; k++) {
+  for (k = 0; k < n && f->paralelos > 1 && foraDoTeto(f) && noAr < preBuscaMax(f); k++) {
     Off ini; long len; int slot;
     rangeDoGrupo(f, ii[k], jj[k], &ini, &len);
     if (temPre(f, ini, len)) continue;

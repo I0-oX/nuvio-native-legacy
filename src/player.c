@@ -98,6 +98,7 @@ extern int trakt_scrobble_alvo(int, const TraktScrobbleAlvo *, double, double,
 #include "episodios.h"
 #include "streams.h"
 #include "tbburn.h"
+#include "legmemoria.h"
 #include "addons.h"
 #include "duracaook.h"
 #include "partes.h"
@@ -2212,6 +2213,11 @@ static void tocarFonteInterno(const char *url) {
     const Stream *fs = stream_atual() >= 0 ? stream_item(stream_atual()) : NULL;
     tbburn_fonte(video_url_atual(), fs ? (fs->hashTorrent[0] ? fs->hashTorrent : fs->infoHash) : "",
                  fs ? fs->arquivo : "", fs ? fs->tamanhoBytes : 0);
+    // The show, for the burned choice remembered per show (same key as Main's).
+    { const CatItem *ci = cat_item(player_indice());
+      char tit[64] = "";
+      if (ci) legmem_id_titulo(ci->imdb[0] ? ci->imdb : ci->titulo, tit, sizeof tit);
+      tbburn_titulo(tit); }
   }
 #endif
   zerarAssistido();

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -29,6 +30,13 @@ int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, 
 }
 char *rede_baixar_st(const char *u, int s, const char *const *c, int *st) { (void)u; (void)s; (void)c; (void)st; return NULL; }
 int rede_torbox_em_voo(int *p) { if (p) *p = 0; return 0; }
+// In-memory data files, one profile, a two-letter language match.
+static char dadoNome[64], *dado;
+char *dados_ler(const char *n) { return dado && !strcmp(n, dadoNome) ? strdup(dado) : NULL; }
+int dados_gravar(const char *n, const char *c) { snprintf(dadoNome, sizeof dadoNome, "%s", n); free(dado); dado = strdup(c); return 1; }
+static int perfil = 1;
+int perfis_ativo(void) { return perfil; }
+int ling_casa(const char *a, const char *b) { return a && b && a[0] && b[0] && !strncasecmp(a, b, 2); }
 
 int main(void) {
   char out[4096], tmp[256];
@@ -106,6 +114,38 @@ int main(void) {
   tbburn_pedir("https://x/other.mkv", 0, 1);
   for (int k = 0; k < 200 && tbburn_resultado(NULL, 0, NULL, 0) == TBB_BUSCANDO; k++) { struct timespec t = {0, 10000000}; nanosleep(&t, NULL); }
   CHECA(!viuArquivo[0] && viuBytes == 0);
+
+  // 8) Automatic choice: Signs & Songs, else dialogue; memory wins.
+  { TbFaixa f[3], m;
+    memset(f, 0, sizeof f);
+    snprintf(f[0].idioma, 16, "eng"); snprintf(f[0].nome, 96, "Dialogue");
+    snprintf(f[1].idioma, 16, "eng"); snprintf(f[1].nome, 96, "Signs & Songs"); f[1].tipo = 2;
+    snprintf(f[2].idioma, 16, "spa"); snprintf(f[2].nome, 96, "Dialogo");
+    CHECA(tbburn_escolher_auto(f, 3, 0, NULL, "en") == 1);           // S&S
+    CHECA(tbburn_escolher_auto(f, 1, 0, NULL, "en") == 0);           // no S&S: dialogue
+    CHECA(tbburn_escolher_auto(f + 2, 1, 0, NULL, "en") == 0);       // other language: still burned
+    { TbFaixa g[2]; memcpy(g, f, sizeof g); g[1].tipo = 0;          // S&S by name only
+      CHECA(tbburn_escolher_auto(g, 2, 0, NULL, "en") == 1); }
+    CHECA(tbburn_escolher_auto(f, 3, 1, NULL, "en") == -1);          // Off remembered
+    m = f[0]; CHECA(tbburn_escolher_auto(f, 3, 2, &m, "en") == 0);   // Dialogue remembered
+    m = f[2]; snprintf(m.nome, 96, "Spanish full"); m.tipo = 0;     // same kind + language
+    CHECA(tbburn_escolher_auto(f, 3, 2, &m, "en") == 2);
+    CHECA(tbburn_escolher_auto(f, 0, 0, NULL, "en") == -1);
+    CHECA(tbburn_escolher_auto(NULL, 3, 0, NULL, "en") == -1); }
+
+  // 9) Memory per show and profile.
+  { TbFaixa t, r;
+    tbburn_titulo("");  CHECA(tbburn_memoria(&r) == 0);            // no show: nothing
+    tbburn_titulo("tt15765670");
+    CHECA(tbburn_memoria(&r) == 0);
+    memset(&t, 0, sizeof t); snprintf(t.idioma, 16, "eng"); snprintf(t.nome, 96, "Dialogue\tx");
+    tbburn_lembrar(&t);
+    CHECA(tbburn_memoria(&r) == 2 && !strcmp(r.idioma, "eng") && !strcmp(r.nome, "Dialogue x"));
+    tbburn_lembrar(NULL); CHECA(tbburn_memoria(&r) == 1);
+    tbburn_titulo("tt0000001"); CHECA(tbburn_memoria(&r) == 0);    // another show
+    tbburn_titulo("tt15765670"); CHECA(tbburn_memoria(&r) == 1);
+    CHECA(dado && strstr(dadoNome, "-p1"));
+    perfil = 2; CHECA(tbburn_memoria(&r) == 0); perfil = 1; }
 
   if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
   printf("tbburn: ok\n");
