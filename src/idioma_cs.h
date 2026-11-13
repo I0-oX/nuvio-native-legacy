@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Externí titulky jsou neúplné; synchronizace není možná"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Vynucené titulky, když je zvuk ve vašem jazyce"),
   T("Legenda principal", "Hlavní titulky"),
-  T("Legenda queimada", "Vpálené titulky"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Vpálené titulky TorBox nejsou k dispozici: titulky kreslí Nuvio"),
   T("Legenda sincronizada · %s · %s", "Titulky synchronizovány · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Titulky: stopy se nepodařilo spárovat se souborem; vykreslí je televize"),

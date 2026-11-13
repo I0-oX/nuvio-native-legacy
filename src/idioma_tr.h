@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Harici altyazı eksik; senkronize edilemiyor"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Ses kendi dilinizdeyken zorunlu altyazı"),
   T("Legenda principal", "Ana altyazı"),
-  T("Legenda queimada", "Gömülü altyazı"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "TorBox gömülü altyazı kullanılamıyor: altyazıyı Nuvio çiziyor"),
   T("Legenda sincronizada · %s · %s", "Altyazı senkronize edildi · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Altyazılar: parçalar dosyayla eşleştirilemedi; TV çiziyor"),

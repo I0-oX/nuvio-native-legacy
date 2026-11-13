@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Phụ đề ngoài không đầy đủ; không thể đồng bộ"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Phụ đề bắt buộc khi âm thanh là ngôn ngữ của bạn"),
   T("Legenda principal", "Phụ đề chính"),
-  T("Legenda queimada", "Phụ đề ghi cứng"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Phụ đề ghi cứng của TorBox không khả dụng: Nuvio vẽ phụ đề"),
   T("Legenda sincronizada · %s · %s", "Đã đồng bộ phụ đề · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Phụ đề: không khớp được các track với tệp; TV tự vẽ"),

@@ -98,6 +98,7 @@ extern int trakt_scrobble_alvo(int, const TraktScrobbleAlvo *, double, double,
 #include "episodios.h"
 #include "streams.h"
 #include "tbburn.h"
+#include "legmemoria.h"
 #include "addons.h"
 #include "duracaook.h"
 #include "partes.h"
@@ -2205,13 +2206,18 @@ static void tocarFonteInterno(const char *url) {
     comVideo = video_tocar(proxyts_resolver(url, px, sizeof px));
 #endif
   }
-#if defined(NV_TPK) || defined(NV_WEBOS)
+#ifdef NV_TPK
   // TorBox burn-in (tbburn.h): what the add-on said about this source, to find
   // the file in the TorBox account if an embedded ASS track is chosen.
   if (comVideo && !ehCanal()) {
     const Stream *fs = stream_atual() >= 0 ? stream_item(stream_atual()) : NULL;
     tbburn_fonte(video_url_atual(), fs ? (fs->hashTorrent[0] ? fs->hashTorrent : fs->infoHash) : "",
                  fs ? fs->arquivo : "", fs ? fs->tamanhoBytes : 0);
+    // The show, for the burned choice remembered per show (same key as Main's).
+    { const CatItem *ci = cat_item(player_indice());
+      char tit[64] = "";
+      if (ci) legmem_id_titulo(ci->imdb[0] ? ci->imdb : ci->titulo, tit, sizeof tit);
+      tbburn_titulo(tit); }
   }
 #endif
   zerarAssistido();
@@ -2606,7 +2612,7 @@ static void lembrarFonte(void) {
 }
 
 static void fecharSessao(int manter, int trocaFonte) {
-#if defined(NV_TPK) || defined(NV_WEBOS)
+#ifdef NV_TPK
   if (!trocaFonte) tbburn_sessao_nova();   // the playback "Burn in" row ends with the session
 #endif
 #ifdef NV_TPK

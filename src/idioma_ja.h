@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "外部字幕が不完全なため同期できません"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "音声が自分の言語のときは強制字幕"),
   T("Legenda principal", "主字幕"),
-  T("Legenda queimada", "焼き付け字幕"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "TorBoxの焼き付け字幕は使えません：Nuvioが字幕を表示します"),
   T("Legenda sincronizada · %s · %s", "字幕を同期しました · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "字幕: トラックをファイルと照合できなかったため、テレビが描画します"),

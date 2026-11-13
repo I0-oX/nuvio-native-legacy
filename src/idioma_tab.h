@@ -2669,7 +2669,6 @@
   { "Legenda externa incompleta; não dá para sincronizar", "External subtitle incomplete; cannot sync" },
   { "Legenda forçada automática quando o áudio for no seu idioma", "Forced subtitles when the audio is in your language" },
   { "Legenda principal", "Main subtitle" },
-  { "Legenda queimada", "Burned-in subtitle" },
   { "Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "TorBox burn-in unavailable: Nuvio draws the subtitle" },
   { "Legenda sincronizada · %s · %s", "Subtitles synced · %s · %s" },
   { "Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Subtitles: couldn't match the tracks to the file; the TV draws them" },

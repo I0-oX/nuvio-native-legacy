@@ -2669,7 +2669,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Subtitrare externă incompletă; nu se poate sincroniza"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Subtitrare forțată când audio e în limba ta"),
   T("Legenda principal", "Subtitrare principală"),
-  T("Legenda queimada", "Subtitrare arsă"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Subtitrarea arsă de TorBox nu e disponibilă: Nuvio desenează subtitrarea"),
   T("Legenda sincronizada · %s · %s", "Subtitrare sincronizată · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Subtitrări: nu s-au putut potrivi pistele cu fișierul; le desenează televizorul"),

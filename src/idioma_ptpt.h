@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Legenda externa incompleta; não é possível sincronizar"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Legenda forçada automática quando o áudio estiver no seu idioma"),
   T("Legenda principal", "Legenda principal"),
-  T("Legenda queimada", "Legenda gravada"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Legenda gravada do TorBox indisponível: o Nuvio desenha a legenda"),
   T("Legenda sincronizada · %s · %s", "Legenda sincronizada · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Legenda: não foi possível associar as faixas ao ficheiro; a TV desenha-as"),

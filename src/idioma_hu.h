@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "A külső felirat hiányos; nem szinkronizálható"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Kényszerített felirat, ha a hang a saját nyelveden szól"),
   T("Legenda principal", "Elsődleges felirat"),
-  T("Legenda queimada", "Beégetett felirat"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "A TorBox beégetett felirata nem érhető el: a feliratot a Nuvio rajzolja"),
   T("Legenda sincronizada · %s · %s", "Felirat szinkronizálva · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Feliratok: a sávokat nem sikerült párosítani a fájllal; a TV rajzolja"),

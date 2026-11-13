@@ -15,3 +15,13 @@ int  tbburn_resultado(char *m, unsigned n, char *mo, unsigned mn) {
 }
 void tbburn_cancelar(void) {}
 int  rede_torbox_em_voo(int *p) { if (p) *p = 0; return 0; }
+int  ajustes_leg_queimar(void) { return 0; }
+void tbburn_definir_escolha(int v) { (void)v; }
+int  tbburn_memoria(TbFaixa *m) { (void)m; return 0; }
+void tbburn_lembrar(const TbFaixa *f) { (void)f; }
+int  tbburn_escolher_auto(const TbFaixa *f, int n, int mem, const TbFaixa *m, const char *p) {
+  (void)f; (void)n; (void)mem; (void)m; (void)p; return -1;
+}
+// Weak: some of these tests link the real ones.
+__attribute__((weak)) void mkvass_teto_conexoes(int n) { (void)n; }
+__attribute__((weak)) const char *ling_legenda(void) { return ""; }

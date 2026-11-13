@@ -2669,7 +2669,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Зовнішні субтитри неповні; синхронізація неможлива"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Примусові субтитри, коли аудіо вашою мовою"),
   T("Legenda principal", "Основні субтитри"),
-  T("Legenda queimada", "Вшиті субтитри"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Вшиті субтитри TorBox недоступні: Nuvio малює субтитри"),
   T("Legenda sincronizada · %s · %s", "Субтитри синхронізовано · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Субтитри: не вдалося зіставити доріжки з файлом; малює телевізор"),

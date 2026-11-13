@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Zewnętrzne napisy niepełne; nie można zsynchronizować"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Napisy wymuszone, gdy dźwięk jest w Twoim języku"),
   T("Legenda principal", "Napisy główne"),
-  T("Legenda queimada", "Wypalone napisy"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Wypalone napisy TorBox niedostępne: Nuvio rysuje napisy"),
   T("Legenda sincronizada · %s · %s", "Napisy zsynchronizowane · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Napisy: nie udało się dopasować ścieżek do pliku; rysuje je telewizor"),

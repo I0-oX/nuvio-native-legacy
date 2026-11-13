@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Външните субтитри са непълни; синхронизирането е невъзможно"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Принудителни субтитри, когато звукът е на вашия език"),
   T("Legenda principal", "Основни субтитри"),
-  T("Legenda queimada", "Вградени субтитри"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Вградените субтитри на TorBox не са налични: Nuvio рисува субтитрите"),
   T("Legenda sincronizada · %s · %s", "Субтитрите са синхронизирани · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Субтитри: не успяха да се съпоставят пътеките с файла; изобразява ги телевизорът"),

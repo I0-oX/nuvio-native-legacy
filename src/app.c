@@ -1344,7 +1344,7 @@ static int tocarFonteGuardada(void) {
   marco("abrir: fonte guardada, sem busca");
   stream_definir_atual(-1);
   voltaFonte = s;
-#if defined(NV_TPK) || defined(NV_WEBOS)
+#ifdef NV_TPK
   tbburn_fonte_guardada(s.url, s.hashTorrent[0] ? s.hashTorrent : s.infoHash, s.arquivo, s.tamanhoBytes);
 #endif
   video_definir_dv(s.dolbyVision);
@@ -2439,7 +2439,7 @@ static void abrirProximoEpisodio(int t, int e, int apontar) {
   // Consumir/adotar vem antes do encerramento: posplay_fechar e video_parar
   // so podem cancelar os trabalhos que ainda pertencem ao episodio antigo.
   diagnostico_cancelar_vazao();
-#if defined(NV_TPK) || defined(NV_WEBOS)
+#ifdef NV_TPK
   tbburn_manter_proximo();   // the playback "Burn in" choice carries to the next episode
 #endif
   player_encerrar();

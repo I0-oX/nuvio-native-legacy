@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Zunanji podnapisi so nepopolni; sinhronizacija ni mogoča"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Vsiljeni podnapisi, ko je zvok v vašem jeziku"),
   T("Legenda principal", "Glavni podnapisi"),
-  T("Legenda queimada", "Vžgani podnapisi"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Vžgani podnapisi TorBox niso na voljo: podnapise riše Nuvio"),
   T("Legenda sincronizada · %s · %s", "Podnapisi sinhronizirani · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Podnapisi: sledi ni bilo mogoče povezati z datoteko; izriše jih televizor"),

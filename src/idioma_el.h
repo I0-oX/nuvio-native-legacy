@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Οι εξωτερικοί υπότιτλοι είναι ελλιπείς, δεν γίνεται συγχρονισμός"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Αναγκαστικοί υπότιτλοι όταν ο ήχος είναι στη γλώσσα σας"),
   T("Legenda principal", "Κύριοι υπότιτλοι"),
-  T("Legenda queimada", "Ενσωματωμένος υπότιτλος"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Οι ενσωματωμένοι υπότιτλοι του TorBox δεν είναι διαθέσιμοι: το Nuvio σχεδιάζει τον υπότιτλο"),
   T("Legenda sincronizada · %s · %s", "Οι υπότιτλοι συγχρονίστηκαν · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Υπότιτλοι: δεν αντιστοιχίστηκαν τα κομμάτια με το αρχείο· τους σχεδιάζει η τηλεόραση"),

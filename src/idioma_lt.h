@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Išoriniai subtitrai nepilni; sinchronizuoti negalima"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Priverstiniai subtitrai, kai garsas jūsų kalba"),
   T("Legenda principal", "Pagrindiniai subtitrai"),
-  T("Legenda queimada", "Įrašyti subtitrai"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Įrašyti TorBox subtitrai nepasiekiami: subtitrus piešia Nuvio"),
   T("Legenda sincronizada · %s · %s", "Subtitrai sinchronizuoti · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Subtitrai: nepavyko susieti takelių su failu; juos piešia televizorius"),

@@ -4,8 +4,12 @@
 #include "debrid.h"
 #include "partes.h"
 #include "rede.h"
+#include "dados.h"
+#include "linguas.h"
+#include "perfis.h"
 #include <pthread.h>
 #include <stdatomic.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -384,4 +388,132 @@ void tbburn_cancelar(void) {
   res.geracao++;
   res.estado = TBB_NADA; res.m3u8[0] = res.motivo[0] = 0;
   pthread_mutex_unlock(&trava);
+}
+
+// ---- the burned layer: automatic choice + memory per show -------------------
+
+static int ehLetreiro(const TbFaixa *f) {
+  char n[96];
+  size_t i;
+  if (f->tipo == LING_LEG_LETREIROS || f->tipo == LING_LEG_FORCADA || f->letreiro) return 1;
+  for (i = 0; f->nome[i] && i + 1 < sizeof n; i++) n[i] = (char)tolower((unsigned char)f->nome[i]);
+  n[i] = 0;
+  return strstr(n, "sign") || strstr(n, "song") || strstr(n, "s&s") || strstr(n, "forced");
+}
+static int mesmoIdioma(const char *a, const char *b) {
+  return a && b && a[0] && b[0] && ling_casa(a, b) && ling_casa(b, a);
+}
+int tbburn_escolher_auto(const TbFaixa *f, int n, int mem, const TbFaixa *m, const char *pref) {
+  int i, passo;
+  if (!f || n <= 0 || mem == 1) return -1;
+  if (mem == 2 && m) {
+    for (i = 0; i < n; i++) if (m->nome[0] && !strcmp(f[i].nome, m->nome) && !strcasecmp(f[i].idioma, m->idioma)) return i;
+    for (i = 0; i < n; i++) if (ehLetreiro(&f[i]) == ehLetreiro(m) && mesmoIdioma(f[i].idioma, m->idioma)) return i;
+  }
+  // Signs & Songs (in your language first), then the dialogue track.
+  for (passo = 0; passo < 2; passo++)
+    for (i = 0; i < n; i++)
+      if (ehLetreiro(&f[i]) && (passo || !pref || !pref[0] || mesmoIdioma(f[i].idioma, pref))) return i;
+  for (passo = 0; passo < 2; passo++)
+    for (i = 0; i < n; i++)
+      if (passo || !pref || !pref[0] || mesmoIdioma(f[i].idioma, pref)) return i;
+  return -1;
+}
+
+// File: one line per show, "titulo\tquando\tmodo\tidioma\ttipo\tletreiro\tnome"
+// (modo o = Off, f = a track). Per profile, like legmemoria.
+#define TBMEM_MAX 150
+typedef struct { char titulo[64]; long long quando; char modo; TbFaixa f; } TbMem;
+static TbMem tbMem[TBMEM_MAX];
+static int nTbMem, tbMemPerfil = -1;
+static char tituloAtual[64];
+
+static const char *tbMemArquivo(void) {
+  static char nome[48];
+  snprintf(nome, sizeof nome, "tbburn-memoria-p%d.txt", tbMemPerfil);
+  return nome;
+}
+static char *campoTab(char **p) {
+  char *ini = *p, *t;
+  if (!ini) return (char *)"";
+  t = strchr(ini, '\t');
+  if (t) { *t = 0; *p = t + 1; } else *p = NULL;
+  return ini;
+}
+static void tbMemCarregar(void) {
+  char *b, *linha, *prox;
+  int perfil = perfis_ativo();
+  if (perfil == tbMemPerfil) return;
+  tbMemPerfil = perfil; nTbMem = 0;
+  b = dados_ler(tbMemArquivo());
+  if (!b) return;
+  for (linha = b; linha && *linha && nTbMem < TBMEM_MAX; linha = prox) {
+    char *p = linha, *fim = strchr(linha, '\n');
+    TbMem *m;
+    prox = fim ? fim + 1 : NULL;
+    if (fim) *fim = 0;
+    if (linha[0] == '#' || !linha[0]) continue;
+    m = &tbMem[nTbMem];
+    memset(m, 0, sizeof *m);
+    snprintf(m->titulo, sizeof m->titulo, "%s", campoTab(&p));
+    m->quando = atoll(campoTab(&p));
+    m->modo = campoTab(&p)[0];
+    snprintf(m->f.idioma, sizeof m->f.idioma, "%s", campoTab(&p));
+    m->f.tipo = atoi(campoTab(&p));
+    m->f.letreiro = atoi(campoTab(&p));
+    snprintf(m->f.nome, sizeof m->f.nome, "%s", campoTab(&p));
+    if (m->titulo[0] && (m->modo == 'o' || m->modo == 'f')) nTbMem++;
+  }
+  free(b);
+}
+static void tbMemGravar(void) {
+  size_t cap = (size_t)TBMEM_MAX * 220u + 64u, k = 0;
+  char *buf = malloc(cap);
+  int i;
+  if (!buf) return;
+  k += (size_t)snprintf(buf + k, cap - k, "# nuvio burn-in v1\n");
+  for (i = 0; i < nTbMem && k + 1 < cap; i++)
+    k += (size_t)snprintf(buf + k, cap - k, "%s\t%lld\t%c\t%s\t%d\t%d\t%s\n", tbMem[i].titulo, tbMem[i].quando,
+                          tbMem[i].modo, tbMem[i].f.idioma, tbMem[i].f.tipo, tbMem[i].f.letreiro, tbMem[i].f.nome);
+  dados_gravar(tbMemArquivo(), buf);
+  free(buf);
+}
+void tbburn_titulo(const char *titulo) {
+  snprintf(tituloAtual, sizeof tituloAtual, "%s", titulo ? titulo : "");
+}
+int tbburn_memoria(TbFaixa *out) {
+  int i;
+  if (!tituloAtual[0]) return 0;
+  tbMemCarregar();
+  for (i = 0; i < nTbMem; i++)
+    if (!strcmp(tbMem[i].titulo, tituloAtual)) {
+      if (tbMem[i].modo == 'o') return 1;
+      if (out) *out = tbMem[i].f;
+      return 2;
+    }
+  return 0;
+}
+void tbburn_lembrar(const TbFaixa *f) {
+  int i, k = -1;
+  if (!tituloAtual[0]) return;
+  tbMemCarregar();
+  for (i = 0; i < nTbMem; i++) if (!strcmp(tbMem[i].titulo, tituloAtual)) k = i;
+  if (k < 0) {
+    if (nTbMem >= TBMEM_MAX) {   // full: the oldest goes
+      int v = 0;
+      for (i = 1; i < nTbMem; i++) if (tbMem[i].quando < tbMem[v].quando) v = i;
+      k = v;
+    } else k = nTbMem++;
+  }
+  memset(&tbMem[k], 0, sizeof tbMem[k]);
+  snprintf(tbMem[k].titulo, sizeof tbMem[k].titulo, "%s", tituloAtual);
+  tbMem[k].quando = (long long)time(NULL);
+  tbMem[k].modo = f ? 'f' : 'o';
+  if (f) {
+    tbMem[k].f = *f;
+    for (char *c = tbMem[k].f.nome; *c; c++) if ((unsigned char)*c < 32) *c = ' ';
+  }
+  tbMemGravar();
+  printf("[tbburn] remembered for %s: %s%s%s\n", tituloAtual, f ? f->nome : "Off", f ? " / " : "", f ? f->idioma : "");
+  fflush(stdout);
 }

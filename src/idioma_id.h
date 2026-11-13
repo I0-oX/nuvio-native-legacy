@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Subtitle eksternal tidak lengkap; tidak bisa disinkronkan"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Subtitle paksa saat audio dalam bahasa Anda"),
   T("Legenda principal", "Subtitel utama"),
-  T("Legenda queimada", "Subtitle tertanam"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Subtitle tertanam TorBox tidak tersedia: Nuvio menggambar subtitle"),
   T("Legenda sincronizada · %s · %s", "Subtitle disinkronkan · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Subtitel: trek tidak cocok dengan file; digambar oleh TV"),

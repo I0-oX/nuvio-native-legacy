@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Vanjski titl nije potpun; sinhronizacija nije moguća"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Forsirani titlovi kad je zvuk na vašem jeziku"),
   T("Legenda principal", "Glavni titl"),
-  T("Legenda queimada", "Utisnuti titl"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Utisnuti TorBox titlovi nisu dostupni: Nuvio crta titl"),
   T("Legenda sincronizada · %s · %s", "Titl sinhronizovan · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Titlovi: nije uspjelo povezivanje zapisa s datotekom; crta ih TV"),

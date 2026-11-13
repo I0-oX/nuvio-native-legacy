@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "外挂字幕不完整，无法同步"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "音频为你的语言时使用强制字幕"),
   T("Legenda principal", "主字幕"),
-  T("Legenda queimada", "烧录字幕"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "TorBox 烧录字幕不可用：由 Nuvio 绘制字幕"),
   T("Legenda sincronizada · %s · %s", "已同步字幕 · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "字幕：无法将轨道与文件匹配，由电视绘制"),

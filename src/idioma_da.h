@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Ekstern undertekst ufuldstændig; kan ikke synkronisere"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Tvungne undertekster, når lyden er på dit sprog"),
   T("Legenda principal", "Primær undertekst"),
-  T("Legenda queimada", "Indbrændt undertekst"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Indbrændte undertekster fra TorBox er ikke tilgængelige: Nuvio tegner underteksten"),
   T("Legenda sincronizada · %s · %s", "Undertekster synkroniseret · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Undertekster: sporene kunne ikke matches med filen; tv'et tegner dem"),

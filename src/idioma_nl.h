@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "Externe ondertitels onvolledig; synchroniseren niet mogelijk"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "Geforceerde ondertitels als de audio in je taal is"),
   T("Legenda principal", "Hoofdondertitel"),
-  T("Legenda queimada", "Ingebrande ondertitel"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "Ingebrande TorBox-ondertitels niet beschikbaar: Nuvio tekent de ondertitels"),
   T("Legenda sincronizada · %s · %s", "Ondertiteling gesynchroniseerd · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "Ondertitels: kon de sporen niet aan het bestand koppelen; de tv tekent ze"),

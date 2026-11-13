@@ -2670,7 +2670,6 @@
   T("Legenda externa incompleta; não dá para sincronizar", "الترجمة الخارجية ناقصة؛ تتعذر المزامنة"),
   T("Legenda forçada automática quando o áudio for no seu idioma", "ترجمة إجبارية عندما يكون الصوت بلغتك"),
   T("Legenda principal", "الترجمة الرئيسية"),
-  T("Legenda queimada", "ترجمة مدمجة"),
   T("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda", "الترجمة المدمجة من TorBox غير متاحة: يرسم Nuvio الترجمة"),
   T("Legenda sincronizada · %s · %s", "تمت مزامنة الترجمة · %s · %s"),
   T("Legenda: não deu para casar as faixas com o arquivo; a TV desenha", "الترجمة: تعذّر مطابقة المسارات مع الملف؛ يرسمها التلفاز"),
