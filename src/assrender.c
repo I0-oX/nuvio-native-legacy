@@ -282,7 +282,7 @@ static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) 
   /* So ate MSGL_INFO (4), o mesmo corte do callback padrao do libass (que
    * para em 5). Os niveis 6-7 sao depuracao por quadro e por glifo. */
   if (nivel > 4) return;
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   /* Clean log: the "Glyph ... not found / selecting one more font / Trying
    * all charmaps" loop is three lines PER GLYPH (60+ in the 23/10 log). The
    * first 6 per track stay. */

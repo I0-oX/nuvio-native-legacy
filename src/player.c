@@ -5705,7 +5705,7 @@ static void desenharLegendaExternaCorpo(void) {
   if (junto) { g2.baseY = topo >= 0.0f ? topo : baseLegendaPrincipal(); legendasui_desenhar_secundaria(&g2); }
 }
 
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
 /* Como a externa acima: o brilho do player (gfx_osd_mult, 0,80 no padrao e
  * menos com o degrau automatico) multiplicava a COR do libass — a mascara
  * branca do typeset virava cinza e as bordas claras escureciam (Kaguya,

@@ -2912,7 +2912,6 @@ void video_velocidade_recusada(void) {
 int  video_velocidade_bloqueada(void) { return 0; }
 void video_forcar_sdr(void) {}
 void video_encerrar(void) { video_parar(); }
-#endif
 
 // ---- Audio menu: original audio with burn-in (owners 13-14/11) -------------------
 // One row under the audio tracks (faixas.c), shown whenever the Burn in row
@@ -2958,3 +2957,4 @@ void video_tpk_tba_ok(int k) {
     tbReabrir(pos);
   }
 }
+#endif   /* NV_TPK */

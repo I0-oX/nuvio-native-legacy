@@ -20,6 +20,7 @@
 #include "faixasmkv.h"
 #ifdef NV_WEBOS
 #include "tbburn.h"
+#include "legref.h"
 #endif
 #include "js.h"
 #include "lsregistro.h"
@@ -719,6 +720,11 @@ static struct {
 static MkvFaixa mkvFx[MKV_MAX_FAIXAS];
 static volatile int mkvN;       // tracks in mkvFx
 static volatile int mkvEstado;  // 0 nothing to do, 2 the probe thread, 3 read (or gave up)
+// The file's own length (MKV Segment > Info > Duration), 0 = unknown. TorBox's
+// burned HLS rounds its last segment up to 5 s and the player reports that
+// length: video_duracao corrects it (as video_tpk.c).
+static double mkvDurArq;
+static int mkvDurAviso;
 static int tbCodecAss(const char *c) {
   return c && (!strncmp(c, "S_TEXT/ASS", 10) || !strncmp(c, "S_TEXT/SSA", 10) ||
                !strcmp(c, "S_ASS") || !strcmp(c, "S_SSA"));
@@ -736,6 +742,7 @@ static void tbSondaFim(int n, const MkvFaixa *fx, const char *url) {
   if (mkvFioSessao != __atomic_load_n(&sessao, __ATOMIC_ACQUIRE) || strcmp(url, urlAtual)) return;
   mkvN = n > MKV_MAX_FAIXAS ? MKV_MAX_FAIXAS : n;
   if (mkvN > 0) memcpy(mkvFx, fx, sizeof mkvFx[0] * (size_t)mkvN);
+  mkvDurArq = mkvN > 0 ? mkv_ultima_duracao() : 0;
   mkvEstado = 3;
 }
 static int tbAtivo(void) { return tb.ativo; }
@@ -823,7 +830,7 @@ static void tbZerar(void) {
   if (tb.pend) tbburn_cancelar();
   memset(&tb, 0, sizeof tb);
   tb.leg = tb.sub = tb.audio = tb.audioSel = -1;
-  mkvN = 0; mkvEstado = 0;
+  mkvN = 0; mkvEstado = 0; mkvDurArq = 0; mkvDurAviso = 0;
   tbburn_arquivo_tem_ass(0);   // no stale "Burn in" row from the previous source
 }
 // The file's tracks, in TrackEntry order, from the header: what the menu shows
@@ -972,7 +979,9 @@ static void tbBombear(void) {
   char motivo[160];
   int e;
   tbburn_arquivo_tem_ass(mkvN > 0 && tbHeaderAss());
-  mkvass_teto_conexoes(tb.ativo || tb.pend ? 2 : 0);
+  // Subtitle reader: 2 connections while burned, 1 while sync's reference is
+  // on the network (as video_tpk.c): TorBox's CDN falls over at 5 sockets.
+  mkvass_teto_conexoes(tb.ativo || tb.pend ? (legref_em_rede() > 0 ? 1 : 2) : 0);
   if (tb.ativo && falhou) {
     printf("[tbburn] the player reported failure on TorBox's burned stream\n");
     fflush(stdout);
@@ -4094,7 +4103,22 @@ double video_pos(void)      { return posSeg; }
 #ifdef NV_WEBOS
 double video_quadro_fps(void) { return mkvFps; }   // 0 = desconhecida; a grade de quadros desliga
 #endif
-double video_duracao(void)  { return durSeg; }
+double video_duracao(void) {
+#ifdef NV_WEBOS
+  // TorBox's burned stream: the playlist's last segment counts a full 5 s, so
+  // the player overstates the length by up to 5 s. The file's Duration wins.
+  if (tb.ativo && mkvDurArq > 0 && durSeg > mkvDurArq && durSeg - mkvDurArq < 5.5) {
+    if (!mkvDurAviso) {
+      mkvDurAviso = 1;
+      printf("[tbburn] length: the player says %.2f s, the file %.2f s (TorBox's last segment is padded): using the file's\n",
+             durSeg, mkvDurArq);
+      fflush(stdout);
+    }
+    return mkvDurArq;
+  }
+#endif
+  return durSeg;
+}
 double video_buffer_fim(void) {
   DtsBufferInfo b={0};double end=bufferSeg;
   if(dtsSessao) {

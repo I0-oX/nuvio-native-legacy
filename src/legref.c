@@ -1198,7 +1198,7 @@ static void *trabalhar(void *u) {
       progresso(&j, n, n);
     } else doc = coletar(&j, &st);
     atomic_fetch_sub(&emRede, 1);
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     // 2-4 Ranges and done: the connection does not stay open all film (its
     // keepalive held a socket on TorBox's CDN, which falls over at 5).
     rede_fio_fechar();
