@@ -12,8 +12,11 @@
  *
  * Audio by codec: AAC / AC3 / E-AC3 / Opus / MP3 copied into MPEG-TS; DTS,
  * TrueHD/MLP converted to AC3 (5.1 640 kb/s, 2.0 192 kb/s); FLAC copied as is
- * into fragmented-MP4 segments (MPEG-TS has no FLAC; the S95C plays it). The
- * FLAC conversion stays in the code (tba_definir_flac) with no menu row.
+ * into fragmented-MP4 segments (MPEG-TS has no FLAC; the S95C plays it) when
+ * the build has the mp4 muxer (tba_flac_direto), else converted to AC3/AAC.
+ * webOS starts FLAC as is too; when the LG uMS refuses it, video.c reopens the
+ * stream converted once (tba_definir_flac) and remembers it for the run. The
+ * FLAC conversion has no menu row.
  *
  * Connections: the original file 1 + one TorBox segment download at a time.
  * Audio generation is serialized; a segment the player hung up on, or left
@@ -35,6 +38,10 @@
 enum { TBA_PASSTHROUGH = 0, TBA_TORBOX = 1, TBA_MODOS };
 
 int  tba_disponivel(void);
+/* 1 = this build can also serve FLAC untouched (the mp4 muxer for the fMP4
+ * audio rendition). Without it FLAC is converted; video.c asks before opening
+ * a session as is and falls back to the conversion when the TV refuses it. */
+int  tba_flac_direto(void);
 /* New session (replaces any previous one). tb_m3u8: TorBox's playlist URL (a
  * secret). orig/cab: the original file and the add-on's raw header lines.
  * audio_ordinal: the file's audio track (0-based among audio tracks, container
@@ -60,7 +67,9 @@ int  tba_rendicao_de(int audio_ordinal);
 /* The track the next playlist/segments use (the DEFAULT=YES rendition). */
 void tba_definir_audio(int audio_ordinal);
 int  tba_audio(void);
-/* FLAC conversion (session-wide; no menu row since 14/11, FLAC goes as is): 1 = convert. */
+/* FLAC conversion (session-wide): 1 = convert to AC3/AAC, 0 = copy (fMP4).
+ * The .tpk uses the device setting; webOS sets 1 when its TV refused the fMP4
+ * rendition (video.c) and keeps it for the run. No menu row. */
 void tba_definir_flac(int converter);
 int  tba_flac_converter(void);
 /* 1 = the file has a FLAC audio track. */

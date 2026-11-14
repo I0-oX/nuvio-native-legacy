@@ -7,10 +7,12 @@ TMPDIR="${TMPDIR%/}"
 # NUVIO_DTS_TARGET picks the build:
 #   webos (default) cross build with the LG SDK (tools/Dockerfile).
 #                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c, webOS):
-#                   the FLAC/TrueHD/MLP decoders (converted to AC3/AAC: the LG uMS
-#                   keeps HLS audio on MPEG-TS) and the mpegts/adts muxers. Still no
-#                   mpegts demuxer: TorBox's segments are stripped by hand
-#                   (tba_ts_sem_audio), never demuxed.
+#                   the FLAC/TrueHD/MLP decoders (converted to AC3/AAC) and the
+#                   mpegts/adts muxers; the mp4 muxer serves FLAC untouched as an
+#                   fMP4 audio rendition, like the .tpk (video.c falls back to the
+#                   conversion when the TV refuses it). Still no mpegts demuxer:
+#                   TorBox's segments are stripped by hand (tba_ts_sem_audio),
+#                   never demuxed.
 #   tpk             Samsung .tpk (tools/tpk.sh). ARM32 build inside the selected SDK
 #                   container, from the source tree tpk.sh already downloaded and checked on the
 #                   host (NUVIO_DTS_SRC; the container has no curl). Adds what the Samsung loopback
@@ -55,11 +57,12 @@ if [ "$TARGET" = tpk ]; then
 else
   CC=${CC:-arm-webos-linux-gnueabi-gcc}
   # Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c): FLAC and
-  # TrueHD/MLP are converted to AC3/AAC -- MPEG-TS only, never an fMP4 audio
-  # rendition -- so these decoders and the mpegts muxer are all it needs. adts
-  # is what the mpegts muxer wraps copied AAC with (it is not a separate lib).
+  # TrueHD/MLP are converted to AC3/AAC, but FLAC also goes as is as an fMP4
+  # audio rendition (as on the .tpk) when this muxer is here -- the LG uMS may
+  # refuse it, and video.c then reopens the same session converted. adts is
+  # what the mpegts muxer wraps copied AAC with (it is not a separate lib).
   DECODERS=$DECODERS,flac,truehd,mlp
-  MUXERS=mpegts,adts
+  MUXERS=mpegts,adts,mp4
   PARSERS=$PARSERS,mlp,ac3
   archive="$BUILD/ffmpeg-$VERSION.tar.xz"
   [ -f "$archive" ] || curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz" -o "$archive"

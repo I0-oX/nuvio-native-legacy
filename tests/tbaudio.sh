@@ -125,14 +125,36 @@ check "webOS: the one rendition's segments are that track ($(codec "$work/out/a1
   "[ '$(codec "$work/out/a1u_0.ts")' = 'ac3,6' ]"
 fim
 
-# 1a2. What webOS actually asks for (video.c): ONE rendition and FLAC converted
-#      (the LG uMS has no FLAC in HLS), read by a player from the master.
-sessao tb/playlist.m3u8 0 2 1 1
+# 1a2. What webOS asks for (video.c): ONE rendition and FLAC AS IS (an fMP4
+#      audio rendition, like the .tpk) -- the first attempt. A player must be
+#      able to read it; the app converts only if this TV refuses it.
+sessao tb/playlist.m3u8 0 2 0 1
 curl -s "$U" > "$work/out/master2.m3u8"
-check "webOS: the FLAC track converted, one rendition (a2)" \
+check "webOS: FLAC as is, one rendition (a2), DEFAULT" \
   "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master2.m3u8') = 1 ] && grep -q 'DEFAULT=YES.*URI=\"a2.m3u8\"' '$work/out/master2.m3u8'"
+curl -s "$B/a2.m3u8" > "$work/out/a2u.m3u8"
+check "webOS: the FLAC rendition is fMP4 (EXT-X-MAP + .m4s)" \
+  "grep -q '^#EXT-X-MAP:URI=\"a2_init.mp4\"' '$work/out/a2u.m3u8' && grep -q '^a2_0.m4s' '$work/out/a2u.m3u8'"
+curl -s -o "$work/out/a2u_i.mp4" "$B/a2_init.mp4"; curl -s -o "$work/out/a2u_2.m4s" "$B/a2_2.m4s"
+cat "$work/out/a2u_i.mp4" "$work/out/a2u_2.m4s" > "$work/out/a2u.mp4"
+check "webOS: FLAC as is plays ($(codec "$work/out/a2u.mp4"))" "[ '$(codec "$work/out/a2u.mp4")' = 'flac,2' ]"
+aflac=$(timeout 60 ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$U" 2>/dev/null | head -1 || true)
+[ -n "$aflac" ] || aflac=none
+check "webOS: a player reads the as-is master ($aflac)" "[ '$aflac' = 'flac' ]"
+fim
+
+# 1a3. The fallback (video.c, tba_definir_flac(1) + reopen): the same session
+#      with FLAC converted, still one rendition -- MPEG-TS now, so a player
+#      reads video + AAC together.
+sessao tb/playlist.m3u8 0 2 1 1
+curl -s "$U" > "$work/out/master3.m3u8"
+check "webOS: FLAC converted, one rendition (a2), DEFAULT" \
+  "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master3.m3u8') = 1 ] && grep -q 'DEFAULT=YES.*URI=\"a2.m3u8\"' '$work/out/master3.m3u8'"
+curl -s "$B/a2.m3u8" > "$work/out/a2u2.m3u8"
+check "webOS: the converted rendition is MPEG-TS (no EXT-X-MAP)" \
+  "! grep -q EXT-X-MAP '$work/out/a2u2.m3u8' && grep -q '^a2_0.ts' '$work/out/a2u2.m3u8'"
 timeout 120 ffmpeg -v error -i "$U" -map 0:v:0 -map 0:a:0 -t 8 -c copy "$work/out/webos.ts" || true
-check "webOS: a player reads the master (video + AAC from FLAC: $(codec "$work/out/webos.ts"))" \
+check "webOS: a player reads the converted master (video + AAC from FLAC: $(codec "$work/out/webos.ts"))" \
   "[ '$(codec "$work/out/webos.ts")' = 'aac,2' ] && perto $(inicio "$work/out/webos.ts" v 2>/dev/null || echo 9) $(inicio "$work/out/webos.ts" a 2>/dev/null || echo 0) 0.05"
 fim
 

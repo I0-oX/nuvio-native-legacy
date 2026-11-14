@@ -510,6 +510,7 @@ int tba_sockets_contar(int *nuvio) { if (nuvio) *nuvio = -1; return -1; }
 // ---- the server (.tpk / webOS with FFmpeg, and the host test) ---------------
 #if !defined(NV_DTS_FFMPEG) || !(defined(NV_TPK) || defined(NV_WEBOS) || defined(NV_TBAUDIO_TEST))
 int  tba_disponivel(void) { return 0; }
+int  tba_flac_direto(void) { return 0; }
 int  tba_abrir(const char *t, const char *o, const char *c, int a, int m, int f, int u, char *out, size_t n) {
   (void)t; (void)o; (void)c; (void)a; (void)m; (void)f; (void)u; if (out && n) out[0] = 0; return 0;
 }
@@ -1545,9 +1546,12 @@ static int subirServidor(void) {
 }
 
 // ---- API ----------------------------------------------------------------------------
-// 1 = this build can serve: the AC3 encoder and the muxers/decoder the server
-// uses. A binary linked against an FFmpeg without them keeps the feature off
-// (the Settings row and the burn-in stream fall back to TorBox's audio).
+// 1 = this build can serve (converting FLAC): the AC3 encoder and the muxers
+// and decoders every rendition may need. A binary linked against an FFmpeg
+// without them keeps the feature off (the Settings row and the burn-in stream
+// fall back to TorBox's audio). FLAC as is is a separate capability
+// (tba_flac_direto), so an FFmpeg without the mp4 muxer still serves the
+// conversion.
 int tba_disponivel(void) {
   return avcodec_find_encoder(AV_CODEC_ID_AC3) != NULL &&
          avcodec_find_decoder(AV_CODEC_ID_FLAC) != NULL &&
@@ -1555,6 +1559,11 @@ int tba_disponivel(void) {
          av_guess_format("mpegts", NULL, NULL) != NULL &&
          av_guess_format("adts", NULL, NULL) != NULL;
 }
+
+// 1 = this build can also serve FLAC untouched: the mp4 muxer for its fMP4
+// audio rendition. A binary without it still serves the other codecs and
+// converts FLAC (tba_disponivel).
+int tba_flac_direto(void) { return av_guess_format("mp4", NULL, NULL) != NULL; }
 
 int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal, int modo, int flacConv,
               int soUma, char *out, size_t n) {
@@ -1656,7 +1665,7 @@ void tba_definir_flac(int c) {
     s->flacConv = flacGlobal;
     if (s->pronto) { modosRecalcular(s); s->gOk = 0; }
     pthread_mutex_unlock(&s->gm);
-    printf("[tbaudio] FLAC test row: %s\n", flacGlobal ? "convert" : "as is");
+    printf("[tbaudio] FLAC: %s\n", flacGlobal ? "convert (AC3/AAC in MPEG-TS)" : "as is (fMP4)");
     fflush(stdout);
   }
   soltar(s);

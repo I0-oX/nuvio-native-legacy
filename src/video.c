@@ -755,6 +755,11 @@ static struct {
   int leg, sub, audio;           // the burned menu entry, TorBox's subtitle/audio indices
   int tba;                       // Nuvio's local stream is what the player has (dts/tbaudio_tpk.h)
   int tbaRetentouEm;             // the one retry of Nuvio's stream (ms, 0 = not yet)
+  int flacAsIs;                  // the local stream serves FLAC untouched (fMP4): the TV may refuse it
+  int audioUms;                  // audio tracks the uMS demuxed from this stream (-1 = not reported)
+  int srcInfoN;                  // sourceInfo events for this pipeline (0 = none arrived)
+  Uint32 abriuPipeEm;            // when the current pipeline of the burned stream was opened
+  Uint32 audioUmsEm;             // when the uMS last reported audio tracks for it
   Uint32 pediuEm, abriuEm, logEm;
   double alvo, durOrig;
   int tocouLog, listas, nAudio, nLeg, audioSel, erroCod;
@@ -762,6 +767,10 @@ static struct {
   char urlTb[NV_MEDIA_URL_MAX];  // TorBox's stream for this request (a secret): what falls back
   VideoFaixa faixaAudio[NV_FAIXA_MAX], faixaLeg[NV_FAIXA_MAX];
 } tb;
+// The LG uMS refused an fMP4 (FLAC as is) rendition at least once in this run:
+// new sessions start converted instead of trying again (no setting: it costs
+// one reopen per app launch, not a new persisted key).
+static int flacConvertidoNaTv;
 // The file's header as the probe read it: the menu of a burned source and the
 // choice for TorBox first come from here. lerMkv fills it for the session/URL
 // it was asked for; the HLS' own track list is never a menu.
@@ -948,16 +957,20 @@ static const char *const TBA_ROTULO[TBA_MODOS] = { "Passthrough", "Áudio do Tor
 static void tbUrlPlayer(const char *m) {
   char loc[256];
   int modo = ajustes_tb_audio_modo(), aud = tbIdxAudio();
+  // FLAC as is (fMP4 audio rendition, as on the .tpk) when this build has the
+  // mp4 muxer and this TV has not refused it yet; the server only uses it for
+  // FLAC tracks. The other codecs do not depend on this flag.
+  int fc = tba_flac_direto() && !flacConvertidoNaTv ? 0 : 1;
   snprintf(tb.urlTb, sizeof tb.urlTb, "%s", m);
   if (tb.tba) { tba_fechar(); tb.tba = 0; }
-  // FLAC converted (AC3/AAC): the server serves HLS audio on MPEG-TS, never an
-  // fMP4 audio rendition (the LG uMS has no FLAC in HLS; webOS has no menu row).
   if (modo != TBA_TORBOX && tba_disponivel() &&
-      tba_abrir(m, urlAtual, cabsHttp, aud, modo, 1, 1, loc, sizeof loc)) {
-    tb.tba = 1;
+      tba_abrir(m, urlAtual, cabsHttp, aud, modo, fc, 1, loc, sizeof loc)) {
+    tb.tba = 1; tb.flacAsIs = !fc;
     snprintf(tb.url, sizeof tb.url, "%s", loc);
-    printf("[tbburn] original audio: Nuvio serves the player (%s, audio %d of the file)\n", TBA_NOME[modo], aud);
+    printf("[tbburn] original audio: Nuvio serves the player (%s, audio %d of the file, FLAC %s)\n",
+           TBA_NOME[modo], aud, fc ? "converted" : "as is");
   } else {
+    tb.flacAsIs = 0;
     snprintf(tb.url, sizeof tb.url, "%s", m);
     printf("[tbburn] audio: %s\n", modo == TBA_TORBOX ? "TorBox's own (Settings: TorBox audio)" :
            tba_disponivel() ? "TorBox's own (Passthrough could not start)" :
@@ -981,6 +994,8 @@ static int tbAbrirEm(double alvo) {
     snprintf(tb.url + k, sizeof tb.url - k, "?n=%u", ++tbaUrlN);
   }
   if (!tocarInterno(tb.url, 0)) return 0;
+  tb.abriuPipeEm = SDL_GetTicks();
+  tb.audioUms = -1; tb.audioUmsEm = 0; tb.srcInfoN = 0;   // this pipeline has not reported yet
   tbRestaurarListas();   // the file's menu; the HLS sourceInfo is discarded
   nv_recon_zerar(&recon);   // a new pipeline; old attempts do not apply
   vidDV = 0;   // TorBox transcodes the picture; the bind must not claim the file's DV
@@ -1040,6 +1055,20 @@ static void tbReabrir(double alvo) {
   fflush(stdout);
   if (!tbAbrirEm(alvo)) tbDesligar("the player refused to reopen the burned stream", 1);
 }
+// The LG uMS refused FLAC as is (an fMP4 audio rendition): the .tpk's S95C
+// played it, the LG may not. Converts in the SAME session (the original file
+// is open; the rendition becomes AC3/AAC in MPEG-TS) and reopens at the same
+// position. Once per source (flacAsIs goes to 0) and remembered for the run,
+// so later sessions start converted; never a second attempt.
+static void tbFlacConverter(double alvo) {
+  flacConvertidoNaTv = 1;
+  tb.flacAsIs = 0;
+  reconErroPend = 0; reconErroRede = 0;   // the pipeline that failed is gone with the reopen
+  printf("[tbaudio] FLAC as is not played by this TV: converting\n");
+  fflush(stdout);
+  tba_definir_flac(1);
+  tbReabrir(alvo);
+}
 // The hold ends without TorBox: the original opens the usual way.
 static void tbSoltar(const char *porque) {
   if (!tb.pre) return;
@@ -1091,9 +1120,20 @@ static void tbBombear(void) {
   // on the network (as video_tpk.c): TorBox's CDN falls over at 5 sockets.
   mkvass_teto_conexoes(tb.ativo || tb.pend ? (legref_em_rede() > 0 ? 1 : 2) : 0);
   if (tb.ativo && falhou) {
-    printf("[tbburn] the player reported failure on TorBox's burned stream\n");
-    fflush(stdout);
-    tbDesligar("the TV player failed on TorBox's stream", 1);
+    if (tb.tba && tb.flacAsIs && tba_pronto() && tba_audio_e_flac()) {
+      // The load of Nuvio's stream failed: if it was the fMP4 (FLAC as is)
+      // rendition, convert and reopen once. The new pipeline is not the one
+      // that failed, so its state goes away with it.
+      printf("[tbburn] the player reported failure on Nuvio's stream\n");
+      fflush(stdout);
+      falhou = 0;
+      tbFlacConverter(video_pos());
+    } else {
+      printf("[tbburn] the player reported failure on %s\n",
+             tb.tba ? "Nuvio's stream" : "TorBox's burned stream");
+      fflush(stdout);
+      tbDesligar("the TV player failed on TorBox's stream", 1);
+    }
   }
   if (tb.pre && !tb.pend) {
     if (mkvEstado != 3 && !fioMkvVivo) {   // this source's header read (again, if it was stale)
@@ -1172,6 +1212,19 @@ static void tbBombear(void) {
              tb.ativo ? " (TorBox's stream keeps the previous choice)" : "; Nuvio draws the subtitles");
       fflush(stdout);
     }
+  }
+  // FLAC as is, refused by this TV: the uMS's own report (sourceInfo) has no
+  // audio track for Nuvio's stream, or no report arrived at all. One
+  // conversion at the same position; the player-error paths do the same. The
+  // 3 s after the report skip a first, partial sourceInfo; tbFlacConverter
+  // clears flacAsIs, so this cannot repeat.
+  if (tb.ativo && tb.tba && tb.flacAsIs && !tb.pend && pronto &&
+      tba_pronto() && tba_audio_e_flac()) {
+    Uint32 agora = SDL_GetTicks();
+    int semAudio = (tb.audioUms == 0 && tb.audioUmsEm && agora - tb.audioUmsEm >= 3000u) ||
+                   (tb.audioUms < 0 && tb.srcInfoN == 0 && tb.abriuPipeEm &&
+                    agora - tb.abriuPipeEm >= 15000u);
+    if (semAudio) tbFlacConverter(video_pos());
   }
   if (tb.ativo && !tb.tocouLog && pronto && tocando) {
     tb.tocouLog = 1;
@@ -1660,6 +1713,11 @@ static int eventoPayload(const char *p, unsigned minhaSessao) {
       int nUms = -1;
       { const char *a = js_array(p, NULL, "audioTrackInfo");
         if (a) { const char *o = a; nUms = 0; while (o && *o == '{') { nUms++; o = js_prox(o); } } }
+      // The pipeline's own report, kept for the FLAC-as-is fallback (video.c):
+      // one audio track is expected from Nuvio's stream; 0 means the LG
+      // demuxed none.
+      tb.srcInfoN++;
+      if (tb.tba) { tb.audioUms = nUms; tb.audioUmsEm = SDL_GetTicks(); }
       if (tb.listas) tbRestaurarListas();
       printf("[tbburn] %s sourceInfo ignored: the menu keeps the file's %d audio and %d subtitle(s); "
              "the uMS demuxed %d audio track(s)\n",
@@ -3225,7 +3283,12 @@ void video_bombear(void) {
     fflush(stdout);
     reconErroPend = 0; reconErroRede = 0;
     nv_recon_zerar(&recon);
-    if (tb.tba && tb.urlTb[0] && (!tb.tbaRetentouEm || SDL_GetTicks() - (Uint32)tb.tbaRetentouEm > 60000u)) {
+    if (tb.tba && tb.flacAsIs && tba_pronto() && tba_audio_e_flac()) {
+      // FLAC as is (fMP4 audio rendition): this TV did not play it. Convert in
+      // the same session and reopen once; the generic retry stays for a second
+      // failure. tbFlacConverter clears flacAsIs, so this never repeats.
+      tbFlacConverter(video_pos());
+    } else if (tb.tba && tb.urlTb[0] && (!tb.tbaRetentouEm || SDL_GetTicks() - (Uint32)tb.tbaRetentouEm > 60000u)) {
       char m[sizeof tb.urlTb];
       double pos = video_pos();
       tb.tbaRetentouEm = (int)SDL_GetTicks();
