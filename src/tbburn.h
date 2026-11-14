@@ -65,6 +65,15 @@ int  video_tpk_queimada(void);
 int  video_tpk_queimar_voltou(void);
 #endif
 
+// HDR (owner 13/11): TorBox's transcode would lose HDR, so burn-in starts Off
+// on an HDR file (the source's HDR badge, set by player.c before the open, or
+// the file's colour info, video_tpk.c). Turning it On in playback is
+// remembered for the show (tbburn_hdr_lembrar(1); Off clears it).
+void tbburn_hdr_fonte(int sim);
+int  tbburn_hdr_da_fonte(void);
+int  tbburn_hdr_permitido(void);
+void tbburn_hdr_lembrar(int sim);
+
 // ---- the burned layer (owner 13/11) -------------------------------------------
 // Burned in is its own layer next to Main and Second. At open: the track
 // remembered for the show (or Off), else Signs & Songs, else the dialogue ASS
@@ -94,6 +103,16 @@ void video_tpk_queimar_ligar(int ligar);
 int  video_tpk_leg_queimavel(int i);
 // 1 = burned in is on (or being asked for) and `i` is burnable: hidden from Main/Second.
 int  video_tpk_leg_oculta(int i);
+// Audio menu row under the tracks (faixas.c), original audio with burn-in
+// (dts/tbaudio_tpk.h): "Original audio: Passthrough | TorBox audio" (saves
+// Settings; reopens while burned). One row (k is always 0); FLAC goes as is.
+int  video_tpk_tba_linhas(void);
+void video_tpk_tba_rotulo(int k, char *nome, unsigned long nn, char *sub, unsigned long ns);
+void video_tpk_tba_ok(int k);
+// Left/Right on a row: changes the value shown only; OK applies (owner 14/11).
+void video_tpk_tba_passo(int k, int dir);
+// The sheet opened or closed without OK: back to the current values.
+void video_tpk_tba_soltar(void);
 #endif
 
 // ---- pure (tests) ----------------------------------------------------------

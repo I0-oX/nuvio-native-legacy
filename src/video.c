@@ -774,6 +774,13 @@ static void tbFaixaDe(int i, TbFaixa *t) {
   t->tipo = f->tipoLeg ? f->tipoLeg : f->letreiro ? LING_LEG_LETREIROS : LING_LEG_COMUM;
   t->letreiro = f->letreiro;
 }
+// The file says HDR: PQ/HLG transfer or a Dolby Vision record on a video track.
+static int tbArquivoHdr(void) {
+  for (int i = 0; i < mkvN; i++)
+    if (mkvFx[i].tipo == 1 && (mkvFx[i].transferencia == 16 || mkvFx[i].transferencia == 18 || mkvFx[i].dvPerfil > 0)) return 1;
+  return 0;
+}
+static int tbHdr(void) { return tbburn_hdr_da_fonte() || tbArquivoHdr(); }
 // The automatic choice on the menu list: remembered for the show (or Off),
 // else Signs & Songs, else the dialogue ASS track. Menu index or -1.
 static int tbAutoFaixa(int usarMemoria, const char **porque) {
@@ -781,6 +788,14 @@ static int tbAutoFaixa(int usarMemoria, const char **porque) {
   int idx[NV_FAIXA_MAX], n = 0, i, mem = 0, k;
   for (i = 0; i < nLeg && n < NV_FAIXA_MAX; i++)
     if (tbLegAss(i)) { tbFaixaDe(i, &f[n]); idx[n++] = i; }
+  // HDR (owner 13/11): TorBox's transcode loses HDR, so the automatic choice
+  // burns nothing unless burn-in was turned On on an HDR file of this show.
+  if (usarMemoria && tbHdr() && !tbburn_hdr_permitido()) {
+    if (porque) *porque = tbburn_hdr_da_fonte() && tbArquivoHdr() ? "HDR (source badge and file colour): Off unless turned On for this show" :
+                          tbburn_hdr_da_fonte() ? "HDR (source badge): Off unless turned On for this show" :
+                                                  "HDR (file colour info): Off unless turned On for this show";
+    return -1;
+  }
   if (usarMemoria) mem = tbburn_memoria(&m);
   k = tbburn_escolher_auto(f, n, mem, &m, ling_legenda());
   if (porque) *porque = !n ? "no ASS track" : mem == 1 ? "Off remembered for this show" : mem == 2 && k >= 0 ? "remembered for this show" :
@@ -1066,12 +1081,14 @@ void video_tpk_queimar_faixa(int i) {
     tbFaixaDe(i, &t);
     tbburn_definir_escolha(1);
     tbburn_lembrar(&t);
+    if (tbHdr()) tbburn_hdr_lembrar(1);
     tb.desistiu = 0;
     if (tbburn_pode()) tbPedir(i, "picked in Burn in");
     return;
   }
   tbburn_definir_escolha(0);
   tbburn_lembrar(NULL);
+  if (tbHdr()) tbburn_hdr_lembrar(0);
   if (tb.pend) { tb.pend = 0; tbburn_cancelar(); printf("[tbburn] request dropped: Burn in Off\n"); fflush(stdout); }
   if (tb.pre) tbSoltar("Burn in Off");
   if (tb.ativo) tbDesligar("Burn in Off", 0);
@@ -4395,7 +4412,7 @@ void video_escolher_legenda(int i) {
 // O estilo escolhido, guardado porque o PIPELINE NASCE A CADA LOAD e nao herda
 // nada do video anterior. Reaplicado em loadCompleted e sempre que a legenda e
 // (re)selecionada.
-static VideoLegendaEstilo estilo = { 120, 0, 0, 3, 1, 0, 0, 0 };
+static VideoLegendaEstilo estilo = { 120, 0, 0, 3, 1, 0, 100, 0 };
 static int temEstilo;
 
 static void aplicarEstilo(void) {
@@ -4412,10 +4429,9 @@ static void aplicarEstilo(void) {
              midia, VIDEO_LEG_CORES[c]);
     chamar("setSubtitleCharacterColor", b, soLog); }
   // Opacidade DA LETRA, separada da do fundo. O handler existe no firmware da
-  // C9 (`setSubtitleCharacterOpacity`) e recebe 0..255. Tres niveis evitam uma
-  // folha interminavel no controle remoto e mantem o texto legivel sobre video.
-  { int op = estilo.opacidade == 3 ? 64 : estilo.opacidade == 2 ? 128
-           : estilo.opacidade == 1 ? 191 : 255;
+  // C9 (`setSubtitleCharacterOpacity`) e recebe 0..255: the opacity % in
+  // 10 % steps (owner 14/11/2026), 10 % = 26 .. 100 % = 255.
+  { int op = (int)(video_legenda_opacidade(&estilo) * 255.0f + 0.5f);
     snprintf(b, sizeof b, "{\"mediaId\":\"%s\",\"charOpacity\":%d}", midia, op);
     chamar("setSubtitleCharacterOpacity", b, soLog); }
   // O fundo e a dupla cor+opacidade: sem declarar a cor, mudar so a opacidade
