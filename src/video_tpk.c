@@ -910,6 +910,14 @@ static void tbSoltar(const char *porque);
 // remembered for the show and lasts for the session (tbburn_definir_escolha).
 void video_tpk_queimar_faixa(int i) {
   TbFaixa t;
+  /* A pick that does nothing says why (owner 14/11: Love Is War, through the
+   * local fix, "the row was there, picking a track did nothing"). */
+  printf("[tbburn] Burn in pick: menu entry %d of %d (%s, ordinal %d) | player %s, side connections %s, trailer %s, "
+         "media URL %s, local fix %s, header %d, TorBox allowed %d\n",
+         i, nLeg, i >= 0 && i < nLeg ? faixaLeg[i].codec : "-", i >= 0 && i < nLeg ? faixaLeg[i].ordinalMkv : -1,
+         ativo ? "open" : "CLOSED", reconPermitida ? "allowed" : "NOT ALLOWED", emTrailer ? "YES" : "no",
+         urlAtual[0] ? "set" : "EMPTY", mf.ativo ? "on" : "off", mkvEstado, tbburn_pode());
+  fflush(stdout);
   if (!ativo || !reconPermitida || emTrailer || !urlAtual[0]) return;
   tb.decidido = 1;
   if (i >= 0 && i < nLeg && tbLegAss(i)) {
@@ -919,6 +927,7 @@ void video_tpk_queimar_faixa(int i) {
     if (tbHdr()) tbburn_hdr_lembrar(1);
     tb.desistiu = 0;
     if (tbburn_pode()) tbPedir(i, "picked in Burn in");
+    else { printf("[tbburn] Burn in pick not sent: TorBox burn-in is not allowed now (plan, key or refused)\n"); fflush(stdout); }
     return;
   }
   tbburn_definir_escolha(0);
@@ -934,6 +943,8 @@ void video_tpk_queimar_ligar(int ligar) {
   int k;
   if (!ligar) { video_tpk_queimar_faixa(-1); return; }
   k = tbAutoFaixa(0, &porque);
+  printf("[tbburn] Burn in On: %s\n", k >= 0 ? "burning the automatic pick" : porque);
+  fflush(stdout);
   if (k >= 0) video_tpk_queimar_faixa(k);
 }
 int video_tpk_leg_queimavel(int i) { return tbLegAss(i); }
