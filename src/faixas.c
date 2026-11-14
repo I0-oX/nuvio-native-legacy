@@ -526,7 +526,7 @@ void faixas_abrir(void) { faixas_abrir_em(0); }
 // com as duas colunas lado a lado (comparar o par escolhido e o motivo dele
 // existir); o que muda e onde o foco comeca.
 void faixas_abrir_em(int col) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   video_tpk_tba_soltar();   // a value changed without OK last time is not kept
 #endif
   int n;
@@ -612,7 +612,7 @@ static int linhaDaLeg(int i) {
 }
 
 // Original audio with TorBox burn-in (tbburn.h): rows under the audio tracks.
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
 static int nTba(void) { return video_tpk_tba_linhas(); }
 #else
 static int nTba(void) { return 0; }
@@ -1204,7 +1204,7 @@ static void lembrarManual(int i) {
 }
 
 static void aplicar(void) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   if (coluna == 0 && foco[0] >= video_n_audio()) { video_tpk_tba_ok(foco[0] - video_n_audio()); return; }
 #endif
   if (coluna == 0) {
@@ -1531,7 +1531,7 @@ void faixas_evento(const SDL_Event *e) {
   // Na de audio nao ha para onde ir — antes elas pulavam para a coluna de
   // legenda, que e justamente o que fazia os dois botoes do player parecerem o
   // mesmo botao.
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   // Original audio row (tbburn.h): Left/Right change the value shown,
   // OK applies it (aplicar).
   if (!modo && coluna == 0 && foco[0] >= video_n_audio() && (k == SDLK_LEFT || k == SDLK_RIGHT)) {
@@ -1838,7 +1838,7 @@ static void linhaLista(int col, int i, float x, float y, float w, float a) {
   GfxRect lr = { x, y, w, IL_LN_H };
   nome[0] = sub[0] = 0;
   if (!col && i >= video_n_audio()) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     video_tpk_tba_rotulo(i - video_n_audio(), nome, sizeof nome, sub, sizeof sub);
 #endif
     icone = "pl_audio-lines";

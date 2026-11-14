@@ -32,6 +32,9 @@
 #include "dts/dts_playback.h"
 #include "dts_tv.h"
 #include "dts/dts_engine.h"
+#ifdef NV_WEBOS
+#include "dts/tbaudio_tpk.h"   // original audio with burn-in: the local stream
+#endif
 #include "dts/dv7.h"
 #include "ajustes.h"
 #include "dts/dts_overlay.h"
@@ -750,10 +753,13 @@ static struct {
   int pre, preFeito, decidido;   // TorBox first: the player is held for TorBox; decidido = auto choice made
   Uint32 preDesde;
   int leg, sub, audio;           // the burned menu entry, TorBox's subtitle/audio indices
+  int tba;                       // Nuvio's local stream is what the player has (dts/tbaudio_tpk.h)
+  int tbaRetentouEm;             // the one retry of Nuvio's stream (ms, 0 = not yet)
   Uint32 pediuEm, abriuEm, logEm;
   double alvo, durOrig;
   int tocouLog, listas, nAudio, nLeg, audioSel, erroCod;
   char url[NV_MEDIA_URL_MAX];
+  char urlTb[NV_MEDIA_URL_MAX];  // TorBox's stream for this request (a secret): what falls back
   VideoFaixa faixaAudio[NV_FAIXA_MAX], faixaLeg[NV_FAIXA_MAX];
 } tb;
 // The file's header as the probe read it: the menu of a burned source and the
@@ -870,6 +876,7 @@ static void tbRestaurarListas(void) {
 }
 static void tbZerar(void) {
   if (tb.pend) tbburn_cancelar();
+  if (tb.tba) tba_fechar();
   memset(&tb, 0, sizeof tb);
   tb.leg = tb.sub = tb.audio = tb.audioSel = -1;
   mkvN = 0; mkvEstado = 0; mkvDurArq = 0; mkvDurAviso = 0;
@@ -930,14 +937,66 @@ static void tbPedir(int i, const char *porque) {
   fflush(stdout);
   tbburn_pedir(urlAtual, sub, aud);
 }
-// Opens TorBox's stream (the uMS gets the HLS; urlAtual keeps the file).
-static int tbAbrir(double alvo) {
-  printf("[tbburn] player opens TorBox's stream (the original stays the media URL)\n");
+// TorBox's burned stream is ready (`m`): what the uMS opens. Settings >
+// "Original audio with burn-in" (AJ_TB_AUDIO): PASSTHROUGH (default) = Nuvio's
+// local stream -- TorBox's picture without its audio + the original file's
+// audio (dts/tbaudio_tpk.c); TORBOX AUDIO = TorBox's URL as it is. The local
+// server is only in a build that can serve (tba_disponivel); without it the
+// burned stream keeps TorBox's audio, as before.
+static const char *const TBA_NOME[TBA_MODOS] = { "Passthrough", "TorBox audio" };
+static const char *const TBA_ROTULO[TBA_MODOS] = { "Passthrough", "Áudio do TorBox" };
+static void tbUrlPlayer(const char *m) {
+  char loc[256];
+  int modo = ajustes_tb_audio_modo(), aud = tbIdxAudio();
+  snprintf(tb.urlTb, sizeof tb.urlTb, "%s", m);
+  if (tb.tba) { tba_fechar(); tb.tba = 0; }
+  // FLAC converted (AC3/AAC): the server serves HLS audio on MPEG-TS, never an
+  // fMP4 audio rendition (the LG uMS has no FLAC in HLS; webOS has no menu row).
+  if (modo != TBA_TORBOX && tba_disponivel() &&
+      tba_abrir(m, urlAtual, cabsHttp, aud, modo, 1, 1, loc, sizeof loc)) {
+    tb.tba = 1;
+    snprintf(tb.url, sizeof tb.url, "%s", loc);
+    printf("[tbburn] original audio: Nuvio serves the player (%s, audio %d of the file)\n", TBA_NOME[modo], aud);
+  } else {
+    snprintf(tb.url, sizeof tb.url, "%s", m);
+    printf("[tbburn] audio: %s\n", modo == TBA_TORBOX ? "TorBox's own (Settings: TorBox audio)" :
+           tba_disponivel() ? "TorBox's own (Passthrough could not start)" :
+           "TorBox's own (this build cannot serve the original audio)");
+  }
   fflush(stdout);
-  vidDV = 0;   // TorBox transcodes the picture; not the file's Dolby Vision claim
-  if (!tocarInterno(tb.url, 0)) {
-    printf("[tbburn] the player refused TorBox's stream: back to the original file at %.1f s\n", alvo);
+}
+// Reopens the burned stream at `alvo`: tb.url, Nuvio's local stream or
+// TorBox's, whichever tbUrlPlayer chose.
+static unsigned tbaUrlN;   // a new master URL per open (see tbAbrirEm)
+static int tbAbrirEm(double alvo) {
+  if (tb.tba) {
+    // The master names the track that is DEFAULT and the LG network stack may
+    // serve the copy it already had (audio pick, mode change); a new query
+    // makes each open a new URL. The server routes by path only (the token is
+    // in it) and relative rendition URIs still resolve.
+    char *q = strchr(tb.url, '?');
+    size_t k;
+    if (q) *q = 0;
+    k = strlen(tb.url);
+    snprintf(tb.url + k, sizeof tb.url - k, "?n=%u", ++tbaUrlN);
+  }
+  if (!tocarInterno(tb.url, 0)) return 0;
+  tbRestaurarListas();   // the file's menu; the HLS sourceInfo is discarded
+  nv_recon_zerar(&recon);   // a new pipeline; old attempts do not apply
+  vidDV = 0;   // TorBox transcodes the picture; the bind must not claim the file's DV
+  posAoCarregar = alvo > 1.0 ? alvo : 0.0;
+  return 1;
+}
+// Opens the burned stream (the uMS gets the HLS; urlAtual keeps the file).
+static int tbAbrir(double alvo) {
+  printf("[tbburn] player opens %s (the original stays the media URL)\n",
+         tb.tba ? "Nuvio's Passthrough stream" : "TorBox's stream");
+  fflush(stdout);
+  if (!tbAbrirEm(alvo)) {
+    printf("[tbburn] the player refused %s: back to the original file at %.1f s\n",
+           tb.tba ? "Nuvio's stream" : "TorBox's stream", alvo);
     fflush(stdout);
+    if (tb.tba) { tba_fechar(); tb.tba = 0; }
     tb.ativo = 0; tb.desistiu = 1; tb.voltar = 1;
     if (tocarInterno(urlAtual, !semDVForcado)) {
       nv_recon_zerar(&recon);
@@ -948,10 +1007,6 @@ static int tbAbrir(double alvo) {
     }
     return 0;
   }
-  tbRestaurarListas();   // the file's menu; the HLS sourceInfo is discarded
-  nv_recon_zerar(&recon);   // TorBox's stream is a new pipeline; old attempts do not apply
-  vidDV = 0;   // TorBox transcodes the picture; the bind must not claim the file's DV
-  posAoCarregar = alvo > 1.0 ? alvo : 0.0;
   printf("[tbburn] menu: %d audio and %d subtitle(s) from the file; burned subtitle %d, audio %d\n",
          nAudio, nLeg, tb.leg, tb.audio);
   fflush(stdout);
@@ -963,6 +1018,7 @@ static void tbDesligar(const char *porque, int desistir) {
   if (!tb.ativo) return;
   tb.ativo = 0;
   if (tb.pend) { tb.pend = 0; tbburn_cancelar(); }
+  if (tb.tba) { tba_fechar(); tb.tba = 0; }   // the local server goes with the stream
   if (desistir) { tb.desistiu = 1; tb.voltar = 1; }
   printf("[tbburn] back to the original file at %.1f s: %s\n", alvo, porque);
   fflush(stdout);
@@ -973,6 +1029,16 @@ static void tbDesligar(const char *porque, int desistir) {
   if (tb.listas) { tbRestaurarListas(); tb.listas = 0; }
   if (aud >= 0 && aud < nAudio) audioAtual = aud;
   posAoCarregar = alvo > 1.0 ? alvo : 0.0;
+}
+// A new pipeline on the same burned stream at `alvo` (an audio pick or a mode
+// change while burned, the one retry of Nuvio's stream). webOS gets one audio
+// rendition per stream, so the pick cannot be an in-place selectTrack: the
+// same URL is opened again -- Nuvio's server keeps the session and the new
+// track is already the DEFAULT of its master.
+static void tbReabrir(double alvo) {
+  printf("[tbburn] reopening %s at %.1f s\n", tb.tba ? "Nuvio's stream" : "TorBox's stream", alvo);
+  fflush(stdout);
+  if (!tbAbrirEm(alvo)) tbDesligar("the player refused to reopen the burned stream", 1);
 }
 // The hold ends without TorBox: the original opens the usual way.
 static void tbSoltar(const char *porque) {
@@ -1070,7 +1136,7 @@ static void tbBombear(void) {
       // TorBox first: the burned stream is the first open (the app's resume
       // seek follows as for any source).
       tb.pend = 0; tb.pre = 0;
-      snprintf(tb.url, sizeof tb.url, "%s", m);
+      tbUrlPlayer(m);   // the local stream, or TorBox's URL
       tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = 0; tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
       tb.durOrig = 0;
       printf("[tbburn] TorBox first: opening TorBox's burned stream %u ms after the hold began\n",
@@ -1093,7 +1159,7 @@ static void tbBombear(void) {
     }
     if (e == TBB_PRONTO) {
       tb.pend = 0;
-      snprintf(tb.url, sizeof tb.url, "%s", m);
+      tbUrlPlayer(m);   // the local stream, or TorBox's URL
       tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = video_pos(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
       printf("[tbburn] opening TorBox's burned stream at %.1f s (%u ms after the request)\n", tb.alvo,
              (unsigned)(SDL_GetTicks() - tb.pediuEm));
@@ -1117,9 +1183,12 @@ static void tbBombear(void) {
   if (tb.ativo && (Uint32)(SDL_GetTicks() - tb.logEm) >= 10000u) {
     int pico = 0, agora = rede_torbox_em_voo(&pico);
     tb.logEm = SDL_GetTicks();
-    printf("[tbburn] 10s: playing TorBox's stream at %.1f s | Nuvio's own connections to TorBox now %d, most %d "
-           "(the TV player not counted; subtitle reader capped at 2)\n", video_pos(), agora, pico);
+    printf("[tbburn] 10s: playing %s at %.1f s | Nuvio's own connections to TorBox now %d, most %d "
+           "(the TV player not counted; subtitle reader capped at 2)\n",
+           tb.tba ? "Nuvio's Passthrough stream (TorBox video + original audio)" : "TorBox's stream",
+           video_pos(), agora, pico);
     fflush(stdout);
+    if (tb.tba) tba_log();
   }
 }
 // The Burn in list (legendasui.c): a burnable track, or -1 = Off. A pick is
@@ -1156,6 +1225,50 @@ int video_tpk_leg_queimavel(int i) { return tbLegAss(i); }
 int video_tpk_leg_oculta(int i) { return (tb.ativo || tb.pend) && tbLegAss(i); }
 int video_tpk_queimada(void) { return tb.ativo || tb.pend ? tb.leg : -1; }
 int video_tpk_queimar_voltou(void) { int v = tb.voltar; tb.voltar = 0; return v; }
+
+// ---- Audio menu: original audio with burn-in (tbburn.h) ---------------------
+// One row under the audio tracks (faixas.c), where the Burn in row would be:
+// "Original audio: Passthrough | TorBox audio" (Settings alike). Only in a
+// build that can serve the local stream (tba_disponivel). Left/Right change
+// the value shown; OK applies it (saves Settings and, while burned, reopens
+// at the same position) -- never on its own, as on the .tpk.
+static int tbaPend = -1;   // value shown, -1 = the current one
+int video_tpk_tba_linhas(void) {
+  if (!ligado || !tba_disponivel()) return 0;
+  return tb.ativo || tb.pend || tbburn_linha_visivel();
+}
+void video_tpk_tba_rotulo(int k, char *nome, unsigned long nn, char *sub, unsigned long ns) {
+  int atual = ajustes_tb_audio_modo(), v = tbaPend >= 0 ? tbaPend : atual;
+  const char *val = i18n(TBA_ROTULO[v]);
+  (void)k;
+  snprintf(nome, nn, "%s", i18n("Áudio original"));
+  if (tbaPend >= 0 && tbaPend != atual) snprintf(sub, ns, "%s  ·  %s", val, i18n("OK para aplicar"));
+  else snprintf(sub, ns, "%s", val);
+}
+void video_tpk_tba_passo(int k, int dir) {
+  int v = tbaPend >= 0 ? tbaPend : ajustes_tb_audio_modo();
+  (void)k;
+  tbaPend = ((v + (dir > 0 ? 1 : -1)) % TBA_MODOS + TBA_MODOS) % TBA_MODOS;
+}
+void video_tpk_tba_soltar(void) { tbaPend = -1; }
+void video_tpk_tba_ok(int k) {
+  int v = tbaPend;
+  (void)k;
+  tbaPend = -1;
+  if (v < 0 || v == ajustes_tb_audio_modo()) return;   // nothing changed: OK just closes
+  ajustes_definir_tb_audio_modo(v);
+  printf("[tbaudio] Audio menu: original audio %s (OK; saved in Settings)\n", TBA_NOME[v]);
+  fflush(stdout);
+  if (tb.ativo && tb.urlTb[0]) {
+    double pos = video_pos();
+    char m[sizeof tb.urlTb];
+    snprintf(m, sizeof m, "%s", tb.urlTb);
+    tbUrlPlayer(m);
+    printf("[tbaudio] reopening at %.1f s: %s\n", pos, TBA_NOME[v]);
+    fflush(stdout);
+    tbReabrir(pos);
+  }
+}
 #endif
 
 // PLAYER_TYPE_MSE. O ACB usa isto para saber que a fonte e um pipeline de
@@ -1542,9 +1655,15 @@ static int eventoPayload(const char *p, unsigned minhaSessao) {
       // TorBox's HLS lists only the audio it transcoded and no subtitle track:
       // the menu keeps the FILE's tracks, restored from the snapshot taken when
       // the burn was chosen. Nothing goes to the player for subtitles.
+      // Nuvio's stream (dts/tbaudio_tpk.h) lists ONE rendition: the uMS's own
+      // count is the only proof the LG demuxed it (it is what plays).
+      int nUms = -1;
+      { const char *a = js_array(p, NULL, "audioTrackInfo");
+        if (a) { const char *o = a; nUms = 0; while (o && *o == '{') { nUms++; o = js_prox(o); } } }
       if (tb.listas) tbRestaurarListas();
-      printf("[tbburn] TorBox's stream sourceInfo ignored: the menu keeps the file's %d audio and %d subtitle(s)\n",
-             nAudio, nLeg);
+      printf("[tbburn] %s sourceInfo ignored: the menu keeps the file's %d audio and %d subtitle(s); "
+             "the uMS demuxed %d audio track(s)\n",
+             tb.tba ? "Nuvio's stream" : "TorBox's", nAudio, nLeg, nUms);
       fflush(stdout);
     } else {
 #endif
@@ -3094,14 +3213,30 @@ void video_bombear(void) {
   }
 #ifdef NV_WEBOS
   // TORBOX BURN-IN: an error on TorBox's stream never reaches the normal
-  // reconnection ladder. Back to the original at the same position, once per
-  // source; Nuvio draws the subtitles and the toast says so (faixas.c).
+  // reconnection ladder. Nuvio's stream (dts/tbaudio_tpk.c) gets one more try
+  // at the same position, at most once a minute; then, and for TorBox's own
+  // stream, back to the original at the same position, once per source; Nuvio
+  // draws the subtitles and the toast says so (faixas.c).
   if (reconErroPend && tbAtivo()) {
-    printf("[tbburn] player error 0x%x on TorBox's burned stream\n", (unsigned)tb.erroCod);
+    char mt[160] = "";
+    if (tb.tba && tba_falhou(mt, sizeof mt)) printf("[tbaudio] Nuvio's stream could not start: %s\n", mt);
+    printf("[tbburn] player error 0x%x on %s\n", (unsigned)tb.erroCod,
+           tb.tba ? "Nuvio's Passthrough stream (TorBox video + original audio)" : "TorBox's burned stream");
     fflush(stdout);
     reconErroPend = 0; reconErroRede = 0;
     nv_recon_zerar(&recon);
-    tbDesligar("the TV player failed on TorBox's stream", 1);
+    if (tb.tba && tb.urlTb[0] && (!tb.tbaRetentouEm || SDL_GetTicks() - (Uint32)tb.tbaRetentouEm > 60000u)) {
+      char m[sizeof tb.urlTb];
+      double pos = video_pos();
+      tb.tbaRetentouEm = (int)SDL_GetTicks();
+      snprintf(m, sizeof m, "%s", tb.urlTb);
+      printf("[tbaudio] retrying Nuvio's stream once at %.1f s\n", pos);
+      fflush(stdout);
+      tbUrlPlayer(m);   // a new session, same track and mode
+      tbReabrir(pos);
+    } else {
+      tbDesligar(tb.tba ? "the TV player failed on Nuvio's stream again" : "the TV player failed on TorBox's stream", 1);
+    }
   }
 #endif
   if (reconErroPend) {
@@ -4464,11 +4599,39 @@ void video_escolher_audio(int i) {
   // transcoded. Another file audio means another stream from TorBox; the uMS
   // never receives a selectTrack for the burned one.
   if (tb.ativo || tb.pend) {
-    int aud;
+    int aud, antes = audioAtual;
     if (!f || i == audioAtual) return;
     audioAtual = i; tb.audioSel = i;
     aud = tbIdxAudio();
     if (aud == tb.audio) return;
+    // ORIGINAL AUDIO (dts/tbaudio_tpk.h): Nuvio's stream serves the pick. The
+    // master lists ONE rendition, so the burned stream reopens at the same
+    // position instead of switching in place: the LG uMS merges the renditions
+    // that share a LANGUAGE and kills the pipeline on a selectTrack index it
+    // did not demux (webOS notes, "audio track selection").
+    if (tb.ativo && tb.tba && !tb.pend) {
+      int r;
+      if (!tba_pronto()) {
+        printf("[tbaudio] audio %d (%s): Nuvio's stream is still being prepared; keeping the track it opened with\n",
+               aud, f->rotulo);
+        fflush(stdout);
+        audioAtual = antes; tb.audioSel = antes;
+        return;
+      }
+      if ((r = tba_rendicao_de(aud)) < 0) {
+        printf("[tbaudio] audio %d (%s) is not offered by Nuvio's stream (codec this build cannot serve): keeping %s\n",
+               aud, f->rotulo, faixaAudio[antes >= 0 && antes < nAudio ? antes : 0].rotulo);
+        fflush(stdout);
+        audioAtual = antes; tb.audioSel = antes;
+        return;
+      }
+      tba_definir_audio(aud);
+      printf("[tbaudio] audio %d (%s): rendition %d is Nuvio's stream now; reopening at %.1f s\n",
+             aud, f->rotulo, r, video_pos());
+      fflush(stdout);
+      tbReabrir(video_pos());
+      return;
+    }
     tb.audio = aud; tb.pend = 1; tb.pediuEm = SDL_GetTicks();
     printf("[tbburn] audio %d (%s) chosen: asking TorBox for subtitle %d with audio %d\n",
            i, f->rotulo, tb.sub, aud);

@@ -5,7 +5,12 @@ TMPDIR="${TMPDIR%/}"
 # network/TLS protocols or software video decoders enter the TV executable.
 #
 # NUVIO_DTS_TARGET picks the build:
-#   webos (default) cross build with the LG SDK (tools/Dockerfile); output unchanged.
+#   webos (default) cross build with the LG SDK (tools/Dockerfile).
+#                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c, webOS):
+#                   the FLAC/TrueHD/MLP decoders (converted to AC3/AAC: the LG uMS
+#                   keeps HLS audio on MPEG-TS) and the mpegts/adts muxers. Still no
+#                   mpegts demuxer: TorBox's segments are stripped by hand
+#                   (tba_ts_sem_audio), never demuxed.
 #   tpk             Samsung .tpk (tools/tpk.sh). ARM32 build inside the selected SDK
 #                   container, from the source tree tpk.sh already downloaded and checked on the
 #                   host (NUVIO_DTS_SRC; the container has no curl). Adds what the Samsung loopback
@@ -49,6 +54,13 @@ if [ "$TARGET" = tpk ]; then
   fi
 else
   CC=${CC:-arm-webos-linux-gnueabi-gcc}
+  # Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c): FLAC and
+  # TrueHD/MLP are converted to AC3/AAC -- MPEG-TS only, never an fMP4 audio
+  # rendition -- so these decoders and the mpegts muxer are all it needs. adts
+  # is what the mpegts muxer wraps copied AAC with (it is not a separate lib).
+  DECODERS=$DECODERS,flac,truehd,mlp
+  MUXERS=mpegts,adts
+  PARSERS=$PARSERS,mlp,ac3
   archive="$BUILD/ffmpeg-$VERSION.tar.xz"
   [ -f "$archive" ] || curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz" -o "$archive"
   printf '%s  %s\n' "$SHA256" "$archive" | sha256sum -c -

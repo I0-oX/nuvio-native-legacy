@@ -18,6 +18,7 @@
 #include "ajustes_ux.h"
 #include "trailerfonte.h"   // NV_TRAILER_CONTINUA_DETALHE, nas ajudas do trailer
 #include "dados.h"
+#include "dts/tbaudio_tpk.h"   // tba_disponivel: the Settings row of the original audio
 #include "androidcache.h"
 #include "extplayer.h"
 #include "resolucao.h"
@@ -3180,6 +3181,10 @@ float ajustes_tamanho_ajustes(void) {
 // The phone always uses List. Keep the stored TV preference unchanged.
 static int ajLayoutSelecionavel(void) { return !telefoneui_ativo(); }
 static int ajOpcaoDisponivel(int op) {
+  // Original audio with burn-in: Nuvio's local stream (dts/tbaudio_tpk.h) is
+  // only in the .tpk and the webOS build with the DTS FFmpeg; without it the
+  // row is not drawn (TorBox audio is all the burn-in has).
+  if (op == AJ_TB_AUDIO && !tba_disponivel()) return 0;
   // These controls use active-profile stores rather than the edited value array.
   if (edPerfil && (ajFalhaBackend(op) || op == AJ_PROVEDORES_ESCOPO || op == AJ_FILTROS_FONTES ||
                    op == AJ_FALHA_PROVEDOR_ORDEM || op == AJ_FALHA_ADDON_ORDEM ||
@@ -6855,9 +6860,10 @@ static int foraDestaPlataforma(int op) {
   if (op == AJ_TB_PLANO || op == AJ_LEG_QUEIMAR) return 1;
 #endif
 #ifndef NV_TPK
-  // Original audio with burn-in: Nuvio's local remux server (dts/tbaudio_tpk.h)
-  // exists on the .tpk only; webOS burn-in plays TorBox's own audio.
-  if (op == AJ_TB_AUDIO) return 1;
+  // Original audio with burn-in: Nuvio's local stream (dts/tbaudio_tpk.h).
+  // Shown wherever the build can serve it (the .tpk and webOS with the DTS
+  // FFmpeg, see ajOpcaoDisponivel); TorBox audio is all that is left without it.
+  if (op == AJ_TB_AUDIO) return !tba_disponivel();
 #endif
 #if defined(NV_ANDROID) && !defined(NV_P2P_MOTOR)
   if (op == AJ_P2P_LIMITE || op == AJ_P2P_DESTINO) return 1;

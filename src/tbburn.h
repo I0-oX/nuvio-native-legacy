@@ -105,7 +105,10 @@ int  video_tpk_leg_queimavel(int i);
 int  video_tpk_leg_oculta(int i);
 // Audio menu row under the tracks (faixas.c), original audio with burn-in
 // (dts/tbaudio_tpk.h): "Original audio: Passthrough | TorBox audio" (saves
-// Settings; reopens while burned). One row (k is always 0); FLAC goes as is.
+// Settings; reopens while burned). One row (k is always 0). The row exists
+// only where the build can serve the stream (tba_disponivel): .tpk and webOS
+// with the DTS FFmpeg; FLAC goes as is on the .tpk and converted on webOS
+// (MPEG-TS only there).
 int  video_tpk_tba_linhas(void);
 void video_tpk_tba_rotulo(int k, char *nome, unsigned long nn, char *sub, unsigned long ns);
 void video_tpk_tba_ok(int k);

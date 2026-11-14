@@ -20,9 +20,14 @@
  * for another position, is dropped. Seeks go through the indexed stream.
  * Nothing here logs a URL (TorBox's carry its token).
  *
- * Only the .tpk built with FFmpeg has the server; elsewhere the calls are
- * stubs (tba_disponivel() == 0). The playlist helpers are pure and compile
- * everywhere (tests/tbaudio.sh). */
+ * The .tpk and the webOS build with FFmpeg have the server; elsewhere the
+ * calls are stubs (tba_disponivel() == 0). webOS gets a master with ONE
+ * rendition (the chosen track): the LG uMS demuxes HLS with GStreamer, which
+ * merges renditions that share a LANGUAGE into a single audio track and loads
+ * only its DEFAULT, and its selectTrack kills the pipeline on an index it did
+ * not demux. There a track change reopens the stream at the same position
+ * (video.c) instead of switching in place.
+ * The playlist helpers are pure and compile everywhere (tests/tbaudio.sh). */
 #ifndef NV_TBAUDIO_TPK_H
 #define NV_TBAUDIO_TPK_H
 #include <stddef.h>
@@ -33,10 +38,12 @@ int  tba_disponivel(void);
 /* New session (replaces any previous one). tb_m3u8: TorBox's playlist URL (a
  * secret). orig/cab: the original file and the add-on's raw header lines.
  * audio_ordinal: the file's audio track (0-based among audio tracks, container
- * order). Writes the URL the TV player opens. 0 = cannot (no FFmpeg, no
+ * order). so_uma: 1 = the master lists only the chosen track (webOS: see
+ * above; changing audio reopens the stream), 0 = one rendition per track
+ * (.tpk). Writes the URL the TV player opens. 0 = cannot (no FFmpeg, no
  * server); the caller then plays TorBox's URL as before. */
 int  tba_abrir(const char *tb_m3u8, const char *orig, const char *cab, int audio_ordinal,
-               int modo, int flac_converter, char *out, size_t n);
+               int modo, int flac_converter, int so_uma, char *out, size_t n);
 void tba_fechar(void);
 int  tba_ativo(void);
 int  tba_modo(void);
@@ -45,8 +52,9 @@ int  tba_modo(void);
 int  tba_falhou(char *motivo, size_t n);
 /* 1 once the playlists are built (tracks known). */
 int  tba_pronto(void);
-/* Passthrough: renditions offered (= the TV player's audio list, in order) and
- * the rendition of a file audio track (-1 = not offered). */
+/* Passthrough: renditions the session can serve, in order (with so_uma the
+ * master carries only the chosen one), and the rendition of a file audio track
+ * (-1 = not offered). */
 int  tba_n_rendicoes(void);
 int  tba_rendicao_de(int audio_ordinal);
 /* The track the next playlist/segments use (the DEFAULT=YES rendition). */

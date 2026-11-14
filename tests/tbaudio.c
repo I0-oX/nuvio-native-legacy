@@ -1,6 +1,6 @@
 // tests/tbaudio.sh: original audio with TorBox burn-in (src/dts/tbaudio_tpk.c).
 //   tbaudio puros <ts> <init.mp4> <seg.m4s> <stripped.ts>   pure helpers on real files
-//   tbaudio sessao <tb m3u8> <orig> <modo> <ordinal> <flac> <urlfile>
+//   tbaudio sessao <tb m3u8> <orig> <modo> <ordinal> <flac> <urlfile> <so_uma>
 //       opens a session, writes the player URL to <urlfile>, serves until killed.
 #include "../src/dts/tbaudio_tpk.h"
 #include <stdio.h>
@@ -94,10 +94,10 @@ static int puros(const char *ts, const char *init, const char *seg, const char *
 
 int main(int argc, char **argv) {
   if (argc == 6 && !strcmp(argv[1], "puros")) return puros(argv[2], argv[3], argv[4], argv[5]);
-  if (argc == 8 && !strcmp(argv[1], "sessao")) {
+  if (argc == 9 && !strcmp(argv[1], "sessao")) {
     char url[256];
     FILE *f;
-    if (!tba_abrir(argv[2], argv[3], "", atoi(argv[5]), atoi(argv[4]), atoi(argv[6]), url, sizeof url)) {
+    if (!tba_abrir(argv[2], argv[3], "", atoi(argv[5]), atoi(argv[4]), atoi(argv[6]), atoi(argv[8]), url, sizeof url)) {
       fprintf(stderr, "tba_abrir failed (disponivel=%d)\n", tba_disponivel());
       return 1;
     }

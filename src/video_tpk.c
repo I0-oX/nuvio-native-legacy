@@ -1021,7 +1021,7 @@ static void tbUrlPlayer(const char *m) {
   }
   tba_sockets_vigiar(m, urlAtual, NULL, NULL);
   if (modo != TBA_TORBOX && tba_disponivel() &&
-      tba_abrir(m, urlAtual, cabecalhos, tbIdxAudio(), modo, tba_flac_converter(), loc, sizeof loc)) {
+      tba_abrir(m, urlAtual, cabecalhos, tbIdxAudio(), modo, tba_flac_converter(), 0, loc, sizeof loc)) {
     tb.tba = 1;
     snprintf(tb.url, sizeof tb.url, "%s", loc);
     printf("[tbburn] original audio: Nuvio serves the player (%s)\n", TBA_NOME[modo]);

@@ -507,11 +507,11 @@ void tba_sockets_vigiar(const char *u1, const char *u2, const char *u3, const ch
 int tba_sockets_contar(int *nuvio) { if (nuvio) *nuvio = -1; return -1; }
 #endif
 
-// ---- the server (Samsung .tpk with FFmpeg, and the host test) ---------------
-#if !defined(NV_DTS_FFMPEG) || !(defined(NV_TPK) || defined(NV_TBAUDIO_TEST))
+// ---- the server (.tpk / webOS with FFmpeg, and the host test) ---------------
+#if !defined(NV_DTS_FFMPEG) || !(defined(NV_TPK) || defined(NV_WEBOS) || defined(NV_TBAUDIO_TEST))
 int  tba_disponivel(void) { return 0; }
-int  tba_abrir(const char *t, const char *o, const char *c, int a, int m, int f, char *out, size_t n) {
-  (void)t; (void)o; (void)c; (void)a; (void)m; (void)f; if (out && n) out[0] = 0; return 0;
+int  tba_abrir(const char *t, const char *o, const char *c, int a, int m, int f, int u, char *out, size_t n) {
+  (void)t; (void)o; (void)c; (void)a; (void)m; (void)f; (void)u; if (out && n) out[0] = 0; return 0;
 }
 void tba_fechar(void) {}
 int  tba_ativo(void) { return 0; }
@@ -580,6 +580,7 @@ typedef struct Sessao {
   pthread_mutex_t m;                   // state below
   pthread_cond_t c;
   int pronto, falhou, modo, flacConv, audio;   // audio: index in fx[]
+  int soUma;                                   // master lists only fx[audio] (webOS)
   char motivo[160], tok[40];
   char *tbUrl, *orig, *cab;
   // TorBox
@@ -1340,6 +1341,12 @@ static void plMaster(Sessao *s, Txt *t) {
     char nome[128];
     int ch = f->modo == M_AC3 ? (f->canais > 2 ? 6 : 2) : f->modo == M_AAC ? 2 : f->canais;
     if (f->modo == M_FORA) continue;
+    // webOS (soUma): the LG uMS demuxes HLS with GStreamer, which merges the
+    // renditions that share a LANGUAGE into one audio track and loads only its
+    // DEFAULT -- the others would be unreachable, and its selectTrack kills the
+    // pipeline on an index it did not demux. One rendition, the chosen track;
+    // a track change reopens the stream (video.c).
+    if (s->soUma && i != s->audio) continue;
     nomeRendicao(f, nome, sizeof nome);
     tx(t, "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"%s\"", nome);
     if (f->lingua[0]) tx(t, ",LANGUAGE=\"%s\"", f->lingua);
@@ -1538,10 +1545,19 @@ static int subirServidor(void) {
 }
 
 // ---- API ----------------------------------------------------------------------------
-int tba_disponivel(void) { return avcodec_find_encoder(AV_CODEC_ID_AC3) != NULL; }
+// 1 = this build can serve: the AC3 encoder and the muxers/decoder the server
+// uses. A binary linked against an FFmpeg without them keeps the feature off
+// (the Settings row and the burn-in stream fall back to TorBox's audio).
+int tba_disponivel(void) {
+  return avcodec_find_encoder(AV_CODEC_ID_AC3) != NULL &&
+         avcodec_find_decoder(AV_CODEC_ID_FLAC) != NULL &&
+         avcodec_find_decoder(AV_CODEC_ID_TRUEHD) != NULL &&
+         av_guess_format("mpegts", NULL, NULL) != NULL &&
+         av_guess_format("adts", NULL, NULL) != NULL;
+}
 
 int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal, int modo, int flacConv,
-              char *out, size_t n) {
+              int soUma, char *out, size_t n) {
   Sessao *s;
   pthread_t t;
   if (out && n) out[0] = 0;
@@ -1557,7 +1573,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   pthread_mutex_init(&s->m, NULL); pthread_cond_init(&s->c, NULL); pthread_mutex_init(&s->gm, NULL);
   pthread_mutex_init(&s->vm, NULL);
   atomic_store(&s->espChave, -1L);
-  s->modo = modo; s->flacConv = flacConv ? 1 : 0;
+  s->modo = modo; s->flacConv = flacConv ? 1 : 0; s->soUma = soUma ? 1 : 0;
   s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1;
   s->tbUrl = strdup(tbUrl); s->orig = strdup(orig); s->cab = strdup(cab ? cab : "");
   gerarToken(s->tok, 28);
@@ -1568,8 +1584,9 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   if (pthread_create(&t, NULL, preparar, s) != 0) { atomic_fetch_sub(&s->refs, 1); falhar(s, "no thread"); }
   else pthread_detach(t);
   snprintf(out, n, "http://127.0.0.1:%d/%s/master.m3u8", porta, s->tok);
-  printf("[tbaudio] session open: %s, audio %d, FLAC %s; the player opens http://127.0.0.1:%d/<token>/master.m3u8\n",
-         modoNome(s->modo), ordinal, s->flacConv ? "converted" : "as is", porta);
+  printf("[tbaudio] session open: %s, audio %d, FLAC %s%s; the player opens http://127.0.0.1:%d/<token>/master.m3u8\n",
+         modoNome(s->modo), ordinal, s->flacConv ? "converted" : "as is",
+         s->soUma ? ", one rendition" : "", porta);
   fflush(stdout);
   return 1;
 }

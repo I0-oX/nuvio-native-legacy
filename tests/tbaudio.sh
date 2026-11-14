@@ -60,9 +60,9 @@ codec() { ffprobe -v error -select_streams a -show_entries stream=codec_name,cha
 "$work/t" puros "$work/src/tb/s0.ts" "$work/src/tb4/init.mp4" "$work/src/tb4/s0.m4s" "$work/out/strip.ts" || fail=1
 check "TS strip: ffprobe sees the video only" "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/strip.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ]"
 
-sessao() {   # <playlist path> <modo> <ordinal> <flac>
+sessao() {   # <playlist path> <modo> <ordinal> <flac> [so_uma]
   rm -f "$work/url"
-  "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/orig.mkv" "$2" "$3" "$4" "$work/url" > "$work/s.log" 2>&1 &
+  "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/orig.mkv" "$2" "$3" "$4" "$work/url" "${5:-0}" > "$work/s.log" 2>&1 &
   sp=$!; pids+=($sp)
   for _ in $(seq 50); do [ -s "$work/url" ] && break; sleep 0.1; done
   U=$(cat "$work/url"); B=${U%/*}
@@ -72,7 +72,7 @@ fim() { kill "$sp" 2>/dev/null || true; wait "$sp" 2>/dev/null || true; }
 # Modes: 0 Passthrough (TorBox's video without its audio + the original audio),
 # 1 TorBox audio (no session: tba_abrir refuses).
 # 0. TorBox audio: no session.
-"$work/t" sessao "http://127.0.0.1:$port/tb/playlist.m3u8?token=secret" "http://127.0.0.1:$port/orig.mkv" 1 0 0 "$work/url1" > "$work/s1.log" 2>&1 || true
+"$work/t" sessao "http://127.0.0.1:$port/tb/playlist.m3u8?token=secret" "http://127.0.0.1:$port/orig.mkv" 1 0 0 "$work/url1" 0 > "$work/s1.log" 2>&1 || true
 check "TorBox audio: no Nuvio stream" "[ ! -s '$work/url1' ]"
 # 1. Passthrough over MPEG-TS: every codec, on TorBox's timeline, 2 s segments.
 sessao tb/playlist.m3u8 0 0 0
@@ -111,6 +111,29 @@ check "the session got ready" "grep -q 'ready in' '$work/s.log'"
 curl -s -m 0.3 -o /dev/null "$B/a4_14.ts" || true
 t0=$(date +%s%N); curl -s -o "$work/out/after.ts" "$B/a4_3.ts"; t1=$(date +%s%N)
 check "after a hang-up the next segment comes ($(( (t1 - t0) / 1000000 )) ms)" "[ -s '$work/out/after.ts' ] && [ \$(( (t1 - t0) / 1000000 )) -lt 5000 ]"
+fim
+
+# 1a. The webOS layout (so_uma): ONE rendition, the chosen track. The LG uMS
+#     demuxes HLS with GStreamer, merges renditions that share a LANGUAGE and
+#     loads only the DEFAULT; a track change reopens the stream instead.
+sessao tb/playlist.m3u8 0 1 0 1
+curl -s "$U" > "$work/out/master1.m3u8"
+check "webOS: a single rendition, the chosen track, DEFAULT" \
+  "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master1.m3u8') = 1 ] && grep -q 'DEFAULT=YES.*URI=\"a1.m3u8\"' '$work/out/master1.m3u8'"
+curl -s -o "$work/out/a1u_0.ts" "$B/a1_0.ts"
+check "webOS: the one rendition's segments are that track ($(codec "$work/out/a1u_0.ts"))" \
+  "[ '$(codec "$work/out/a1u_0.ts")' = 'ac3,6' ]"
+fim
+
+# 1a2. What webOS actually asks for (video.c): ONE rendition and FLAC converted
+#      (the LG uMS has no FLAC in HLS), read by a player from the master.
+sessao tb/playlist.m3u8 0 2 1 1
+curl -s "$U" > "$work/out/master2.m3u8"
+check "webOS: the FLAC track converted, one rendition (a2)" \
+  "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master2.m3u8') = 1 ] && grep -q 'DEFAULT=YES.*URI=\"a2.m3u8\"' '$work/out/master2.m3u8'"
+timeout 120 ffmpeg -v error -i "$U" -map 0:v:0 -map 0:a:0 -t 8 -c copy "$work/out/webos.ts" || true
+check "webOS: a player reads the master (video + AAC from FLAC: $(codec "$work/out/webos.ts"))" \
+  "[ '$(codec "$work/out/webos.ts")' = 'aac,2' ] && perto $(inicio "$work/out/webos.ts" v 2>/dev/null || echo 9) $(inicio "$work/out/webos.ts" a 2>/dev/null || echo 0) 0.05"
 fim
 
 
