@@ -1276,6 +1276,17 @@ static int gerarVideo(Sessao *s, int seg, Resp *r, char *err, size_t en) {
   snprintf(r->tipo, sizeof r->tipo, "video/mp2t");
   s->nVid++; s->msVid += agoraMs() - t0;
   printf("[tbaudio] video seg %d: TorBox %zu KB in %.0f ms, %d audio stream(s) removed, %zu KB out\n", seg, n / 1024, ms, nA, r->n / 1024);
+  /* Burn-in subtitle timing (owner 14/11): the TV's position on Nuvio's
+   * playlist is the sum of the segment lengths before this one; the picture
+   * is stamped with its first video PTS. A gap between them moves the
+   * subtitles drawn over the burned picture. */
+  { double pts = 0, ini = 0;
+    int i;
+    for (i = 0; i < seg && i < s->pl.nseg; i++) ini += durSeg(s, i);
+    if (tba_ts_primeiro_pts(r->b, r->n, &pts))
+      printf("[tbaudio] video seg %d timing: playlist start %.3f s, first video PTS %.3f s (PTS - start %+.3f s; TorBox's first PTS %.3f)\n",
+             seg, ini, pts, pts - ini, s->tbOffOk ? s->tbOff : -1.0);
+  }
   fflush(stdout);
   return 0;
 }

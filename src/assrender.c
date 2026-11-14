@@ -1,3 +1,6 @@
+#if defined(NV_TPK) && defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE   // pthread_getattr_np (the worker's stack in the crash log)
+#endif
 #include "assrender.h"
 #include "legfontes.h"
 
@@ -122,6 +125,7 @@ char *assrender_marcar_tailandes(const char *txt) {
 #if !defined(__EMSCRIPTEN__)
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <signal.h>
 #endif
 
 #define ASS_TEX_INICIAL 64
@@ -874,6 +878,30 @@ static long long ass_grade_desde(long long ms);
 static void *ass_worker_loop(void *unused) {
   (void)unused;
   assfios_nomear("nv-assrender");
+#if defined(NV_TPK) && defined(__linux__)
+  /* Crash capture (owner 14/11: a Persian subtitle kills this thread on its
+   * first frame and the reporter wrote nothing). glibc gives a thread no
+   * alternate signal stack, so a fault on a full stack could not run
+   * queda.c's handler (SA_ONSTACK). This one can. The stack's bounds go to
+   * the log: the crash line's sp says whether the stack ran out. */
+  { static char *alt;
+    pthread_attr_t at;
+    if (!alt) alt = malloc(64 * 1024);
+    if (alt) {
+      stack_t ss;
+      ss.ss_sp = alt; ss.ss_size = 64 * 1024; ss.ss_flags = 0;
+      if (sigaltstack(&ss, NULL) != 0) printf("[ass] worker: sigaltstack failed\n");
+    }
+    if (pthread_getattr_np(pthread_self(), &at) == 0) {
+      void *base = NULL; size_t tam = 0, guarda = 0;
+      pthread_attr_getstack(&at, &base, &tam);
+      pthread_attr_getguardsize(&at, &guarda);
+      printf("[ass] worker stack: %zu KB at %p-%p (guard %zu KB), signal stack 64 KB %s\n",
+             tam / 1024, base, (void *)((char *)base + tam), guarda / 1024, alt ? "on" : "off");
+      pthread_attr_destroy(&at);
+    }
+    fflush(stdout); }
+#endif
   for (;;) {
     AssCpuFrame frame;
     unsigned generation, serial, epoch;
@@ -957,6 +985,30 @@ static void *ass_worker_loop(void *unused) {
         ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
       ass_plain_reflow_locked(t);
       ass_pod_devolver_assTrava();   // seek para tras alem da poda: as falas voltam antes do render
+#ifdef NV_TPK
+      /* Crash capture (owner 14/11): what libass is asked to draw, once per
+       * track and per style change, flushed BEFORE the render. A crash right
+       * after this line is inside libass on that frame. */
+      { static unsigned gerLog = ~0u; static PlainAssStyle psLog; static int psLogOk;
+        int novo = generation != gerLog || (plainValid && (!psLogOk || memcmp(&plain, &psLog, sizeof plain)));
+        if (novo && assTrack->n_styles > 0) {
+          const ASS_Style *st = &assTrack->styles[assTrack->default_style];
+          gerLog = generation;
+          if (plainValid) { psLog = plain; psLogOk = 1; }
+          printf("[ass] render first frame: t=%lld ms, %s, events %d, frame %dx%d storage %dx%d scale %.3f | "
+                 "style %s %.1f bold %d BorderStyle %d Outline %.2f Shadow %.2f Blur %.3f ScaleX %.0f | engine %d, %d blur thread(s)\n",
+                 t, __atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE) ? "plain RTL text" : "authored ASS", assTrack->n_events,
+                 lw, lh, vw, vh, esc, st->FontName ? st->FontName : "-", st->FontSize, st->Bold, st->BorderStyle,
+                 st->Outline, st->Shadow, st->Blur, st->ScaleX * 100.0,
+#ifdef ASS_NV_API
+                 ass_nv_get_engine(assRenderer), ass_nv_get_threads()
+#else
+                 -1, -1
+#endif
+                 );
+          fflush(stdout);
+        } }
+#endif
       images = ass_render_frame(assRenderer, assTrack, t, &changed);
 #ifdef NV_TPK
       /* Borda das legendas (tpkborda.c): o proximo inicio de fala depois de t,

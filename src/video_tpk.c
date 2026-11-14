@@ -1042,7 +1042,10 @@ static void tbBombear(void) {
   // (TV player 1 + original audio 1 + these). Owner 13/11.
   mkvass_teto_conexoes(tb.ativo || tb.pend ? (legref_em_rede() > 0 ? 1 : 2) : 0);
   // Header known only after the open (no TorBox first): decide once, then.
-  if (!tb.decidido && !tb.ativo && !tb.pend && !tb.desistiu && ativo && pronto && faixasLidas && mkvN > 0 &&
+  // !faixasNovas: only after the header's codecs are on the player's tracks
+  // (faixasmkv_aplicar). Deciding on the bare player list found no ASS track,
+  // and the file never burned by itself (log_11, owner 14/11).
+  if (!tb.decidido && !tb.ativo && !tb.pend && !tb.desistiu && ativo && pronto && faixasLidas && !faixasNovas && mkvN > 0 &&
       mkvTemAss() && ajustes_leg_queimar() && tbburn_pode() && reconPermitida && !emTrailer) {
     const char *porque = "";
     int k = tbAutoFaixa(1, &porque);
