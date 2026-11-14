@@ -452,7 +452,7 @@ static double posLegenda(void) {
   double v;
   if (!relLeg.temAmostra || scrubbing) return posSeg;
   v = relogio_ler(&relLeg, monoSeg());
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   /* CORRECAO DA LEGENDA (legimagem.h, dono 25/10): a imagem da TV anda um
    * pouco atras da nossa camada enquanto TOCA; pausada, nao. So tocando, com
    * leituras carimbadas, e nunca logo depois de um seek ainda sem leitura. */
@@ -4931,14 +4931,21 @@ void player_atualizar(float dt, Uint32 agora) {
       } }
     // A legenda interpola na velocidade MEDIDA (relogio.h).
     relogio_taxa(&relLeg, velMed.efetiva / 100.0);
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     /* Leitura carimbada pelo host (video.h, video_pos_amostra): a hora em que
      * a TV leu a posicao, nao a hora em que a resposta chegou aqui. */
     { double ap, ac, ai; unsigned sq; static unsigned sqAnt;
-      if (video_pos_amostra(&ap, &ac, &ai, &sq) && sq != sqAnt) {
+      int tem = video_pos_amostra(&ap, &ac, &ai, &sq);
+      if (tem && sq != sqAnt) {
         sqAnt = sq;
         relogio_amostra_carimbo(&relLeg, ap, ac, ai, tocando && !scrubbing);
-      } }
+      }
+#ifdef NV_WEBOS
+      /* O motor DTS (dts_playback) nao manda currentTime: sem leitura
+       * carimbada o relogio volta ao caminho comum em vez de congelar. */
+      else if (!tem && relLeg.carimbo) relogio_zerar(&relLeg);
+#endif
+    }
 #endif
     relogio_amostra(&relLeg, video_pos(), monoSeg(), tocando && !scrubbing);
     // A cada 10 s: o numero cru do pipeline e o do relogio da legenda, no
@@ -5668,7 +5675,7 @@ static void desenharLegendaExternaCorpo(void) {
    * offset. R4: "No topo" draws it first, in the top band; "Junto da
    * principal" draws it AFTER the primary, stacked right above it, so it needs
    * where the primary's bottom stack starts (topo). Geometry is explicit. */
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   if (video_pos_incerta()) return;   // the same wait as the primary (seek not landed yet)
 #endif
   PlrRect av = areaVideoLegenda();
@@ -5721,7 +5728,7 @@ static void desenharLegendaPrincipalCorpo(float *topoPilha){
 #else
 static void desenharLegendaPrincipal(float *topoPilha){
 #endif
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   /* Seek feito e a TV ainda nao disse onde caiu (quadro-chave, ate segundos
    * antes do alvo): desenhar agora mostraria o letreiro de outra cena. */
   if (video_pos_incerta()) return;
@@ -5857,7 +5864,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
                "picture-sync -%d ms, offset %+d ms (manual %+d) | \"%s\"\n",
                cues[0].inicio, cues[0].fim, t, (int)lround((t - cues[0].inicio) * 1000.0),
                comVideo ? video_pos() : posSeg, posLegenda(),
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
                legimagem_ms(),
 #else
                0,

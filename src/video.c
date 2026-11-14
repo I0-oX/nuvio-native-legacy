@@ -646,11 +646,53 @@ static char      midia[64];
 // consumida pelo fio de desenho via video_quadro_fps): fio cruzado, por isso
 // o armazenamento dedicado. 0 = desconhecida. Zerada em video_tocar.
 static _Atomic double mkvFps;
+// HDR do ARQUIVO (transferencia PQ/HLG ou DV), da mesma sonda: e a chave da
+// sincronia com a imagem (legimagem.c), igual ao mkvFx do .tpk.
+static _Atomic int mkvHdr;
 // Posicao/duracao/nativa: escritas no fio do LS2 (currentTime/duration,
 // eventoPayload) e lidas no de desenho por quadro (video_pos). Um double de
 // 8 bytes nao e atomico no ARMv7 (a leitura pode sair rasgada, metade de
 // cada valor), por isso _Atomic so no webOS; o .tpk segue como sempre.
 static _Atomic double posSeg, durSeg, posNativa;
+// RELOGIO DA LEGENDA (dono 25/10; portado ao webOS em 14/11). O currentTime
+// do uMS e a posicao que a TV leu, nao a hora em que o evento chegou; ele e
+// carimbado na CHEGADA com a cadencia dos eventos como incerteza, e o player
+// interpola do relogio da leitura (relogio_amostra_carimbo). Mesmos nomes e
+// mesmo contrato do .tpk (video_tpk.c, am/amTrava).
+static pthread_mutex_t amTrava = PTHREAD_MUTEX_INITIALIZER;
+static struct { unsigned seq; int valido, ms; double carimbo, incerteza; } am;
+static double amAntes;          // CLOCK_MONOTONIC da leitura anterior (amTrava)
+static double amBusca;          // CLOCK_MONOTONIC do ultimo seek mandado (amTrava)
+static _Atomic int posIncerta;  // 1 = seek mandado, ainda sem leitura real
+static _Atomic Uint32 incertaTick;
+#define AM_INC_PADRAO 0.2   // cadencia do currentTime medida na C9 (~200 ms)
+#define AM_INC_MAX    0.5
+// Um seek leva alguns quadros para chegar a TV: leitura que pode ter saido
+// antes dele e a posicao ANTIGA. Nada e guardado ate uma chegar deste tanto
+// depois do pedido.
+#define AM_POS_SEEK_S 0.35
+static double amRelogio(void) {
+  struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec + ts.tv_nsec / 1e9;
+}
+// Sessao nova (ou troca para o motor DTS): sem leitura carimbada valida.
+static void amLimpar(void) {
+  pthread_mutex_lock(&amTrava);
+  am.valido = 0; amBusca = 0.0; amAntes = 0.0;
+  pthread_mutex_unlock(&amTrava);
+  atomic_store(&posIncerta, 0);   // seq continua: o player compara
+}
+// Seek pedido: a legenda esconde ate a primeira leitura DEPOIS dele (o uMS
+// repete a posicao antiga ate o salto acontecer, e a TV cai no quadro-chave,
+// segundos antes do alvo). No motor DTS a posicao e exata: nao ha o que esperar.
+static void amBuscaMarcar(void) {
+  if (dtsSessao) return;
+  pthread_mutex_lock(&amTrava);
+  amBusca = amRelogio();
+  pthread_mutex_unlock(&amTrava);
+  atomic_store(&incertaTick, SDL_GetTicks() | 1u);
+  atomic_store(&posIncerta, 1);
+}
 #else
 static double    posSeg, durSeg, posNativa;
 #endif
@@ -1433,6 +1475,28 @@ static void recorteNoPrimeiroQuadro(void) {
   }
 }
 
+// Uma leitura de posicao do uMS (fio do LS2; currentTime a cada ~200 ms).
+// Carimbo na CHEGADA e incerteza = cadencia: um evento empurrado pode ter sido
+// tirado um intervalo antes de chegar. Leitura que pode ter saido antes do
+// ultimo seek e a de ANTES do salto: descartada, senao limparia a espera da
+// legenda com a posicao velha (o .tpk tem a mesma guarda, com a duracao da
+// consulta no lugar da cadencia).
+#ifdef NV_WEBOS
+static void amAmostrar(int ms) {
+  double agora = amRelogio(), inc;
+  pthread_mutex_lock(&amTrava);
+  inc = amAntes > 0.0 && agora > amAntes ? agora - amAntes : AM_INC_PADRAO;
+  if (inc < 0.05) inc = 0.05;
+  if (inc > AM_INC_MAX) inc = AM_INC_MAX;
+  amAntes = agora;
+  if (amBusca > 0.0 && agora < amBusca + AM_POS_SEEK_S) { pthread_mutex_unlock(&amTrava); return; }
+  if (agora - inc < amBusca) { pthread_mutex_unlock(&amTrava); return; }
+  am.ms = ms; am.carimbo = agora; am.incerteza = inc; am.seq++; am.valido = 1;
+  pthread_mutex_unlock(&amTrava);
+  atomic_store(&posIncerta, 0);   // a TV ja disse onde caiu depois do seek
+}
+#endif
+
 // Definida junto da tela do DV (video_dv_tela), chamada no load e no playing.
 static void dvSilenciarTv(void);
 static int eventoPayload(const char *p, unsigned minhaSessao) {
@@ -1942,6 +2006,9 @@ static int eventoPayload(const char *p, unsigned minhaSessao) {
   { double v = numeroDe(p, "\"currentTime\":");
     if (v >= 0) {
       posSeg = posNativa = v / 1000.0;
+#ifdef NV_WEBOS
+      amAmostrar((int)v);
+#endif
       // Primeiro quadro com avanco: o numero de inicio de verdade.
       if (cronPediu && !cronQuadro && posSeg > 0.0) {
         cronQuadro = 1;
@@ -2590,10 +2657,14 @@ static void *lerMkv(void *arg) {
 #ifdef NV_WEBOS
         // Grade de quadros da legenda (assrender_definir_fps, via
         // video_quadro_fps): sem DefaultDuration fica 0 e a grade desliga.
+        // O HDR do ARQUIVO (transferencia 16/18 = PQ/HLG, ou DV) e a outra
+        // metade da chave da sincronia com a imagem (legimagem.c,
+        // video_tpk_quadro), como o mkvFx do .tpk.
         // Sondagem velha nao escreve nem informa: a sessao e a URL tem de ser
         // as do fio (a URL cobre a janela entre video_tocar e o aumento de
         // sessao, como as escritas vizinhas). 0 e valido: "desconhecida".
         if (mkvFioSessao == __atomic_load_n(&sessao, __ATOMIC_ACQUIRE) && !strcmp(url, urlAtual)) {
+          mkvHdr = fx[j].transferencia == 16 || fx[j].transferencia == 18 || fx[j].dvPerfil > 0;
           if (fx[j].quadroNs > 0) {
             mkvFps = 1e9 / (double)fx[j].quadroNs;
             printf("[mkv] quadro: fps=%.3f (DefaultDuration %llu ns)\n", (double)mkvFps,
@@ -3227,6 +3298,7 @@ static int tocarInterno(const char *url, int comDV) {
   legUrlAtual[0] = 0; mkvPendente = 0;
 #ifdef NV_WEBOS
   mkvFps = 0;   // recarregar reaprende a taxa; a grade desliga ate la
+  mkvHdr = 0;   // idem para a chave da sincronia com a imagem
 #endif
   snprintf(vidHdr, sizeof vidHdr, "none");
   seiX0 = seiX1 = seiX2 = seiY0 = seiY1 = seiY2 = 0;
@@ -3424,6 +3496,9 @@ static void pararSessao(void) {
   recarregarPausa = -1;
   nv_seek_zerar(&seekRetry); seekRetryEm = 0;
   seekEnvEm = 0;   // seek sem seekDone morre com a sessao (iniciarDts le os tres)
+#ifdef NV_WEBOS
+  amLimpar();      // leituras do uMS: a sessao que abre recomeca a carimbar
+#endif
   dvSilenciado = 0;   // o mudo e por mediaId: o pipeline novo nasce com som
   mkvRetryEm = 0;   // sonda reagendada morre com a sessao (o contador zera em video_tocar)
   pausaConfirmada = 0;
@@ -3882,7 +3957,11 @@ void video_buscar(double segundos) {
     if (segundos < 0) segundos = 0;
     if (dvSilencio) dvEntradaSeg = segundos;
     posSeg = segundos; seekAlvo = segundos;
-    seekEm = SDL_GetTicks() + SEEK_REPOUSO_MS; return;
+    seekEm = SDL_GetTicks() + SEEK_REPOUSO_MS;
+#ifdef NV_WEBOS
+    amBuscaMarcar();
+#endif
+    return;
   }
   if (!ligado || !midia[0]) return;
   if (segundos < 0) segundos = 0;
@@ -3892,11 +3971,19 @@ void video_buscar(double segundos) {
   posSeg = segundos;
   seekAlvo = segundos;
   seekEm = SDL_GetTicks() + SEEK_REPOUSO_MS;
+#ifdef NV_WEBOS
+  // A legenda esconde ja no pedido: o currentTime continua repetindo a posicao
+  // antiga ate o salto chegar ao pipeline.
+  amBuscaMarcar();
+#endif
 }
 
 // Manda de fato. Chamado pelo video_bombear quando o repouso vence.
 static void seekAgora(double segundos) {
   char b[192];
+#ifdef NV_WEBOS
+  amBuscaMarcar();   // o repouso passou: e ESTE o instante do seek
+#endif
   if (dtsSessao) { dts_playback_seek(dtsSessao, segundos); return; }
 
   if (!ligado || !midia[0]) return;
@@ -4102,6 +4189,36 @@ void video_janela_fonte(int sx, int sy, int sw, int sh,
 double video_pos(void)      { return posSeg; }
 #ifdef NV_WEBOS
 double video_quadro_fps(void) { return mkvFps; }   // 0 = desconhecida; a grade de quadros desliga
+// VELOCIDADE DE QUADROS E HDR do arquivo em reproducao, o contrato do .tpk
+// (video.h): o cabecalho MKV que a sonda leu. O hdrType medido pelo pipeline
+// cobre a fonte que a sonda nao le (MP4, HLS).
+int video_tpk_quadro(double *fps, int *hdr) {
+  *fps = mkvFps;
+  *hdr = mkvHdr || video_tem_dolby_vision() || !strcasecmp(vidHdr, "HDR10");
+  return *fps > 1.0;
+}
+// RELOGIO DA LEGENDA (video.h): mesmo contrato do .tpk (video_tpk.c). A fonte
+// e o uMS; no motor DTS/DV (dts_playback) nao ha leitura do host e o player
+// volta as amostras comuns.
+int video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsigned *seq) {
+  int ms; unsigned sq;
+  if (!pronto || dtsSessao) return 0;
+  pthread_mutex_lock(&amTrava);
+  sq = am.valido ? am.seq : 0; ms = am.ms; *carimbo = am.carimbo; *incerteza = am.incerteza;
+  pthread_mutex_unlock(&amTrava);
+  if (!sq) return 0;
+  *pos = ms / 1000.0;
+  *seq = sq;
+  return 1;
+}
+// 1 do pedido de seek ate a primeira leitura de onde a TV caiu (a TV cai no
+// quadro-chave, segundos antes do alvo). A legenda esconde nesse meio.
+int video_pos_incerta(void) {
+  if (!atomic_load(&posIncerta)) return 0;
+  // Sem leitura em 1,5 s (evento parado): volta ao de antes em vez de esconder.
+  if (SDL_GetTicks() - atomic_load(&incertaTick) > 1500u) { atomic_store(&posIncerta, 0); return 0; }
+  return 1;
+}
 #endif
 double video_duracao(void) {
 #ifdef NV_WEBOS

@@ -34,13 +34,12 @@
 #include "escala.h"
 // Menu Estilo das faixas ASS (libass, tamanho/opacidade das falas, contraste,
 // gama, resolucao): .tpk e webOS rodam o motor novo (assperf.h). A sincronia
-// com a imagem (legimagem.*) precisa da grade de quadros do host Samsung
-// (video_tpk_quadro) e fica so no .tpk.
+// com a imagem (legimagem.*) usa a velocidade de quadros e o HDR do PROPRIO
+// arquivo nos dois alvos: o cabecalho do host Samsung no .tpk e a sonda MKV
+// (video_quadro_fps, video.c) no webOS — os dois pela mesma video_tpk_quadro.
 #if defined(NV_TPK) || defined(NV_WEBOS)
 #define FX_ASSUI 1
 #include "assperf.h"
-#endif
-#ifdef NV_TPK
 #include "legimagem.h"
 #endif
 #include <stdio.h>
@@ -637,8 +636,9 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
         * render resolution, performance mode (experimental), picture sync,
         * libass itself and Restore defaults (always the last cell). With
         * libass off it is the ordinary column plus the libass row, Restore
-        * defaults last. EST_SINC is .tpk only (the webOS grid has no picture
-        * sync row): the menu never lists it there. */
+        * defaults last. Contrast and gamma stay .tpk only (calibrated on the
+        * Samsung picture); picture sync is on both, from the file's own frame
+        * rate and HDR (legimagem.h). */
        EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_REND, EST_SINC,
 #endif
        /* MAIN / SECOND (owner 12/11): "Edit" switches the column between the
@@ -684,7 +684,7 @@ static int estSegunda(void) { return legenda2_estado() == LEG2_ATIVA; }
 
 /* The rows on screen (positions in the grid) -> row ids above. */
 static int estLinhas[EST_TOTAL], estNLinhas;
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
 static int sincPesada;   // Picture sync: 0 = Left/Right edit normal scenes, 1 = busy scenes
 #endif
 #ifdef FX_ASSUI
@@ -695,10 +695,10 @@ static int estFaixaAss(void) {
   return ehAss(f) || legenda_ass_ativa() || (assrender_ativo() && !assrender_texto_simples());
 }
 #endif
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
 #define EST_SINC_LINHA EST_SINC,
 #else
-#define EST_SINC_LINHA   // webOS: EST_SINC existe no enum mas nao entra no menu
+#define EST_SINC_LINHA   // other targets: EST_SINC exists in the enum but never enters the menu
 #endif
 // Contraste/gama foram calibrados contra o processamento de imagem da Samsung
 // (ver assperf_gama/contraste): no webOS ficam escondidos (padrao 0 = sem
@@ -822,7 +822,7 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       break; }
     case EST_REND: snprintf(dst, tam, "%s", i18n(assperf_get(AP_RENDIMENTO) ? "Ligado" : "Desligado")); break;
 #endif
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     case EST_SINC: { int lv, ps, ag;
       legimagem_valores(&lv, &ps, &ag);
       if (ctl == EST_SINC) snprintf(dst, tam, sincPesada ? "%d / [%d] ms" : "[%d] / %d ms", lv, ps);
@@ -861,11 +861,11 @@ static void ciclarEstilo(int linha) {
 #ifdef FX_ASSUI
       if (estFaixaAss() && assperf_get(AP_LIBASS)) {
         assperf_restaurar();
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
         legimagem_restaurar();
 #endif
         e->atrasoMs = 0;
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
         sincPesada = 0;
 #endif
         break;
@@ -924,7 +924,7 @@ static const EstSlider EST_SL[EST_TOTAL] = {
 static int estSlider(int i) { return i >= 0 && i < EST_TOTAL && EST_SL[i].max > EST_SL[i].min; }
 // 0 = sem controle, 1 = slider, 2 = paleta, 3 = lista de fontes, 4 = picture sync.
 static int estTipo(int i) {
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   if (i == EST_SINC) return 4;
 #endif
   return estSlider(i) ? 1 : i == EST_COR || i == EST_COR_BORDA ? 2 : i == EST_FONTE ? 3 : 0;
@@ -1451,7 +1451,7 @@ static int estiloTecla(SDL_Keycode k, int rep) {
   if (ctl >= 0) {
     int t = estTipo(ctl);
     if (voltar) { ctl = -1; return 1; }
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     if (t == 4) {   // picture sync: Left/Right 1 ms (held: faster), OK switches normal / busy
       if (ok) sincPesada = !sincPesada;
       else if (dx) legimagem_ajustar(dx * (!rep ? 1 : ctlRep > 24 ? 10 : ctlRep > 8 ? 5 : 1), sincPesada);
@@ -2379,7 +2379,7 @@ static void fontesCtl(GfxRect r, float a, int ativo) {
   }
 }
 
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
 /* Picture sync: the two values of this kind of video side by side; the one
  * Left/Right edit is lit, OK switches. */
 static void ponteiroSinc(int i, int b) { (void)b; if (ctl == EST_SINC) sincPesada = i; }
@@ -2411,7 +2411,7 @@ static void controleEstilo(int i, GfxRect g, float a, int ativo) {
       rb.h = g.h - (rb.y - g.y);
     celulaEstilo(i, -1, ra, a, 0);                      // o item, com o valor ao vivo
     if (ativo) ponteiro_alvo(ra.x, ra.y, ra.w, ra.h, NULL, ponteiroFecharCtl, 0, 0);
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
     if (estTipo(i) == 4) { sincCtl(rb, a, ativo); return; }
 #endif
     if (estTipo(i) == 1) sliderCtl(i, rb, a, ativo); else paletaCtl(rb, a, ativo); }

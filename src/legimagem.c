@@ -1,7 +1,7 @@
 // Ver legimagem.h.
 #include "legimagem.h"
 
-#if defined(NV_TPK)
+#if defined(NV_TPK) || defined(NV_WEBOS)
 #include "video.h"
 #include "assperf.h"
 #include "dados.h"
@@ -11,7 +11,9 @@
 #include <string.h>
 
 #define LI_ARQ "legimagem.txt"
-#define LI_PADRAO 170   /* normal scenes; owner 26/10 (S95C) */
+/* Normal scenes; owner 26/10 (S95C). webOS starts from the same two values:
+ * no LG panel has been measured yet (see legimagem.h). */
+#define LI_PADRAO 170
 #define LI_MAX 300
 #define LI_TIPOS 16
 /* Busy scenes (assperf_pesado) have their own value, key + "p". */
@@ -61,6 +63,9 @@ static int fpsArredondado(double fps) {
 
 static void chaveAtual(char *k, size_t n) {
   double fps; int hdr, f;
+  /* Same source on both targets: the file's own video track (video.h,
+   * video_tpk_quadro) — the Samsung host's header on the .tpk, the MKV probe
+   * on webOS (video_quadro_fps). 0 fps keeps the HDR bit only ("xh"). */
   video_tpk_quadro(&fps, &hdr);
   f = fpsArredondado(fps);
   if (f) snprintf(k, n, "%d%s", f, hdr ? "h" : "");

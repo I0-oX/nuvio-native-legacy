@@ -8,9 +8,10 @@
 //
 // What the person can still change lives in Subtitles > Style on an ASS/SSA
 // track (faixas.c, .tpk and webOS): size and opacity of the dialogue, contrast
-// and gamma to match the TV (Samsung only), render resolution, libass itself
-// (on/off) and the performance mode (experimental, off by default). They are
-// kept in assperf.txt (data), on this TV only.
+// and gamma to match the TV (Samsung only), render resolution, picture sync
+// (.tpk and webOS; the S95C's values as the starting point on webOS), libass
+// itself (on/off) and the performance mode (experimental, off by default).
+// They are kept in assperf.txt (data), on this TV only.
 //
 // THE .wgt AND ANDROID DO NOT CHANGE. assrender.c is shared: there ASS_NOVO is
 // 0 and assperf_get returns 0, the behaviour from before 23/10. webOS has the
@@ -46,8 +47,12 @@
  *   - attached fonts: 64 MB fixed on the .tpk; on webOS 64 MB too, falling back
  *     to 1/8 of the free memory (16..64 MB) under 128 MB free. This is only an
  *     acceptance limit: it does not reserve memory and does not guard against OOM.
- * The frame grid, the picture sync, the GPU queue limit and the subtitle
- * edge (legimagem.c, telalag.c, tpkborda.c) are .tpk files and stay so. */
+ * The GPU queue limit (telalag.c) runs on webOS too: ES 3 core fences when the
+ * context has them, else EGL_KHR_fence_sync, else nothing (one log line). The
+ * frame grid and the subtitle edge (tpkborda.c) are .tpk files and stay so;
+ * the picture sync (legimagem.c) runs on both, the kind of video coming from
+ * the file's own header (video_tpk_quadro: the Samsung host's MKV header on
+ * the .tpk, video_quadro_fps from the MKV probe on webOS). */
 #if defined(NV_TPK) || defined(NV_WEBOS) || defined(NV_ASS_NOVO)
 #define ASS_NOVO 1
 #else

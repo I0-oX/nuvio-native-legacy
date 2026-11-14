@@ -185,17 +185,23 @@ int    video_reconectando(void);
 // Seek sent and not yet confirmed by the TV (video_tpk.c), and a counter of
 // seeks the TV refused (EV_BUSCA_FALHOU). Used by player.c to hold the bar on
 // the target instead of the stale position.
-int      video_busca_em_voo(void);
+int    video_busca_em_voo(void);
 unsigned video_busca_falhas(void);
-// SUBTITLE CLOCK (owner 25/10). The host reads the TV's position with a query
-// that takes 50-600 ms and stamps the MIDDLE of it (CLOCK_MONOTONIC, s); half
-// the duration is the uncertainty. 1 = there is a reading; *seq changes with
-// every new one. Same transform as video_pos (converted stream offset).
+#endif
+#if defined(NV_TPK) || defined(NV_WEBOS)
+// SUBTITLE CLOCK (owner 25/10; webOS 14/11). The position is a real reading,
+// stamped on the CLOCK_MONOTONIC in seconds, and it is stale by `incerteza`
+// (the .tpk host queries the TV for 50-600 ms and stamps the middle of it;
+// webOS is pushed the currentTime event and stamps its arrival, the event
+// cadence being the uncertainty). 1 = there is a reading; *seq changes with
+// every new one. Same transform as video_pos.
 int      video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsigned *seq);
 // 1 from a seek until the first real reading of where the TV landed (the TV
 // seeks to a keyframe, seconds before the target). Subtitles hide meanwhile.
 int      video_pos_incerta(void);
-// Frame rate and HDR of the playing file (MKV header); 0 = unknown.
+// Frame rate and HDR of the playing file, per kind of video (legimagem.c):
+// the .tpk host's MKV header; on webOS the MKV probe (DefaultDuration,
+// transfer/DV) plus the pipeline's hdrType. 0 = unknown.
 int      video_tpk_quadro(double *fps, int *hdr);
 #endif
 int    video_tocando(void);
