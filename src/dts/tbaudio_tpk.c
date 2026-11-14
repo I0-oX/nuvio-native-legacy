@@ -1253,6 +1253,7 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en,
   return 0;
 }
 
+static double durSeg(const Sessao *s, int i);
 // Passthrough: TorBox's video segment without its audio. vm, not gm: the
 // video never waits behind the audio generator.
 static int gerarVideo(Sessao *s, int seg, Resp *r, char *err, size_t en) {
