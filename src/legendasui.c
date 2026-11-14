@@ -27,6 +27,7 @@
 #include <ctype.h>
 #include "bidi.h"
 #include "tbburn.h"
+#include "tbrelogio.h"
 #include "layout.h"
 
 // --- identity -------------------------------------------------------------------
@@ -199,8 +200,12 @@ void legendasui_definir_sync(const LegendasSyncProvider *p) {
 // LR_QUEIMAR (owner 13/11): "Burn in", a row under Off (TorBox Pro only) that
 // opens its list like a language row: LR_QSEG (On | Off) on top, then one
 // LR_QFAIXA per burnable (embedded ASS) track of the file (`n` = its index).
+// LR_QRELOGIO (owner 15/11, TEST SWITCH, goes once the model is known): in
+// the Burn in list while the burned stream plays, "Burn-in clock: Landing |
+// Per segment | Off" (tbrelogio.h). Left/Right changes the value shown, OK
+// applies it, like the Audio menu's switches.
 typedef enum { LR_CAND, LR_NENHUMA, LR_MAIS, LR_SYNC, LR_ALVO, LR_ATRASO, LR_IDIOMA,
-               LR_QUEIMAR, LR_QSEG, LR_QFAIXA } LuiTipo;
+               LR_QUEIMAR, LR_QSEG, LR_QFAIXA, LR_QRELOGIO } LuiTipo;
 typedef struct {
   LuiTipo tipo;
   int slot, cand;
@@ -494,6 +499,29 @@ static void queimarFaixa(int i) {
   (void)i;
 #endif
 }
+// The Burn-in clock test switch: shown only while the burned stream plays.
+static int relogioPend = -1;   // value shown, -1 = the current one
+static int relogioVisivel(void) {
+#ifdef NV_TPK
+  return video_tpk_queimada() >= 0 && tbr_ativo();
+#else
+  return 0;
+#endif
+}
+#ifdef NV_TPK
+static int relogioAtual(void) { return tbr_modo(); }
+static void relogioAplicar(int v) { tbr_definir_modo(v); }
+#else
+static int relogioAtual(void) { return TBR_POUSO; }
+static void relogioAplicar(int v) { (void)v; }
+#endif
+static int relogioMostrado(void) { return relogioPend >= 0 ? relogioPend : relogioAtual(); }
+static void relogioPasso(int d) { relogioPend = ((relogioMostrado() + d) % TBR_MODOS + TBR_MODOS) % TBR_MODOS; }
+static void relogioOk(void) {
+  int v = relogioPend;
+  relogioPend = -1;
+  if (v >= 0 && v != relogioAtual()) relogioAplicar(v);
+}
 static void linhaQueimarFaixa(int i, const char *chave) {
   if (nLinhasV >= LUI_MAX_LINHAS) return;
   linhaFixa(LR_QFAIXA, 0, chave);
@@ -511,6 +539,7 @@ static void montarLinhas(void) {
   if (ver && verQ) {
     // The Burn in list: On | Off, then the file's burnable tracks.
     linhaFixa(LR_QSEG, 0, "q|seg");
+    if (relogioVisivel()) linhaFixa(LR_QRELOGIO, 0, "q|relogio");
 #ifdef NV_TPK
     for (i = 0; i < nEmbVivo(); i++)
       if (video_tpk_leg_queimavel(i)) { char k[24]; snprintf(k, sizeof k, "q|%d", i); linhaQueimarFaixa(i, k); }
@@ -747,6 +776,7 @@ static void abrirQueimar(const LuiLinha *l) {
   int k;
   snprintf(verGrupo, sizeof verGrupo, "%s", l->chave);
   ver = 1; verQ = 1; rolagemZerar(); focoChave[0] = 0; foco = 0;
+  relogioPend = -1;
   montarLinhas();
   for (k = 0; k < nLinhasV; k++) if (linhas[k].tipo == LR_QFAIXA && linhas[k].n == video_tpk_queimada_ou()) break;
   focar(k < nLinhasV ? k : 0);
@@ -855,6 +885,7 @@ int legendasui_evento(const SDL_Event *e) {
     if (l && l->tipo == LR_ALVO) { alvo = d > 0; return LEGUI_TRATADO; }
     if (l && l->tipo == LR_ATRASO) { mudarAtraso((e->key.repeat ? 500 : 100) * d); return LEGUI_TRATADO; }
     if (l && l->tipo == LR_QSEG) { queimarLigar(d < 0); return LEGUI_TRATADO; }
+    if (l && l->tipo == LR_QRELOGIO) { relogioPasso(d); return LEGUI_TRATADO; }
     if (l && l->tipo == LR_SYNC) {
       const char *rot[4];
       int n = nAcoes(l->slot, rot, 4);
@@ -874,6 +905,7 @@ int legendasui_evento(const SDL_Event *e) {
       case LR_QUEIMAR: abrirQueimar(l); break;
       case LR_QSEG: queimarLigar(!queimarLigado()); break;
       case LR_QFAIXA: queimarFaixa(l->n); break;
+      case LR_QRELOGIO: relogioOk(); break;
       case LR_IDIOMA: abrirIdioma(l); break;
       case LR_CAND: escolher(l->slot, l->cand >= 0 ? &cand[l->cand] : NULL); break;
       case LR_ALVO: alvo = !alvo; break;
@@ -922,6 +954,11 @@ static void ponteiroQSeg(int i, int seg) {
   if (!ponteiroAqui(i) || linhas[i].tipo != LR_QSEG) return;
   ponteiroLinha(i, 0);
   queimarLigar(seg == 0);
+}
+static void ponteiroRelogio(int i, int seg) {
+  if (!ponteiroAqui(i) || linhas[i].tipo != LR_QRELOGIO) return;
+  ponteiroLinha(i, 0);
+  relogioPend = seg;
 }
 static void ponteiroSyncPasso(int i, int d) {
   const char *rot[4];
@@ -1074,6 +1111,11 @@ static void textoLinha(const LuiLinha *l, char *nome, size_t tn, char *sub, size
       snprintf(sub, ts, "TorBox Pro");
       *icone = "pl_captions";
       break;
+    case LR_QRELOGIO:
+      snprintf(nome, tn, "Burn-in clock (test)");
+      snprintf(sub, ts, "%s", relogioPend >= 0 && relogioPend != relogioAtual() ? "OK to apply" : "Subtitle timing on TorBox's stream");
+      *icone = "pl_captions";
+      break;
     case LR_QFAIXA: {
       const VideoFaixa *f = video_legenda(l->n);
       snprintf(nome, tn, "%s", f ? f->rotulo : "?");
@@ -1212,6 +1254,18 @@ static void desenharLinha(const LuiLinha *l, int idx, int sel, float x, float y,
       ponteiro_alvo(dir - sw, y + (LU_LN_H - 54.0f) * 0.5f, w0, 54.0f, ponteiroLinha, ponteiroQSeg, idx, 0);
       ponteiro_alvo(dir - sw + w0, y + (LU_LN_H - 54.0f) * 0.5f, sw - w0, 54.0f, ponteiroLinha, ponteiroQSeg, idx, 1);
     }
+    dir -= sw + 12.0f;
+  } else if (l->tipo == LR_QRELOGIO) {
+    static const char *const rot[TBR_MODOS] = { "Landing", "Per segment", "Off" };
+    int cont[TBR_MODOS] = { -1, -1, -1 }, e = relogioMostrado(), k;
+    float sw = plrui_seg(rot, cont, TBR_MODOS, (float)e, sel, -1.0f, 0, a), xx = dir - sw;
+    plrui_seg(rot, cont, TBR_MODOS, (float)e, sel, dir - sw, y + (LU_LN_H - 54.0f) * 0.5f, a);
+    if (pont)
+      for (k = 0; k < TBR_MODOS; k++) {   // each chip: the width up to it minus the width before it
+        float wk = plrui_seg(rot, cont, k + 1, (float)e, sel, -1.0f, 0, a) - (k ? plrui_seg(rot, cont, k, (float)e, sel, -1.0f, 0, a) : 0.0f);
+        ponteiro_alvo(xx, y + (LU_LN_H - 54.0f) * 0.5f, wk, 54.0f, ponteiroLinha, ponteiroRelogio, idx, k);
+        xx += wk;
+      }
     dir -= sw + 12.0f;
   } else if (!mais && !ver && (l->tipo == LR_CAND || l->tipo == LR_NENHUMA)) {
     // (No pill on the AutoSync row: only the primary syncs, and the title

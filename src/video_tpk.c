@@ -43,6 +43,7 @@
 #include <math.h>
 #include "tbburn.h"
 #include "dts/tbaudio_tpk.h"
+#include "tbrelogio.h"
 #include "legref.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -520,6 +521,8 @@ static void abrirHost(const char *url, const char *cab) {
   }
   if (tbSegurarAntes(url, cab)) return;   // TorBox first: tbBombear opens when the pick is known
   if (mfEsperarAntes(url, cab)) return;   // mfBombear abre quando a sonda responder
+  // The burned stream opens at 0 (the resume seek follows): tbrelogio.h.
+  if (tb.ativo && url && !strcmp(url, tb.url)) tbr_ancorar(0);
   hAbrir(nv_media_url(url), cab);
 }
 
@@ -873,6 +876,12 @@ static int tbAutoFaixa(int usarMemoria, const char **porque) {
 static void legendaLimpar(int bloquear);
 static void legendaMarcarEnvio(int i);
 // Reopens the player at `alvo` (for the app it is a seek, like mfLigar).
+// Every seek of the TV player goes through here: on the burned stream the
+// segment it lands in sets the subtitle clock (tbrelogio.h).
+static void buscarHost(int ms) {
+  if (tb.ativo) tbr_ancorar(ms / 1000.0);
+  if (hBuscar) hBuscar(ms);
+}
 static void tbReabrir(double alvo) {
   reconAudio = audioAtual; reconLeg = -1; reconFaixasPend = 1;
   reconBuscarMs = alvo > 1.0 ? (int)(alvo * 1000.0) : -1;
@@ -880,12 +889,20 @@ static void tbReabrir(double alvo) {
   abrirSessao();
 }
 static void tbDesligar(const char *porque, int desistir) {
-  double alvo = video_pos();
+  double alvo = video_pos(), corr;
   if (!tb.ativo) return;
+  // The player's clock on the burned stream runs behind its picture
+  // (tbrelogio.h): the original reopens where the picture was (owner 15/11).
+  corr = tbr_correcao(alvo);
+  alvo += corr;
+  if (video_duracao() > 0 && alvo > video_duracao()) alvo = video_duracao();
+  if (alvo < 0) alvo = 0;
+  tbr_encerrar();
   tb.ativo = 0;
   if (tb.tba) { tba_fechar(); tb.tba = 0; }
   if (desistir) { tb.desistiu = 1; tb.voltar = 1; }
-  printf("[tbburn] back to the original file at %.1f s: %s\n", alvo, porque);
+  printf("[tbburn] back to the original file at %.1f s (player clock %+.0f ms to the burned picture): %s\n",
+         alvo, corr * 1000.0, porque);
   fflush(stdout);
   // The audio chosen is a DTS/TrueHD track the TV refuses: the converter again.
   { const VideoFaixa *f = audioAtual >= 0 && audioAtual < nAudio ? &faixaAudio[audioAtual] : NULL;
@@ -1015,11 +1032,134 @@ static const char *const TBA_NOME[TBA_MODOS] = { "Passthrough", "TorBox audio" }
 static const char *const TBA_ROTULO[TBA_MODOS] = { "Passthrough", "Áudio do TorBox" };
 // TorBox's burned stream is ready (`m`): what the TV player opens. Settings >
 // "Original audio with burn-in": Passthrough (default) = Nuvio's local stream,
+// ---- the subtitle clock when the TV reads TorBox itself (tbrelogio.h) -----------
+// With TorBox's own audio Nuvio does not serve the burned picture, so it reads
+// TorBox's playlist once per burned stream and the head of segment 0 and of the
+// segment the player lands in (256 KB Range reads, one at a time). TorBox
+// connections then: TV player 1 + subtitle reader 2 + this 1 (owner 13/11:
+// 4 is fine). Stops after 3 failures per stream; fMP4 segments are not read.
+static pthread_mutex_t tbcTrava = PTHREAD_MUTEX_INITIALIZER;
+static int tbcRodando, tbcFalhas;
+static unsigned tbcGer, tbcPlGer;   // the stream being read / whose playlist is loaded
+static Uint32 tbcUltimo;
+static TbaPl tbcPl;
+typedef struct { unsigned char *b; size_t n, max; } TbcAcum;
+static int tbcAcumular(const void *d, size_t n, void *u) {
+  TbcAcum *a = u;
+  size_t k = a->n + n > a->max ? a->max - a->n : n;
+  if (k) { memcpy(a->b + a->n, d, k); a->n += k; }
+  return a->n < a->max;   // 0 stops the transfer at the cap
+}
+static unsigned char *tbcBaixar(const char *url, size_t max, int cabeca, size_t *n, char *final, size_t fn, int *st) {
+  RedePedido p; RedeResposta r; TbcAcum a;
+  char faixa[64];
+  const char *cabs[2] = { NULL, NULL };
+  memset(&p, 0, sizeof p); memset(&r, 0, sizeof r);
+  a.b = malloc(max + 1); a.n = 0; a.max = max;
+  if (!a.b) return NULL;
+  p.url = url; p.prazo_ms = 15000; p.seguir = 1; p.rebaixar_midia = 1;
+  p.max_bytes = REDE_CORPO_MAXIMO;   // the cap is tbcAcumular's
+  if (cabeca) { snprintf(faixa, sizeof faixa, "Range: bytes=0-%zu", max - 1); cabs[0] = faixa; p.cabecalhos = cabs; }
+  p.receber_corpo = tbcAcumular; p.corpo_usuario = &a;
+  rede_pedir(&p, &r);
+  *st = r.status;
+  if (final && fn) snprintf(final, fn, "%s", r.final[0] ? r.final : url);
+  rede_resposta_limpar(&r);
+  if (*st < 200 || *st >= 300 || !a.n) { free(a.b); return NULL; }
+  a.b[a.n] = 0; *n = a.n;
+  return a.b;
+}
+static void tbcFalhou(const char *o, int st, int definitivo) {
+  int k;
+  pthread_mutex_lock(&tbcTrava);
+  k = tbcFalhas = definitivo ? 3 : tbcFalhas + 1;
+  pthread_mutex_unlock(&tbcTrava);
+  printf("[tbburn] subtitle clock: %s (HTTP %d)%s\n", o, st, k >= 3 ? "; no correction for this stream" : "");
+  fflush(stdout);
+}
+static void *tbcFio(void *u) {
+  char *url = u, *final = malloc(4096);
+  unsigned g, gg;
+  int seg, st = 0;
+  size_t n = 0;
+  pthread_mutex_lock(&tbcTrava); g = tbcGer; pthread_mutex_unlock(&tbcTrava);
+  if (!final) goto fim;
+  if (tbcPlGer != g) {
+    Uint32 t0 = SDL_GetTicks();
+    TbaPl pl;
+    unsigned char *b = tbcBaixar(url, 4u * 1024u * 1024u, 0, &n, final, 4096, &st);
+    memset(&pl, 0, sizeof pl);
+    if (!b || !tba_pl_ler((char *)b, final, &pl)) { free(b); tbcFalhou("TorBox's playlist did not load", st, 0); goto fim; }
+    free(b);
+    if (pl.master) {
+      char var[4096];
+      snprintf(var, sizeof var, "%s", pl.variante);
+      tba_pl_liberar(&pl); memset(&pl, 0, sizeof pl);
+      b = tbcBaixar(var, 4u * 1024u * 1024u, 0, &n, final, 4096, &st);
+      if (!b || !tba_pl_ler((char *)b, final, &pl) || pl.master || !pl.nseg) {
+        free(b); tba_pl_liberar(&pl); tbcFalhou("TorBox's media playlist did not load", st, 0); goto fim;
+      }
+      free(b);
+    }
+    if (pl.mapa[0]) { tba_pl_liberar(&pl); tbcFalhou("TorBox's segments are fMP4, not read", 200, 1); goto fim; }
+    { double *d = malloc(sizeof *d * (size_t)(pl.nseg > 0 ? pl.nseg : 1));
+      int i;
+      if (d) { for (i = 0; i < pl.nseg; i++) d[i] = pl.seg[i].dur; tbr_segmentos(g, d, pl.nseg); free(d); } }
+    pthread_mutex_lock(&tbcTrava);
+    tba_pl_liberar(&tbcPl); tbcPl = pl; tbcPlGer = g;
+    pthread_mutex_unlock(&tbcTrava);
+    printf("[tbburn] subtitle clock: TorBox's playlist read for the clock (TorBox audio): %d segments in %u ms\n",
+           pl.nseg, (unsigned)(SDL_GetTicks() - t0));
+    fflush(stdout);
+  }
+  while (tbr_falta(&gg, &seg) && gg == g) {
+    char *uri = NULL;
+    unsigned char *h;
+    double pts = 0;
+    Uint32 t0 = SDL_GetTicks();
+    pthread_mutex_lock(&tbcTrava);
+    if (tbcPlGer == g && seg >= 0 && seg < tbcPl.nseg) uri = strdup(tbcPl.seg[seg].uri);
+    pthread_mutex_unlock(&tbcTrava);
+    if (!uri) break;
+    h = tbcBaixar(uri, 256u * 1024u, 1, &n, NULL, 0, &st);
+    free(uri);
+    if (!h || !tba_ts_primeiro_pts(h, n, &pts)) { free(h); tbcFalhou("a segment head gave no video PTS", st, 0); break; }
+    free(h);
+    printf("[tbburn] subtitle clock: segment %d head read (TorBox audio): first PTS %.3f s, %zu bytes in %u ms\n",
+           seg, pts, n, (unsigned)(SDL_GetTicks() - t0));
+    fflush(stdout);
+    tbr_pts(g, seg, pts);
+  }
+fim:
+  free(final); free(url);
+  rede_fio_fechar();   // no idle socket to TorBox left behind
+  pthread_mutex_lock(&tbcTrava); tbcRodando = 0; tbcUltimo = SDL_GetTicks(); pthread_mutex_unlock(&tbcTrava);
+  return NULL;
+}
+static void tbcBombear(void) {
+  unsigned g = tbr_geracao(), gg;
+  int seg, precisa;
+  pthread_t f;
+  char *u;
+  if (!g || !tb.ativo || tb.tba || !tb.urlTb[0]) return;
+  pthread_mutex_lock(&tbcTrava);
+  if (g != tbcGer) { tbcGer = g; tbcFalhas = 0; }
+  precisa = tbcPlGer != g || tbr_falta(&gg, &seg);
+  if (tbcRodando || tbcFalhas >= 3 || !precisa || SDL_GetTicks() - tbcUltimo < 1000u) { pthread_mutex_unlock(&tbcTrava); return; }
+  tbcRodando = 1;
+  pthread_mutex_unlock(&tbcTrava);
+  u = strdup(tb.urlTb);
+  if (u && pthread_create(&f, NULL, tbcFio, u) == 0) { pthread_detach(f); return; }
+  free(u);
+  pthread_mutex_lock(&tbcTrava); tbcRodando = 0; pthread_mutex_unlock(&tbcTrava);
+}
+
 // TorBox's video without its audio + the original file's audio (only with the
 // converter in this build); TorBox audio = TorBox's URL as it is.
 static void tbUrlPlayer(const char *m) {
   char loc[256];
   int modo = ajustes_tb_audio_modo();
+  tbr_comecar();   // before tba_abrir: the session feeds this generation
   snprintf(tb.urlTb, sizeof tb.urlTb, "%s", m);
   if (tb.tba) { tba_fechar(); tb.tba = 0; }
   tb.hostA = -1;
@@ -1048,6 +1188,7 @@ static void tbBombear(void) {
   char motivo[160];
   int e;
   tbburn_arquivo_tem_ass(mkvN > 0 && mkvTemAss());
+  tbcBombear();
   // Subtitle reader: 2 connections while burned, 1 while sync's reference is
   // on the network (it closes its own after): never more than 4 on TorBox
   // (TV player 1 + original audio 1 + these). Owner 13/11.
@@ -1291,6 +1432,7 @@ int video_tocar(const char *u) {
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
   if (tb.pend) tbburn_cancelar();
   if (tb.tba) tba_fechar();
+  tbr_encerrar();
   memset(&tb, 0, sizeof tb);
   // As listas do titulo anterior nao passam para o convertido (que as mantem
   // em abrirSessao); no caminho de sempre abrirSessao ja as zerava.
@@ -2025,7 +2167,7 @@ static void convBombear(void) {
   if (!cv.ativo) {
     // Voltando ao original (falha ou escolha): o seek para onde estava.
     if (cv.buscarMs >= 0 && pronto && tocando) {
-      if (hBuscar) hBuscar(cv.buscarMs);
+      buscarHost(cv.buscarMs);
       cv.buscarMs = -1;
     }
     return;
@@ -2049,7 +2191,7 @@ static void convBombear(void) {
   // Troca no meio do filme (HLS): o player abriu do zero, e o seek vai depois
   // do Start, como no recarregar da reconexao.
   if (cv.buscarMs >= 0 && pronto && tocando) {
-    if (hBuscar) hBuscar(cv.buscarMs);
+    buscarHost(cv.buscarMs);
     printf("[dts-tpk] seek para %.1f s depois de abrir o convertido\n", cv.buscarMs / 1000.0);
     fflush(stdout);
     cv.seekPend = 1; cv.seekAlvo = cv.buscarMs / 1000.0; cv.seekEm = agora;
@@ -2161,7 +2303,7 @@ void video_bombear(void) {
         abrirSessao();
       }
     } else {
-      if (hBuscar) hBuscar(ms);
+      buscarHost(ms);
       if (cv.ativo) { cv.seekPend = 1; cv.seekAlvo = ms / 1000.0; cv.seekEm = SDL_GetTicks(); }
     }
     vigiaAtiva = 0;
@@ -2287,6 +2429,7 @@ void video_parar(void) {
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
   if (tb.pend) tbburn_cancelar();
   if (tb.tba) tba_fechar();
+  tbr_encerrar();
   memset(&tb, 0, sizeof tb);
   emTrailer = emCartao = 0;
   cartaoSemCover = 0;
@@ -2367,7 +2510,7 @@ void video_buscar(double s) {
       if (e == MKVFIX_SONDANDO) { mf.pend = 1; mf.pendAlvo = s; mf.pendEm = SDL_GetTicks(); }
     }
   }
-  if (hBuscar) hBuscar((int)(s * 1000.0));
+  buscarHost((int)(s * 1000.0));
   terminou = 0;
 }
 void video_janela(int x, int y, int w, int h) {

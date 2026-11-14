@@ -98,6 +98,7 @@ extern int trakt_scrobble_alvo(int, const TraktScrobbleAlvo *, double, double,
 #include "episodios.h"
 #include "streams.h"
 #include "tbburn.h"
+#include "tbrelogio.h"
 #include "legmemoria.h"
 #include "addons.h"
 #include "duracaook.h"
@@ -457,6 +458,9 @@ static double posLegenda(void) {
    * pouco atras da nossa camada enquanto TOCA; pausada, nao. So tocando, com
    * leituras carimbadas, e nunca logo depois de um seek ainda sem leitura. */
   if (relLeg.carimbo && relLeg.tocando && !video_pos_incerta()) v -= legimagem_ms() / 1000.0;
+  /* TORBOX BURN-IN (tbrelogio.h, owner 15/11): on TorBox's burned stream the
+   * player's clock runs behind the picture by the segment it landed in. */
+  v += tbr_correcao(v);
 #endif
   return v;
 }
@@ -464,6 +468,19 @@ static double posLegenda(void) {
 static int skipDisponivel(void), skipLiberado;
 static int trechoPulavel(double *fim) { int tipo; return skipDisponivel() && intro_botao_visivel(fim, &tipo); }
 static float duracaoSeg = PLR_DUR_PADRAO;
+/* The position saved for resume (Continue watching, the account, Trakt):
+ * where the PICTURE is. Differs from posSeg only on TorBox's burned stream. */
+static double posGravar(void) {
+  double p = posSeg;
+#ifdef NV_TPK
+  if (comVideo) {
+    p += tbr_correcao(p);
+    if (p > duracaoSeg) p = duracaoSeg;
+    if (p < 0) p = 0;
+  }
+#endif
+  return p;
+}
 // O fim ZERO do TheIntroDB quer dizer "ate o fim da midia" (intro.c): mirar
 // fim+0.25 ai seria um salto para o COMECO do arquivo — o alvo resolve o nulo.
 static double puloDestino(double fim) { return fim > 0.0 ? fim + .25 : duracaoSeg; }
@@ -2736,7 +2753,7 @@ static void fecharSessao(int manter, int trocaFonte) {
   // FILME EM PARTES: so a ULTIMA parte conclui, pela regra do proprio
   // arquivo (a minutagem do catalogo e a do filme inteiro). O ponto da parte
   // fica guardado para o Retomar; concluido, sai.
-  double durG = duracaoSeg, posG = posSeg;
+  double durG = duracaoSeg, posG = posGravar();
   { double vp, vd; int ult = 0;
     if (!jaRetido && partesVirt(&vp, &vd, &ult)) {
       const PartesLista *sl = partes_sessao_lista();
@@ -3010,7 +3027,7 @@ static void gravarProgressoParcial(int conta, const char *porque) {
   // Contradictory credits also invalidate the catalogue's watched proof.
   double cred = credEfetivo();
   if (cred > 1.0 && cred - duracaoSeg > intro_creditos_janela(duracaoSeg)) chegou = 0;
-  { double vp = posSeg, vd = duracaoSeg;
+  { double vp = posGravar(), vd = duracaoSeg;
     if (partesVirt(&vp, &vd, NULL)) chegou = 0;   // o visto e so da saida da ultima parte
     if (!cat_salvar_progresso_ep(ia, vp, vd, epT, epE, chegou)) return; }
   dados_sincronizar_logo();
@@ -3019,15 +3036,15 @@ static void gravarProgressoParcial(int conta, const char *porque) {
     char id[64];
     if (epT >= 0 && epE > 0) snprintf(id, sizeof id, "%.*s:%d:%d", (int)strcspn(ci->imdb, ":"), ci->imdb, epT, epE);
     else snprintf(id, sizeof id, "%s", ci->imdb);
-    double sp = posSeg, sd = duracaoSeg;
+    double sp = posGravar(), sd = duracaoSeg;
     partesVirt(&sp, &sd, NULL);
     scrobbleTrakt(SCR_EV_PONTO, ci, sp, sd, assistidoSeg, 0);
     simkl_scrobble(SCR_EV_PONTO, id, sp, sd, assistidoSeg, 0);
     parcialConta = 0;
   }
   parcialPos = posSeg;
-  printf("[visto] ponto gravado (%s) pos=%.1f dur=%.1f (%.0f%%)\n", porque, (double)posSeg,
-         (double)duracaoSeg, 100.0 * posSeg / duracaoSeg);
+  printf("[visto] ponto gravado (%s) pos=%.1f dur=%.1f (%.0f%%)%s\n", porque, posGravar(),
+         (double)duracaoSeg, 100.0 * posGravar() / duracaoSeg, posGravar() != posSeg ? " (burned picture's time)" : "");
   fflush(stdout);
 }
 
@@ -5851,13 +5868,13 @@ static void desenharLegendaPrincipal(float *topoPilha){
         for (k = 0; trecho[k]; k++) if (trecho[k] == '\n' || trecho[k] == '\r') trecho[k] = ' ';
         nLog++; ultLog = agora;
         printf("[legshow] cue %.3f-%.3f shown at %.3f (late %+d ms) | video %.3f, subtitle clock %.3f, "
-               "picture-sync -%d ms, offset %+d ms (manual %+d) | \"%s\"\n",
+               "picture-sync -%d ms, burn-in clock %+d ms, offset %+d ms (manual %+d) | \"%s\"\n",
                cues[0].inicio, cues[0].fim, t, (int)lround((t - cues[0].inicio) * 1000.0),
                comVideo ? video_pos() : posSeg, posLegenda(),
 #ifdef NV_TPK
-               legimagem_ms(),
+               legimagem_ms(), (int)lround(tbr_correcao(comVideo ? video_pos() : posSeg) * 1000.0),
 #else
-               0,
+               0, 0,
 #endif
                atraso, legEstilo.atrasoMs, trecho);
         fflush(stdout);

@@ -49,7 +49,7 @@ python3 tests/tbaudio_origem.py "$work/src" "$work/port" "$work/origem.log" & pi
 for _ in $(seq 50); do [ -s "$work/port" ] && break; sleep 0.1; done
 port=$(cat "$work/port")
 ${CC:-gcc} -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-misleading-indentation -Wno-format-truncation \
-  -DNV_TBAUDIO_TEST -DNV_DTS_FFMPEG -Isrc tests/tbaudio.c src/dts/tbaudio_tpk.c src/dts/dts_engine.c src/rede.c src/redeurl.c \
+  -DNV_TBAUDIO_TEST -DNV_DTS_FFMPEG -Isrc tests/tbaudio.c src/dts/tbaudio_tpk.c src/tbrelogio.c src/dts/dts_engine.c src/rede.c src/redeurl.c \
   $(pkg-config --cflags --libs libavformat libavcodec libswresample libavutil) -lz -lm -lpthread -ldl -o "$work/t"
 fail=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }

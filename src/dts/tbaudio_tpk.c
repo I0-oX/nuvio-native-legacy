@@ -531,6 +531,7 @@ void tba_log(void) {}
 
 #include "dts_engine.h"
 #include "../rede.h"
+#include "../tbrelogio.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -580,6 +581,7 @@ typedef struct Sessao {
   pthread_mutex_t m;                   // state below
   pthread_cond_t c;
   int pronto, falhou, modo, flacConv, audio;   // audio: index in fx[]
+  unsigned tbrGer;                     // the burned stream this session serves (tbrelogio.h)
   char motivo[160], tok[40];
   char *tbUrl, *orig, *cab;
   // TorBox
@@ -789,6 +791,9 @@ static int prepTorbox(Sessao *s) {
   s->ini[0] = 0;
   for (i = 0; i < s->pl.nseg; i++) s->ini[i + 1] = s->ini[i] + s->pl.seg[i].dur;
   s->tbMp4 = s->pl.mapa[0] != 0;
+  // The subtitle clock (tbrelogio.h): the segment lengths the TV sees.
+  { double *d = malloc(sizeof *d * (size_t)s->pl.nseg);
+    if (d) { for (i = 0; i < s->pl.nseg; i++) d[i] = s->pl.seg[i].dur; tbr_segmentos(s->tbrGer, d, s->pl.nseg); free(d); } }
   printf("[tbaudio] TorBox: %d segments of %.1f s (target %.0f), %s, %s, version %d\n", s->pl.nseg,
          s->pl.nseg ? s->pl.seg[0].dur : 0, s->pl.alvo, s->tbMp4 ? "fMP4 (EXT-X-MAP)" : "MPEG-TS",
          s->pl.fim ? "VOD (ENDLIST)" : "no ENDLIST (still growing?)", s->pl.versao);
@@ -809,6 +814,7 @@ static int prepTorbox(Sessao *s) {
     free(h);
   }
   printf("[tbaudio] TorBox's first video PTS: %s%.3f s\n", s->tbOffOk ? "" : "UNKNOWN, using ", s->tbOffOk ? s->tbOff : 0.0);
+  if (s->tbOffOk) tbr_origem(s->tbrGer, s->tbOff);
   // S2: the hosts the TV player and Nuvio talk to (playlist, segments, file).
   tba_sockets_vigiar(s->tbUrl, final, s->pl.seg[0].uri, s->orig);
   fflush(stdout);
@@ -1260,7 +1266,9 @@ static int gerarVideo(Sessao *s, int seg, Resp *r, char *err, size_t en) {
   double ms = 0, t0 = agoraMs();
   size_t n = 0, k = 0;
   int st = 0, nA = 0;
-  unsigned char *b = baixar(s, s->pl.seg[seg].uri, TB_SEG_MAX, &n, NULL, 0, &st, &ms);
+  unsigned char *b;
+  tbr_servido(s->tbrGer, seg);   // the first one after an open/seek: the segment the player landed in
+  b = baixar(s, s->pl.seg[seg].uri, TB_SEG_MAX, &n, NULL, 0, &st, &ms);
   if (!b) { snprintf(err, en, "TorBox segment %d did not download (HTTP %d)", seg, st); return -1; }
   if (s->tbMp4) {
     if (!s->stripAviso++) { printf("[tbaudio] TorBox's segments are fMP4: passed as they are (only MPEG-TS is stripped)\n"); fflush(stdout); }
@@ -1284,9 +1292,11 @@ static int gerarVideo(Sessao *s, int seg, Resp *r, char *err, size_t en) {
   { double pts = 0, ini = 0;
     int i;
     for (i = 0; i < seg && i < s->pl.nseg; i++) ini += durSeg(s, i);
-    if (tba_ts_primeiro_pts(r->b, r->n, &pts))
+    if (tba_ts_primeiro_pts(r->b, r->n, &pts)) {
+      tbr_pts(s->tbrGer, seg, pts);
       printf("[tbaudio] video seg %d timing: playlist start %.3f s, first video PTS %.3f s (PTS - start %+.3f s; TorBox's first PTS %.3f)\n",
              seg, ini, pts, pts - ini, s->tbOffOk ? s->tbOff : -1.0);
+    }
   }
   fflush(stdout);
   return 0;
@@ -1571,6 +1581,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   atomic_store(&s->espChave, -1L);
   s->modo = modo; s->flacConv = flacConv ? 1 : 0;
   s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1;
+  s->tbrGer = tbr_geracao();
   s->tbUrl = strdup(tbUrl); s->orig = strdup(orig); s->cab = strdup(cab ? cab : "");
   gerarToken(s->tok, 28);
   if (!s->tbUrl || !s->orig || !s->cab) { atomic_store(&s->refs, 1); soltar(s); return 0; }
