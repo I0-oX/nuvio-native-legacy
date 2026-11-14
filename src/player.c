@@ -2195,9 +2195,9 @@ static void tocarFonteInterno(const char *url) {
   armarTituloGuardado();
   memlog_evento("load"); memQuadroPendente = 1;
   cacheboost_backend_buffer(cacheboost_buffer_mb(ajustes_buffer_preset(), memlog_livre_mb()));
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
   // TorBox burn-in starts Off on HDR (tbburn.h, owner 13/11): the source's own
-  // HDR badge, known before the open (the file's colour info is video_tpk.c's).
+  // HDR badge, known before the open (the file's colour info is the backend's).
   { const Stream *hs = !ehCanal() && stream_atual() >= 0 ? stream_item(stream_atual()) : NULL;
     tbburn_hdr_fonte(hs && (badges_fonte_hdr_marca(hs->badges) >= 0 || hs->dolbyVision)); }
 #endif
