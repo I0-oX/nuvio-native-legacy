@@ -523,7 +523,7 @@ static void lerDuracao(const unsigned char *p, long n) {
         int a = dVint(p + q, fim - q, 0, &fid), c;
         if (!a) break;
         c = dVint(p + q + a, fim - q - a, 1, &ft);
-        if (!c || (unsigned long long)(q + a + c) + ft > (unsigned long long)fim) break;
+        if (!c || ft == ~0ULL || (unsigned long long)(q + a + c) + ft > (unsigned long long)fim) break;
         q += a + c;
         for (unsigned long long k = 0; k < ft && k < 8; k++) b = (b << 8) | p[q + (long)k];
         if (fid == 0x2AD7B1ULL) escala = b;
