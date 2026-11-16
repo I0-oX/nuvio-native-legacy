@@ -592,6 +592,8 @@ typedef struct Sessao {
   pthread_cond_t c;
   int pronto, falhou, modo, flacConv, opusConv, audio;   // audio: index in fx[]
   int opusLog;                         // Opus packet lines logged (first segments only)
+  int64_t proxPts;                     // the reading track's next timestamp (laced frames carry none)
+  int semPts, semPtsLog;               // packets that came without a timestamp (filled in) / lines logged
   unsigned tbrGer;                     // the burned stream this session serves (tbrelogio.h)
   char motivo[160], tok[40];
   char *tbUrl, *orig, *cab;
@@ -1012,6 +1014,28 @@ static int drenarFifo(Sessao *s, int tudo) {
   }
   return 0;
 }
+// Samples (48 kHz) in one Opus packet, from its TOC byte (RFC 6716 3.1); 0 = unreadable.
+static int opusAmostras(const uint8_t *d, int n) {
+  static const int F[32] = { 480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 480, 960,
+                             120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960 };
+  int c, q;
+  if (!d || n < 1) return 0;
+  c = d[0] & 3;
+  q = c == 0 ? 1 : c < 3 ? 2 : n >= 2 ? (d[1] & 0x3f) : 0;
+  return q * F[d[0] >> 3];
+}
+// A packet's length in its stream's time base: the container's, else from the
+// codec (Opus: TOC; others: FFmpeg's frame size). 0 = unknown.
+static int64_t pacoteDur(const AVStream *st, const AVPacket *p) {
+  int a;
+  if (p->duration > 0) return p->duration;
+  if (st->codecpar->codec_id == AV_CODEC_ID_OPUS) {
+    a = opusAmostras(p->data, p->size);
+    return a > 0 ? av_rescale_q(a, (AVRational){1, 48000}, st->time_base) : 0;
+  }
+  a = av_get_audio_frame_duration2(st->codecpar, p->size);
+  return a > 0 && st->codecpar->sample_rate > 0 ? av_rescale_q(a, (AVRational){1, st->codecpar->sample_rate}, st->time_base) : 0;
+}
 // One more step: >0 progressed, 0 end of file, -1 error.
 static int produzir(Sessao *s, const Faixa *f, char *err, size_t en) {
   AVStream *st = s->ic->streams[f->si];
@@ -1029,7 +1053,25 @@ static int produzir(Sessao *s, const Faixa *f, char *err, size_t en) {
     }
     if (s->pk->stream_index != f->si) { av_packet_unref(s->pk); continue; }
     if (s->pk->pts == AV_NOPTS_VALUE) s->pk->pts = s->pk->dts;
-    if (s->pk->pts == AV_NOPTS_VALUE) { av_packet_unref(s->pk); continue; }
+    // Matroska lacing without BlockDuration/DefaultDuration (owner 16/11, an
+    // mkvmerge Opus track): only the block's first frame has a timestamp, the
+    // others come with none and no length. They used to be dropped (14 of 100
+    // Opus packets per 2 s: no sound). Each one follows the one before it.
+    {
+      int64_t d = pacoteDur(st, s->pk);
+      if (s->pk->pts == AV_NOPTS_VALUE && s->proxPts != AV_NOPTS_VALUE) {
+        s->pk->pts = s->pk->dts = s->proxPts;
+        s->semPts++;
+        if (s->semPtsLog < 3) {
+          s->semPtsLog++;
+          printf("[tbaudio] audio %d: a packet without a timestamp (laced frame) follows the one before (%.3f s, %.1f ms)\n",
+                 f->ord, s->proxPts * av_q2d(st->time_base), d * av_q2d(st->time_base) * 1000.0);
+        }
+      }
+      if (s->pk->pts == AV_NOPTS_VALUE) { av_packet_unref(s->pk); continue; }
+      if (s->pk->duration <= 0 && d > 0) s->pk->duration = d;
+      s->proxPts = d > 0 ? s->pk->pts + d : AV_NOPTS_VALUE;
+    }
     if (!s->dec) {
       AVPacket *c = av_packet_clone(s->pk);
       double t = s->pk->pts * av_q2d(st->time_base);
@@ -1102,6 +1144,7 @@ static int posicionar(Sessao *s, int fi, int seg, const double *ini, double len,
   *saltou = 1; *como = "seeked";
   filaLimpar(s);
   s->eof = 0;
+  s->proxPts = AV_NOPTS_VALUE;   // a seek: the next timestamp comes from the file again
   { int i; for (i = 0; i < (int)s->ic->nb_streams; i++) s->ic->streams[i]->discard = i == f->si ? AVDISCARD_DEFAULT : AVDISCARD_ALL; }
   if (f->modo == M_AC3 || f->modo == M_AAC) { if (abrirConversor(s, f, err, en) < 0) { s->gOk = 0; return -1; } }
   else codecLiberar(s);
@@ -1621,7 +1664,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   pthread_mutex_init(&s->vm, NULL);
   atomic_store(&s->espChave, -1L);
   s->modo = modo; s->flacConv = (conv & TBA_CONV_FLAC) ? 1 : 0; s->opusConv = (conv & TBA_CONV_OPUS) ? 1 : 0;
-  s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1;
+  s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1; s->proxPts = AV_NOPTS_VALUE;
   s->tbrGer = tbr_geracao();
   s->tbUrl = strdup(tbUrl); s->orig = strdup(orig); s->cab = strdup(cab ? cab : "");
   gerarToken(s->tok, 28);

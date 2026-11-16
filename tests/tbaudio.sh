@@ -35,6 +35,10 @@ ffmpeg -v error -f lavfi -i testsrc2=s=320x180:r=24 -f lavfi -i "sine=f=440:r=48
   -c:a:0 aac -ac:a:0 2 -c:a:1 ac3 -c:a:2 flac -c:a:3 libopus -ac:a:3 2 -c:a:4 dca -strict -2 -b:a:4 768k \
   -metadata:s:a:0 language=eng -metadata:s:a:1 language=jpn -metadata:s:a:2 language=eng -metadata:s:a:3 language=fre \
   "$work/src/orig.mkv"
+# mkvmerge-style Opus (TV, 16/11): Xiph-laced blocks of 7 frames, no DefaultDuration.
+# Without an Opus parser (the TV's FFmpeg) only each block's first frame has a timestamp.
+ffmpeg -v error -i "$work/src/orig.mkv" -map 0:v -map 0:a:3 -c copy -write_crc32 0 "$work/src/opus_plain.mkv"
+python3 tests/mkv_lacear.py "$work/src/opus_plain.mkv" "$work/src/opus_laced.mkv" A_OPUS 7
 for t in ts fmp4; do
   d=tb; [ $t = fmp4 ] && d=tb4
   ffmpeg -v error -i "$work/src/orig.mkv" -map 0:v -map 0:a:0 -c:v libx264 -preset ultrafast \
@@ -60,9 +64,9 @@ codec() { ffprobe -v error -select_streams a -show_entries stream=codec_name,cha
 "$work/t" puros "$work/src/tb/s0.ts" "$work/src/tb4/init.mp4" "$work/src/tb4/s0.m4s" "$work/out/strip.ts" || fail=1
 check "TS strip: ffprobe sees the video only" "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/strip.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ]"
 
-sessao() {   # <playlist path> <modo> <ordinal> <conv: 1 FLAC, 2 Opus>
+sessao() {   # <playlist path> <modo> <ordinal> <conv: 1 FLAC, 2 Opus> [original file, default orig.mkv]
   rm -f "$work/url"
-  "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/orig.mkv" "$2" "$3" "$4" "$work/url" > "$work/s.log" 2>&1 &
+  "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/${5:-orig.mkv}" "$2" "$3" "$4" "$work/url" > "$work/s.log" 2>&1 &
   sp=$!; pids+=($sp)
   for _ in $(seq 50); do [ -s "$work/url" ] && break; sleep 0.1; done
   U=$(cat "$work/url"); B=${U%/*}
@@ -140,6 +144,18 @@ sessao tb/playlist.m3u8 0 3 2
 curl -s -o "$work/out/o.ts" "$B/a3_3.ts"
 check "Opus converted: AAC 2.0 in MPEG-TS ($(codec "$work/out/o.ts"))" "[ '$(codec "$work/out/o.ts")' = 'aac,2' ] && perto $(inicio "$work/out/o.ts" a) $(awk "BEGIN{print 6+$(inicio "$work/src/tb/s0.ts" v)}") 0.1"
 check "Opus converted: the session says so" "grep -q 'Opus converted (AAC 2.0 / AC3 5.1)' '$work/s.log'"
+fim
+
+
+# 3b. Laced Opus without timestamps on every frame: all frames reach the segment.
+sessao tb/playlist.m3u8 0 0 0 opus_laced.mkv
+curl -s -o "$work/out/li.mp4" "$B/a0_init.mp4"; curl -s -o "$work/out/l5.m4s" "$B/a0_5.m4s"
+cat "$work/out/li.mp4" "$work/out/l5.m4s" > "$work/out/laced.mp4"
+lp=$(ffprobe -v error -select_streams a -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$work/out/laced.mp4" 2>/dev/null || echo 0)
+ld=$(ffprobe -v error -select_streams a -show_entries packet=pts_time -of csv=p=0 "$work/out/laced.mp4" 2>/dev/null | awk 'NR==1{a=$1} {z=$1} END{printf "%.3f", z-a+0.02}')
+check "laced Opus: 100 packets in a 2 s segment ($lp), 2.0 s of audio ($ld)" "[ '$lp' -ge 99 ] && [ '$lp' -le 101 ] && perto '$ld' 2.0 0.03"
+check "laced Opus: the segment starts with TorBox's video ($(inicio "$work/out/laced.mp4" a))" "perto $(inicio "$work/out/laced.mp4" a) $v2 0.1"
+check "laced Opus: every packet 20 ms in the log" "grep -q 'Opus audio 0 seg 5: 100 packets, durations 20.0-20.0 ms, ' '$work/s.log'"
 fim
 
 
