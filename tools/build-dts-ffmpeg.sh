@@ -13,7 +13,9 @@ TMPDIR="${TMPDIR%/}"
 #                   decoders, mpegts/matroska/mp4 muxers, mlp/ac3 parsers, truehd_core.
 #                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c): the FLAC
 #                   decoder (FLAC conversion, kept without a menu row) and the adts muxer
-#                   (the MPEG-TS muxer wraps copied AAC with it). No mpegts demuxer:
+#                   (the MPEG-TS muxer wraps copied AAC with it). The Opus decoder
+#                   (FFmpeg's own, LGPL, no libopus): Opus goes as is in fMP4, and
+#                   when the TV refuses that it converts to AAC 2.0 / AC3 5.1. No mpegts demuxer:
 #                   TorBox's segments are stripped by hand (tba_ts_sem_audio), never demuxed.
 set -eu
 VERSION=7.1.5
@@ -30,7 +32,7 @@ mkdir -p "$BUILD" "$PREFIX"
 if [ "$TARGET" = tpk ]; then
   SRC=${NUVIO_DTS_SRC:?tools/tpk.sh passes the extracted ffmpeg-$VERSION source}
   CC=${CC:-gcc}
-  DECODERS=$DECODERS,truehd,mlp,flac
+  DECODERS=$DECODERS,truehd,mlp,flac,opus
   MUXERS=mpegts,matroska,mp4,adts
   PARSERS=$PARSERS,mlp,ac3
   BSFS=$BSFS,truehd_core

@@ -391,6 +391,7 @@ int tba_ts_sem_audio(const unsigned char *in, size_t n, unsigned char *out, size
 #define SK_IPS 24
 static pthread_mutex_t skTrava = PTHREAD_MUTEX_INITIALIZER;
 static unsigned skIp[SK_IPS];
+static int skIpUrl[SK_IPS];          // which watched URL (0-3) the address came from
 static int skN = -1;
 static char *skUrl[4];
 static void skHost(const char *u, char *h, size_t n) {
@@ -404,6 +405,7 @@ static void skHost(const char *u, char *h, size_t n) {
 }
 static void *skResolver(void *u) {
   unsigned ip[SK_IPS];
+  int ipUrl[SK_IPS];
   char hosts[4][256];
   int n = 0, i, j;
   (void)u;
@@ -420,12 +422,12 @@ static void *skResolver(void *u) {
     for (a = r; a && n < SK_IPS; a = a->ai_next) {
       unsigned v = ((struct sockaddr_in *)a->ai_addr)->sin_addr.s_addr;
       for (j = 0; j < n; j++) if (ip[j] == v) break;
-      if (j == n) ip[n++] = v;
+      if (j == n) { ipUrl[n] = i; ip[n++] = v; }
     }
     freeaddrinfo(r);
   }
   pthread_mutex_lock(&skTrava);
-  memcpy(skIp, ip, sizeof ip); skN = n;
+  memcpy(skIp, ip, sizeof ip); memcpy(skIpUrl, ipUrl, sizeof ipUrl); skN = n;
   pthread_mutex_unlock(&skTrava);
   printf("[tbaudio] sockets: watching %d address(es) of TorBox's hosts\n", n);
   fflush(stdout);
@@ -459,7 +461,8 @@ static int skMeus(unsigned long *v, int max) {
   closedir(d);
   return n;
 }
-static int skArquivo(const char *nome, const unsigned *ip, int nIp, const unsigned long *meus, int nMeus, int *eu) {
+static int skArquivo(const char *nome, const unsigned *ip, const int *ipUrl, int nIp, const unsigned long *meus, int nMeus,
+                     int *eu, int *por) {
   FILE *f = fopen(nome, "r");
   char l[512];
   int tot = 0;
@@ -482,23 +485,27 @@ static int skArquivo(const char *nome, const unsigned *ip, int nIp, const unsign
     for (i = 0; i < nIp; i++) if (ip[i] == v) { ok = 1; break; }
     if (!ok) continue;
     tot++;
-    for (i = 0; i < nMeus; i++) if (meus[i] == ino) { (*eu)++; break; }
+    { int u = ipUrl[i], k;
+      for (k = 0; k < nMeus; k++) if (meus[k] == ino) { (*eu)++; if (por && u >= 0 && u < 4) por[u]++; break; } }
   }
   fclose(f);
   return tot;
 }
-int tba_sockets_contar(int *nuvio) {
+int tba_sockets_contar(int *nuvio) { return tba_sockets_contar_por(nuvio, NULL); }
+int tba_sockets_contar_por(int *nuvio, int por[4]) {
   unsigned ip[SK_IPS];
+  int ipUrl[SK_IPS];
   unsigned long meus[256];
   int n, nm, a, b, eu = 0;
   if (nuvio) *nuvio = -1;
+  if (por) memset(por, 0, 4 * sizeof *por);
   pthread_mutex_lock(&skTrava);
-  n = skN; if (n > 0) memcpy(ip, skIp, sizeof ip);
+  n = skN; if (n > 0) { memcpy(ip, skIp, sizeof ip); memcpy(ipUrl, skIpUrl, sizeof ipUrl); }
   pthread_mutex_unlock(&skTrava);
   if (n <= 0) return -1;
   nm = skMeus(meus, 256);
-  a = skArquivo("/proc/net/tcp", ip, n, meus, nm > 0 ? nm : 0, &eu);
-  b = skArquivo("/proc/net/tcp6", ip, n, meus, nm > 0 ? nm : 0, &eu);
+  a = skArquivo("/proc/net/tcp", ip, ipUrl, n, meus, nm > 0 ? nm : 0, &eu, por);
+  b = skArquivo("/proc/net/tcp6", ip, ipUrl, n, meus, nm > 0 ? nm : 0, &eu, por);
   if (a < 0 && b < 0) return -1;
   if (nuvio) *nuvio = nm >= 0 ? eu : -1;
   return (a > 0 ? a : 0) + (b > 0 ? b : 0);
@@ -506,6 +513,7 @@ int tba_sockets_contar(int *nuvio) {
 #else
 void tba_sockets_vigiar(const char *u1, const char *u2, const char *u3, const char *u4) { (void)u1; (void)u2; (void)u3; (void)u4; }
 int tba_sockets_contar(int *nuvio) { if (nuvio) *nuvio = -1; return -1; }
+int tba_sockets_contar_por(int *nuvio, int por[4]) { if (nuvio) *nuvio = -1; if (por) memset(por, 0, 4 * sizeof *por); return -1; }
 #endif
 
 // ---- the server (Samsung .tpk with FFmpeg, and the host test) ---------------
@@ -527,6 +535,7 @@ void tba_definir_flac(int c) { (void)c; }
 int  tba_flac_converter(void) { return 0; }
 int  tba_tem_flac(void) { return 0; }
 int  tba_audio_e_flac(void) { return 0; }
+int  tba_opus_inalterado(void) { return 0; }
 void tba_log(void) {}
 #else
 
@@ -581,7 +590,8 @@ typedef struct Sessao {
   volatile int cancel;
   pthread_mutex_t m;                   // state below
   pthread_cond_t c;
-  int pronto, falhou, modo, flacConv, audio;   // audio: index in fx[]
+  int pronto, falhou, modo, flacConv, opusConv, audio;   // audio: index in fx[]
+  int opusLog;                         // Opus packet lines logged (first segments only)
   unsigned tbrGer;                     // the burned stream this session serves (tbrelogio.h)
   char motivo[160], tok[40];
   char *tbUrl, *orig, *cab;
@@ -744,10 +754,16 @@ static const char *nomeLingua(const char *l) {
   for (i = 0; i < sizeof T / sizeof T[0]; i++) if (!strcasecmp(l, T[i].c)) return T[i].n;
   return l[0] ? l : "Audio";
 }
-static int modoDe(const Faixa *f, int flacConv) {
+// Opus (owner 16/11): copied into MPEG-TS the TV player never started (two
+// Opus files, both stuck before the first frame). It goes as is in fMP4, like
+// FLAC; `opusConv` (the retry after a refusal) converts it to AAC / AC3.
+static int modoDe(const Faixa *f, int flacConv, int opusConv) {
   int ok = avcodec_find_decoder(f->id) != NULL;
   switch (f->id) {
-    case AV_CODEC_ID_AAC: case AV_CODEC_ID_AC3: case AV_CODEC_ID_EAC3: case AV_CODEC_ID_OPUS:
+    case AV_CODEC_ID_OPUS:
+      if (!opusConv || !ok) return M_MP4;
+      return f->canais > 2 ? M_AC3 : M_AAC;
+    case AV_CODEC_ID_AAC: case AV_CODEC_ID_AC3: case AV_CODEC_ID_EAC3:
     case AV_CODEC_ID_MP3: case AV_CODEC_ID_MP2: return M_TS;
     case AV_CODEC_ID_FLAC:
       if (!flacConv) return M_MP4;
@@ -759,7 +775,7 @@ static int modoDe(const Faixa *f, int flacConv) {
 }
 static void modosRecalcular(Sessao *s) {
   int i;
-  for (i = 0; i < s->nfx; i++) s->fx[i].modo = modoDe(&s->fx[i], s->flacConv);
+  for (i = 0; i < s->nfx; i++) s->fx[i].modo = modoDe(&s->fx[i], s->flacConv, s->opusConv);
 }
 
 static int prepTorbox(Sessao *s) {
@@ -1201,6 +1217,10 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en,
   AVRational tb, srcTb;
   Mux m;
   int mp4 = f->modo == M_MP4, saltou = 0, nPk = 0, rr = 0, ab = 0;
+  // Opus diagnostic (owner 16/11: 13-15 packets per 2 s where 20 ms frames
+  // give 100): durations, sizes and the first packet's TOC, first segments only.
+  int opusDiag = 0, toc = -1, tocN = 0, opSemDur = 0;   // set once positioned (a converter may still be open before)
+  double opDurMin = 1e9, opDurMax = 0; int opTamMin = 1 << 30, opTamMax = 0;
   const char *como = "";
   double t0 = agoraMs(), fs, fe, pri = -1, tl;
   if (!par) { snprintf(err, en, "out of memory"); return -1; }
@@ -1217,6 +1237,7 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en,
     return r->b ? 0 : -1;
   }
   if (posicionar(s, fi, seg, s->aIni, AUD_SEG_S, &saltou, &como, err, en) < 0) { avcodec_parameters_free(&par); return -1; }
+  opusDiag = f->id == AV_CODEC_ID_OPUS && !s->dec && s->opusLog < 3;
   parametrosSaida(s, f, par, &tb);
   srcTb = s->dec ? (AVRational){1, 48000} : s->ic->streams[f->si]->time_base;
   if (muxAbrir(&m, mp4 ? "mp4" : "mpegts", NULL, (AVRational){0, 1}, par, tb, f->lingua) < 0) {
@@ -1234,6 +1255,13 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en,
     s->fIni = (s->fIni + 1) % FILA_MAX; s->fN--;
     if (saltou && it.t < fs - 0.001) { av_packet_free(&it.p); continue; }
     if (pri < 0) pri = it.t;
+    if (opusDiag) {
+      double d = it.p->duration > 0 ? it.p->duration * av_q2d(srcTb) * 1000.0 : -1;
+      if (d < 0) opSemDur++; else { if (d < opDurMin) opDurMin = d; if (d > opDurMax) opDurMax = d; }
+      if (it.p->size < opTamMin) opTamMin = it.p->size;
+      if (it.p->size > opTamMax) opTamMax = it.p->size;
+      if (toc < 0 && it.p->size > 0) { toc = it.p->data[0]; tocN = it.p->size > 1 ? it.p->data[1] : 0; }
+    }
     if (escreverAudio(s, &m, 0, it.p, srcTb, 0) < 0) { av_packet_free(&it.p); snprintf(err, en, "mux write"); rr = -1; break; }
     av_packet_free(&it.p);
     nPk++;
@@ -1256,6 +1284,18 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en,
   s->nSeg++; s->bytes += (long long)r->n; s->msLer += tl - t0;
   printf("[tbaudio] audio %d seg %d (%.1f-%.1f s): %d packets, %zu KB, %.0f ms, %s; first audio at %.3f s\n",
          f->ord, seg, s->aIni[seg], s->aIni[seg + 1], nPk, r->n / 1024, tl - t0, como, pri >= 0 ? pri - s->origV0 : -1.0);
+  if (opusDiag && nPk > 0) {
+    // TOC: config (frame length), code 0 = 1 frame, 1/2 = 2 frames, 3 = N frames (byte 2).
+    static const double DUR[32] = { 10, 20, 40, 60, 10, 20, 40, 60, 10, 20, 40, 60, 10, 20, 10, 20,
+                                    2.5, 5, 10, 20, 2.5, 5, 10, 20, 2.5, 5, 10, 20, 2.5, 5, 10, 20 };
+    int cfg = toc >> 3, code = toc & 3, quadros = code == 0 ? 1 : code < 3 ? 2 : (tocN & 0x3f);
+    s->opusLog++;
+    printf("[tbaudio] Opus audio %d seg %d: %d packets, durations %s%.1f-%.1f ms%s, sizes %d-%d bytes | first packet TOC: "
+           "config %d (%.1f ms frames), code %d, %d frame(s) = %.1f ms | extradata %d bytes, %d ch\n",
+           f->ord, seg, nPk, opDurMax > 0 ? "" : "none, ", opDurMax > 0 ? opDurMin : 0.0, opDurMax, opSemDur ? " (some unset)" : "",
+           opTamMin, opTamMax, cfg, DUR[cfg & 31], code, quadros, DUR[cfg & 31] * quadros,
+           s->ic->streams[f->si]->codecpar->extradata_size, f->canais);
+  }
   fflush(stdout);
   return 0;
 }
@@ -1348,7 +1388,7 @@ static __attribute__((unused)) const char *codecsAudio(const Faixa *f) {
   switch (f->modo) {
     case M_AC3: return "ac-3";
     case M_AAC: return "mp4a.40.2";
-    case M_MP4: return "fLaC";
+    case M_MP4: return f->id == AV_CODEC_ID_OPUS ? "Opus" : "fLaC";
     default:
       return f->id == AV_CODEC_ID_AC3 ? "ac-3" : f->id == AV_CODEC_ID_EAC3 ? "ec-3" : f->id == AV_CODEC_ID_OPUS ? "Opus" :
              f->id == AV_CODEC_ID_MP3 ? "mp4a.40.34" : f->id == AV_CODEC_ID_MP2 ? "mp4a.40.33" : "mp4a.40.2";
@@ -1563,7 +1603,7 @@ static int subirServidor(void) {
 // ---- API ----------------------------------------------------------------------------
 int tba_disponivel(void) { return avcodec_find_encoder(AV_CODEC_ID_AC3) != NULL; }
 
-int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal, int modo, int flacConv,
+int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal, int modo, int conv,
               char *out, size_t n) {
   Sessao *s;
   pthread_t t;
@@ -1580,7 +1620,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   pthread_mutex_init(&s->m, NULL); pthread_cond_init(&s->c, NULL); pthread_mutex_init(&s->gm, NULL);
   pthread_mutex_init(&s->vm, NULL);
   atomic_store(&s->espChave, -1L);
-  s->modo = modo; s->flacConv = flacConv ? 1 : 0;
+  s->modo = modo; s->flacConv = (conv & TBA_CONV_FLAC) ? 1 : 0; s->opusConv = (conv & TBA_CONV_OPUS) ? 1 : 0;
   s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1;
   s->tbrGer = tbr_geracao();
   s->tbUrl = strdup(tbUrl); s->orig = strdup(orig); s->cab = strdup(cab ? cab : "");
@@ -1592,8 +1632,9 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   if (pthread_create(&t, NULL, preparar, s) != 0) { atomic_fetch_sub(&s->refs, 1); falhar(s, "no thread"); }
   else pthread_detach(t);
   snprintf(out, n, "http://127.0.0.1:%d/%s/master.m3u8", porta, s->tok);
-  printf("[tbaudio] session open: %s, audio %d, FLAC %s; the player opens http://127.0.0.1:%d/<token>/master.m3u8\n",
-         modoNome(s->modo), ordinal, s->flacConv ? "converted" : "as is", porta);
+  printf("[tbaudio] session open: %s, audio %d, FLAC %s, Opus %s; the player opens http://127.0.0.1:%d/<token>/master.m3u8\n",
+         modoNome(s->modo), ordinal, s->flacConv ? "converted" : "as is (fMP4)",
+         s->opusConv ? "converted (AAC 2.0 / AC3 5.1)" : "as is (fMP4)", porta);
   fflush(stdout);
   return 1;
 }
@@ -1673,6 +1714,13 @@ int tba_tem_flac(void) {
   Sessao *s = pegar();
   int v = 0, i;
   if (s && s->pronto) for (i = 0; i < s->nfx; i++) if (s->fx[i].id == AV_CODEC_ID_FLAC) v = 1;
+  soltar(s);
+  return v;
+}
+int tba_opus_inalterado(void) {
+  Sessao *s = pegar();
+  int v = 0, i;
+  if (s && s->pronto) for (i = 0; i < s->nfx; i++) if (s->fx[i].id == AV_CODEC_ID_OPUS && s->fx[i].modo == M_MP4) v = 1;
   soltar(s);
   return v;
 }

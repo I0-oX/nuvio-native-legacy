@@ -53,6 +53,8 @@ __attribute__((weak)) int  tba_audio_e_flac(void) { return 0; }
 __attribute__((weak)) void tba_log(void) {}
 __attribute__((weak)) void tba_sockets_vigiar(const char *a, const char *b, const char *c, const char *d) { (void)a; (void)b; (void)c; (void)d; }
 __attribute__((weak)) int  tba_sockets_contar(int *n) { if (n) *n = -1; return -1; }
+__attribute__((weak)) int  tba_sockets_contar_por(int *n, int p[4]) { if (n) *n = -1; if (p) p[0] = p[1] = p[2] = p[3] = 0; return -1; }
+__attribute__((weak)) int  tba_opus_inalterado(void) { return 0; }
 // The burn-in subtitle clock (tbrelogio.h) and its head reader in video_tpk.c
 // (tbcFio: TorBox's playlist + segment heads): never active here.
 #include "tbrelogio.h"

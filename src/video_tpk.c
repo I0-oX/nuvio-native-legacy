@@ -199,6 +199,11 @@ static struct {
   int tba, hostA;
   char urlTb[4096];
   Uint32 retentouEm;            // B (owner 14/11): one retry of Nuvio's stream, at most once a minute
+  // Opus (owner 16/11): the retry after the TV refuses Opus as is converts it
+  // (TBA_CONV_OPUS) for this file. esperaDesde: when the player was handed a
+  // burned stream that has not prepared yet (0 = prepared / nothing pending).
+  int opusConv;
+  Uint32 esperaDesde;
 } tb;
 static volatile int mkvN, mkvEstado, faixasNovas;
 // The file's own length (MKV Segment > Info > Duration), 0 = unknown. TorBox's
@@ -1158,7 +1163,11 @@ static void tbcBombear(void) {
 // converter in this build); TorBox audio = TorBox's URL as it is.
 static void tbUrlPlayer(const char *m) {
   char loc[256];
-  int modo = ajustes_tb_audio_modo();
+  int modo = ajustes_tb_audio_modo(), aud, sess = tb.tba ? tba_audio() : -1;
+  // The audio track: the session's (a retry keeps what was playing), else the
+  // player's list, else what TorBox was asked for. The list is empty right
+  // after a reopen (mkvfix, 16/11: English was asked for, Japanese served).
+  aud = sess >= 0 ? sess : nAudio > 0 ? tbIdxAudio() : tb.audio;
   tbr_comecar();   // before tba_abrir: the session feeds this generation
   snprintf(tb.urlTb, sizeof tb.urlTb, "%s", m);
   if (tb.tba) { tba_fechar(); tb.tba = 0; }
@@ -1171,8 +1180,10 @@ static void tbUrlPlayer(const char *m) {
     memset(&cv, 0, sizeof cv); cv.buscarMs = -1;
   }
   tba_sockets_vigiar(m, urlAtual, NULL, NULL);
+  tb.esperaDesde = SDL_GetTicks();
   if (modo != TBA_TORBOX && tba_disponivel() &&
-      tba_abrir(m, urlAtual, cabecalhos, tbIdxAudio(), modo, tba_flac_converter(), loc, sizeof loc)) {
+      tba_abrir(m, urlAtual, cabecalhos, aud, modo, (tba_flac_converter() ? TBA_CONV_FLAC : 0) | (tb.opusConv ? TBA_CONV_OPUS : 0),
+                loc, sizeof loc)) {
     tb.tba = 1;
     snprintf(tb.url, sizeof tb.url, "%s", loc);
     printf("[tbburn] original audio: Nuvio serves the player (%s)\n", TBA_NOME[modo]);
@@ -1256,12 +1267,12 @@ static void tbBombear(void) {
     fflush(stdout);
   }
   if (tb.ativo && SDL_GetTicks() - tb.logEm >= 10000u) {
-    int pico = 0, agora = rede_torbox_em_voo(&pico), meus = -1, socks = tba_sockets_contar(&meus);
-    char so[96];
+    int pico = 0, agora = rede_torbox_em_voo(&pico), meus = -1, por[4], socks = tba_sockets_contar_por(&meus, por);
+    char so[160];
     tb.logEm = SDL_GetTicks();
     if (socks < 0) snprintf(so, sizeof so, "open sockets: unreadable");
-    else snprintf(so, sizeof so, "open sockets to TorBox %d (Nuvio %d, TV player/others %d)", socks, meus,
-                  meus >= 0 ? socks - meus : -1);
+    else snprintf(so, sizeof so, "open sockets to TorBox %d (Nuvio %d: TorBox stream host %d, file host %d; TV player/others %d)",
+                  socks, meus, por[0], por[1], meus >= 0 ? socks - meus : -1);
     printf("[tbburn] 10s: playing %s at %.1f s | Nuvio's requests to TorBox in flight now %d, most %d | %s | "
            "subtitle reader cap %d%s\n", tb.tba ? "Nuvio's stream (TorBox picture + original audio)" : "TorBox's stream",
            video_pos(), agora, pico, so, legref_em_rede() > 0 ? 1 : 2, legref_em_rede() > 0 ? " (sync reading)" : "");
@@ -2332,6 +2343,17 @@ void video_bombear(void) {
       nv_recon_expirou(&recon, SDL_GetTicks())) {
     reconErroCod = NV_RECON_TPK_CONNECTION_FAILED; reconErroPend = 1;
   }
+  // A burned stream the TV player never prepares and never reports an error
+  // for (Opus, 16/11: stuck at 0.3 s for minutes after the retry): after 30 s
+  // it counts as a player error, so the retry / the original file follow.
+  if (tb.ativo && pronto) tb.esperaDesde = 0;
+  if (tb.ativo && tb.esperaDesde && !pronto && !parado && !reconErroPend && SDL_GetTicks() - tb.esperaDesde > 30000u) {
+    printf("[tbburn] %s did not start in 30 s (no error from the TV player): treated as a player error\n",
+           tb.tba ? "Nuvio's Passthrough stream" : "TorBox's burned stream");
+    fflush(stdout);
+    tb.esperaDesde = 0;
+    reconErroCod = NV_RECON_TPK_CONNECTION_FAILED; reconErroPend = 1;
+  }
   if (reconErroPend && tb.ativo && !parado) {
     char mt[160] = "";
     if (tb.tba && tba_falhou(mt, sizeof mt)) { printf("[tbaudio] Nuvio's stream could not start: %s\n", mt); }
@@ -2347,7 +2369,10 @@ void video_bombear(void) {
       double pos = video_pos();
       tb.retentouEm = SDL_GetTicks();
       snprintf(m, sizeof m, "%s", tb.urlTb);
-      printf("[tbaudio] retrying Nuvio's stream once at %.1f s (%s)\n", pos, TBA_NOME[ajustes_tb_audio_modo()]);
+      // Opus as is refused: the retry converts it (AAC 2.0 / AC3 5.1) instead of the same try again.
+      if (!tb.opusConv && tba_opus_inalterado()) tb.opusConv = 1;
+      printf("[tbaudio] retrying Nuvio's stream once at %.1f s (%s%s)\n", pos, TBA_NOME[ajustes_tb_audio_modo()],
+             tb.opusConv ? ", Opus converted to AAC 2.0 / AC3 5.1" : "");
       fflush(stdout);
       tbUrlPlayer(m);
       tbReabrir(pos);

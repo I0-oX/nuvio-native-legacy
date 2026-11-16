@@ -10,10 +10,12 @@
  *     whenever it was still in the video (14/11), so it has to go.
  *   TORBOX AUDIO: no session; TorBox's stream (its transcoded audio) as is.
  *
- * Audio by codec: AAC / AC3 / E-AC3 / Opus / MP3 copied into MPEG-TS; DTS,
- * TrueHD/MLP converted to AC3 (5.1 640 kb/s, 2.0 192 kb/s); FLAC copied as is
- * into fragmented-MP4 segments (MPEG-TS has no FLAC; the S95C plays it). The
- * FLAC conversion stays in the code (tba_definir_flac) with no menu row.
+ * Audio by codec: AAC / AC3 / E-AC3 / MP3 copied into MPEG-TS; DTS,
+ * TrueHD/MLP converted to AC3 (5.1 640 kb/s, 2.0 192 kb/s); FLAC and Opus
+ * copied as is into fragmented-MP4 segments (MPEG-TS has no FLAC; Opus in
+ * MPEG-TS never started on the S95C, owner 16/11). TBA_CONV_OPUS converts Opus
+ * to AAC 2.0 / AC3 5.1 (the retry after the TV refuses Opus). The FLAC
+ * conversion stays in the code (tba_definir_flac) with no menu row.
  *
  * Connections: the original file 1 + one TorBox segment download at a time.
  * Audio generation is serialized; a segment the player hung up on, or left
@@ -35,8 +37,9 @@ int  tba_disponivel(void);
  * audio_ordinal: the file's audio track (0-based among audio tracks, container
  * order). Writes the URL the TV player opens. 0 = cannot (no FFmpeg, no
  * server); the caller then plays TorBox's URL as before. */
+enum { TBA_CONV_FLAC = 1, TBA_CONV_OPUS = 2 };   /* tba_abrir `conv` bits */
 int  tba_abrir(const char *tb_m3u8, const char *orig, const char *cab, int audio_ordinal,
-               int modo, int flac_converter, char *out, size_t n);
+               int modo, int conv, char *out, size_t n);
 void tba_fechar(void);
 int  tba_ativo(void);
 int  tba_modo(void);
@@ -57,6 +60,8 @@ void tba_definir_flac(int converter);
 int  tba_flac_converter(void);
 /* 1 = the file has a FLAC audio track. */
 int  tba_tem_flac(void);
+/* 1 = the session offers an Opus track as is (fMP4): the retry converts it. */
+int  tba_opus_inalterado(void);
 /* 1 = the track the session plays is FLAC. */
 int  tba_audio_e_flac(void);
 /* A summary line for the 10 s log (counts, timings). */
@@ -68,6 +73,10 @@ void tba_log(void);
  * process's own (by inode in /proc/self/fd). -1 = unreadable / not resolved. */
 void tba_sockets_vigiar(const char *u1, const char *u2, const char *u3, const char *u4);
 int  tba_sockets_contar(int *nuvio);
+/* The same, with this process's sockets split by watched URL (por[0..3], the
+ * order given to tba_sockets_vigiar; an address shared by two hosts counts for
+ * the first). */
+int  tba_sockets_contar_por(int *nuvio, int por[4]);
 
 /* ---- pure (tests/tbaudio.sh) ---------------------------------------------- */
 /* `rel` against `base` (http(s) URL): absolute, root-relative, relative. */

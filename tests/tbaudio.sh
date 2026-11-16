@@ -60,7 +60,7 @@ codec() { ffprobe -v error -select_streams a -show_entries stream=codec_name,cha
 "$work/t" puros "$work/src/tb/s0.ts" "$work/src/tb4/init.mp4" "$work/src/tb4/s0.m4s" "$work/out/strip.ts" || fail=1
 check "TS strip: ffprobe sees the video only" "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/strip.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ]"
 
-sessao() {   # <playlist path> <modo> <ordinal> <flac>
+sessao() {   # <playlist path> <modo> <ordinal> <conv: 1 FLAC, 2 Opus>
   rm -f "$work/url"
   "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/orig.mkv" "$2" "$3" "$4" "$work/url" > "$work/s.log" 2>&1 &
   sp=$!; pids+=($sp)
@@ -91,13 +91,17 @@ check "master: points at Nuvio's video playlist, no CODECS" "grep -q '^vs.m3u8' 
 curl -s "$B/a0.m3u8" > "$work/out/a0.m3u8"
 check "audio playlist: 2 s segments (16 for 32 s)" "grep -q '^#EXT-X-TARGETDURATION:2' '$work/out/a0.m3u8' && [ \$(grep -c '^a0_' '$work/out/a0.m3u8') = 16 ]"
 check "seek index read at preparation, seeks through the video (stream 0)" "grep -qE 'seek index read in [0-9]+ ms: seeks go through stream 0 \\([1-9][0-9]* entries\\)' '$work/s.log'"
-for k in 0 1 3 4; do curl -s -o "$work/out/a${k}_2.ts" "$B/a${k}_5.ts"; done
+for k in 0 1 4; do curl -s -o "$work/out/a${k}_2.ts" "$B/a${k}_5.ts"; done
+curl -s -o "$work/out/a3i.mp4" "$B/a3_init.mp4"; curl -s -o "$work/out/a3_2.m4s" "$B/a3_5.m4s"
+cat "$work/out/a3i.mp4" "$work/out/a3_2.m4s" > "$work/out/opus.mp4"
 curl -s -o "$work/out/a2i.mp4" "$B/a2_init.mp4"; curl -s -o "$work/out/a2_2.m4s" "$B/a2_5.m4s"
 cat "$work/out/a2i.mp4" "$work/out/a2_2.m4s" > "$work/out/flac.mp4"
 v2=$(inicio "$work/src/tb/s2.ts" v)
 check "AAC copied, starts with TorBox's video segment ($(inicio "$work/out/a0_2.ts" a) vs $v2)" "[ '$(codec "$work/out/a0_2.ts")' = 'aac,2' ] && perto $(inicio "$work/out/a0_2.ts" a) $v2 0.05"
 check "AC3 5.1 copied ($(codec "$work/out/a1_2.ts"))" "[ '$(codec "$work/out/a1_2.ts")' = 'ac3,6' ] && perto $(inicio "$work/out/a1_2.ts" a) $v2 0.05"
-check "Opus copied ($(codec "$work/out/a3_2.ts"))" "[ '$(codec "$work/out/a3_2.ts")' = 'opus,2' ] && perto $(inicio "$work/out/a3_2.ts" a) $v2 0.05"
+check "Opus as is in fMP4 (init + segment: $(codec "$work/out/opus.mp4"))" "[ '$(codec "$work/out/opus.mp4")' = 'opus,2' ] && perto $(inicio "$work/out/opus.mp4" a) $v2 0.1"
+check "Opus rendition is fMP4 in its playlist" "curl -s '$B/a3.m3u8' | grep -q '^#EXT-X-MAP:URI=\"a3_init.mp4\"' && curl -s '$B/a3.m3u8' | grep -q '^a3_0.m4s'"
+check "Opus packet diagnostic logged" "grep -q 'Opus audio 3 seg 5: [0-9]* packets, durations 20.0-20.0 ms' '$work/s.log'"
 check "DTS converted to AC3 5.1 ($(codec "$work/out/a4_2.ts"))" "[ '$(codec "$work/out/a4_2.ts")' = 'ac3,6' ] && perto $(inicio "$work/out/a4_2.ts" a) $v2 0.05"
 check "FLAC as is in fMP4 (init + segment: $(codec "$work/out/flac.mp4"))" "[ '$(codec "$work/out/flac.mp4")' = 'flac,2' ] && perto $(inicio "$work/out/flac.mp4" a) $v2 0.1"
 curl -s -o "$work/out/back.ts" "$B/a0_1.ts"
@@ -128,6 +132,14 @@ fim
 sessao tb/playlist.m3u8 0 2 1
 curl -s -o "$work/out/f.ts" "$B/a2_3.ts"
 check "FLAC converted: AAC 2.0 in MPEG-TS ($(codec "$work/out/f.ts"))" "[ '$(codec "$work/out/f.ts")' = 'aac,2' ]"
+fim
+
+
+# 3. Opus converted (the retry after the TV refused Opus as is), Passthrough.
+sessao tb/playlist.m3u8 0 3 2
+curl -s -o "$work/out/o.ts" "$B/a3_3.ts"
+check "Opus converted: AAC 2.0 in MPEG-TS ($(codec "$work/out/o.ts"))" "[ '$(codec "$work/out/o.ts")' = 'aac,2' ] && perto $(inicio "$work/out/o.ts" a) $(awk "BEGIN{print 6+$(inicio "$work/src/tb/s0.ts" v)}") 0.1"
+check "Opus converted: the session says so" "grep -q 'Opus converted (AAC 2.0 / AC3 5.1)' '$work/s.log'"
 fim
 
 
