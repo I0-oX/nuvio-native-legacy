@@ -1,13 +1,8 @@
-// Atlas das legendas ASS e matriz YCbCr (16/11/2026). O src/assrender.c de
-// verdade (caminho novo do .tpk, NV_ASS_NOVO), libass do sistema e GL de
-// mentira com as texturas na memoria (tests/ass_atlas_gl.h):
-//  [1] um quadro com varias imagens sai num gfx_marca_lote so, sem gfx_rect;
-//  [2] o que o atlas guarda e IGUAL, imagem a imagem (posicao, tamanho, cor e
-//      cada pixel do alfa), ao que o caminho de uma textura por imagem subiria,
-//      e cada imagem tem a moldura de 1 px com a borda repetida;
+// Matriz YCbCr das legendas ASS e fonte entregue depois (16/11/2026). O
+// src/assrender.c de verdade (caminho novo do .tpk, NV_ASS_NOVO), libass do
+// sistema e GL de mentira com as texturas na memoria (tests/ass_matriz_gl.h).
+// Uma textura por imagem (o atlas saiu em 16/11/2026: mais lento na TV).
 //  [3] fala parada: nada sobe de novo;
-//  [4] atlas cheio: troca para o outro e continua num lote so;
-//  [5] imagem maior que o atlas: aquele quadro vai um a um (gfx_rect);
 //  [6] matriz: script TV.601 num video BT.709 converte como o mpv/JASSUB
 //      (vermelho puro -> G 0,0965); branco fica branco; "None", HDR e a cor
 //      escolhida pela pessoa nao mudam;
@@ -22,14 +17,11 @@
 #include <string.h>
 #include <unistd.h>
 
-void assrender_teste_sem_atlas(int sem);
-int assrender_teste_atlas_trocas(void);
-
 /* ---- GL de mentira ---- */
 typedef struct { int w, h; unsigned char *px; } Tex;
 static Tex texs[4096];
 static GLuint ligada, prox = 1;
-static int alinhamento = 4, maxTex = 2048;
+static int alinhamento = 4, maxTex = 2048;   // glGetIntegerv
 static long subidas;   // glTexImage2D com pixels + glTexSubImage2D
 void teste_glGenTextures(GLsizei n, GLuint *t) { int i; for (i = 0; i < n; i++) t[i] = prox++; }
 void teste_glDeleteTextures(GLsizei n, const GLuint *t) {
@@ -58,13 +50,11 @@ void teste_glTexSubImage2D(GLenum a, GLint b, GLint x, GLint y0, GLsizei w, GLsi
 /* ---- gfx de mentira: o que foi desenhado ---- */
 typedef struct { float x, y, w, h, r, g, b, a; int pw, ph; unsigned char *px; } Img;
 static Img cap[20000];
-static int nCap, nLotes, nRects;
-static GLuint ultimoAtlas;
+static int nCap, nRects;
 float gfx_tex_aspect_atual;
 void gfx_tex_esquecer(GLuint tex) { (void)tex; }
 int gfx_grupo_comecar(GfxGrupo *g, GfxRect caixa, float alpha) { (void)g; (void)caixa; (void)alpha; return 0; }
 void gfx_grupo_terminar(GfxGrupo *g, float alpha) { (void)g; (void)alpha; }
-static int bordaOk = 1;
 static void capturar(float x, float y, float w, float h, float r, float g, float b, float a,
                      const Tex *t, int tx, int ty, int pw, int ph) {
   Img *m = &cap[nCap++]; int j;
@@ -78,27 +68,10 @@ void gfx_rect(GfxRect r, GLuint tex, GfxModo modo, float foco, float parx, float
   nRects++;
   capturar(r.x, r.y, r.w, r.h, cr, cg, cb, ca, &texs[tex], 0, 0, texs[tex].w, texs[tex].h);
 }
-int gfx_marca_lote(GLuint tex, const GfxMarcaItem *it, int n) {
-  const Tex *t = &texs[tex]; int i;
-  nLotes++; ultimoAtlas = tex;
-  for (i = 0; i < n; i++) {
-    int x0 = (int)lroundf(it[i].u0 * t->w), y0 = (int)lroundf(it[i].v0 * t->h);
-    int x1 = (int)lroundf(it[i].u1 * t->w), y1 = (int)lroundf(it[i].v1 * t->h), k;
-    /* A moldura de 1 px repete a borda da imagem (o CLAMP_TO_EDGE). */
-#define PX(xx, yy) t->px[(size_t)(yy) * t->w + (xx)]
-    for (k = x0; k < x1; k++) if (PX(k, y0 - 1) != PX(k, y0) || PX(k, y1) != PX(k, y1 - 1)) bordaOk = 0;
-    for (k = y0 - 1; k <= y1; k++) if (PX(x0 - 1, k) != PX(x0, k < y0 ? y0 : k >= y1 ? y1 - 1 : k) ||
-                                       PX(x1, k) != PX(x1 - 1, k < y0 ? y0 : k >= y1 ? y1 - 1 : k)) bordaOk = 0;
-#undef PX
-    capturar(it[i].x, it[i].y, it[i].w, it[i].h, it[i].r, it[i].g, it[i].b, it[i].a, t, x0, y0, x1 - x0, y1 - y0);
-  }
-  return 1;
-}
-
 static int falhas;
 static void ok(int c, const char *o) { printf("%s %s\n", c ? "ok   " : "FALHA", o); if (!c) falhas++; }
 
-static void limpar_cap(void) { int i; for (i = 0; i < nCap; i++) free(cap[i].px); nCap = nLotes = nRects = 0; }
+static void limpar_cap(void) { int i; for (i = 0; i < nCap; i++) free(cap[i].px); nCap = nRects = 0; }
 
 /* Pausado no mesmo instante (sem render ahead) ate o worker entregar. */
 static int parado(double t) {
@@ -164,35 +137,15 @@ int main(void) {
   assrender_adicionar_fonte("InterDisplay-Regular.ttf", fonte, tf);
   assrender_definir_cor_video(1, 1, 0, 1080);   // BT.709, faixa TV, SDR
 
-  printf("[1] um quadro, um lote\n");
+  printf("[3] fala parada nao sobe de novo\n");
   carregar(CAB("YCbCr Matrix: TV.601\n") EVENTOS);
   n = parado(2.0);
-  printf("    %d imagens; %d lote(s), %d gfx_rect\n", n, nLotes, nRects);
-  ok(n > 3 && nLotes == 1 && nRects == 0 && nCap == n, "todas as imagens num gfx_marca_lote, nenhum gfx_rect");
-  ok(bordaOk, "cada imagem no atlas tem a moldura de 1 px (borda repetida)");
-
-  printf("[2] atlas == uma textura por imagem\n");
-  { static Img a[20000]; int na = nCap, iguais = 1;
-    memcpy(a, cap, sizeof(Img) * (size_t)na); nCap = 0;   // fica com os pixels
-    assrender_teste_sem_atlas(1);
-    for (i = 0; i < 3; i++) { limpar_cap(); assrender_desenhar(2.0, 0, 1.0f, 0, 0, 1920, 1080); }
-    printf("    caminho antigo: %d gfx_rect, %d lote(s)\n", nRects, nLotes);
-    ok(nRects == na && nLotes == 0, "o mesmo quadro sem atlas: uma imagem por gfx_rect");
-    qsort(a, (size_t)na, sizeof(Img), cmp_img); qsort(cap, (size_t)nCap, sizeof(Img), cmp_img);
-    for (i = 0; i < na && i < nCap; i++)
-      if (cmp_img(&a[i], &cap[i]) || fabsf(a[i].w - cap[i].w) > 1e-4f || fabsf(a[i].h - cap[i].h) > 1e-4f ||
-          fabsf(a[i].r - cap[i].r) > 1e-6f || fabsf(a[i].g - cap[i].g) > 1e-6f ||
-          fabsf(a[i].b - cap[i].b) > 1e-6f || fabsf(a[i].a - cap[i].a) > 1e-6f) iguais = 0;
-    ok(iguais && na == nCap, "posicao, tamanho, cor e cada pixel iguais nos dois caminhos");
-    for (i = 0; i < na; i++) free(a[i].px);
-    assrender_teste_sem_atlas(0); }
-
-  printf("[3] fala parada nao sobe de novo\n");
-  parado(2.0);
+  printf("    %d imagens, %d gfx_rect\n", n, nRects);
+  ok(n > 3 && nRects == n && nCap == n, "cada imagem num gfx_rect");
   { long s0 = subidas; int k;
     for (k = 0; k < 30; k++) { limpar_cap(); assrender_desenhar(2.0, 0, 1.0f, 0, 0, 1920, 1080); }
     printf("    30 quadros parados: %ld subidas\n", subidas - s0);
-    ok(subidas == s0 && nLotes == 1, "nenhuma subida, ainda um lote por quadro"); }
+    ok(subidas == s0 && nRects == n, "nenhuma subida, as mesmas imagens"); }
 
   printf("[6] matriz YCbCr\n");
   parado(2.0);
@@ -227,35 +180,7 @@ int main(void) {
     ok(achou, "a cor escolhida pela pessoa sai exata (sem conversao)"); }
   assrender_definir_cor(0, 0, 0, 0);
 
-  printf("[4] atlas cheio troca e continua num lote\n");
-  maxTex = 512;
-  { char doc[200000]; size_t o; int k, sempreLote = 1, quadros = 0, atlasVistos = 0; GLuint ant = 0;
-    o = (size_t)snprintf(doc, sizeof doc, "%s", CAB("YCbCr Matrix: TV.709\n"));
-    for (k = 0; k < 60; k++)
-      o += (size_t)snprintf(doc + o, sizeof doc - o,
-        "Dialogue: 0,0:00:%02d.%02d,0:00:%02d.%02d,Sign,,0,0,0,,{\\pos(100,100)}Quadro %d unico %d\n",
-        10 + k / 10, (k % 10) * 10, 10 + (k + 1) / 10, ((k + 1) % 10) * 10, k, k * 7919);
-    carregar(doc);
-    for (k = 0; k < 60; k++) {
-      n = parado(10.0 + k * 0.1 + 0.05);
-      if (n <= 0) continue;
-      quadros++;
-      if (nLotes != 1 || nRects) sempreLote = 0;
-      if (ultimoAtlas != ant) { atlasVistos++; ant = ultimoAtlas; }
-    }
-    printf("    %d quadros, %d trocas por cheio, atlas mudou %d vezes\n", quadros, assrender_teste_atlas_trocas(), atlasVistos);
-    ok(quadros >= 55 && sempreLote, "cada quadro num lote so, mesmo com o atlas enchendo");
-    ok(assrender_teste_atlas_trocas() >= 1 && atlasVistos >= 2 && bordaOk, "o atlas cheio trocou para o outro (moldura intacta)"); }
-
-  printf("[5] imagem maior que o atlas: um a um\n");
-  carregar(CAB("YCbCr Matrix: TV.709\n")
-    "Dialogue: 0,0:00:01.00,0:00:05.00,Sign,,0,0,0,,{\\pos(10,300)\\fs120}UMA PLACA MUITO MAIS LARGA QUE O ATLAS\n");
-  n = parado(2.0);
-  printf("    %d imagens: %d gfx_rect, %d lote(s)\n", n, nRects, nLotes);
-  ok(n > 0 && nRects == n && nLotes == 0, "o quadro que nao cabe vai por uma textura por imagem");
-
   printf("[7] fonte entregue com a faixa ja ativa\n");
-  maxTex = 2048;
   { size_t tr; char *rob = ler("deploy/app/fonts/Roboto-Regular.ttf", &tr);
     static Img tarde[64], cedo[64], inter[64]; int nt, nc, ni, iguais = 1, difInter = 0;
     const char *A = CAB("YCbCr Matrix: TV.709\n")
@@ -284,6 +209,6 @@ int main(void) {
     free(rob); }
 
   limpar_cap();
-  printf("\n%s (%d falha%s)\n", falhas ? "FALHOU" : "ass_atlas: ok", falhas, falhas == 1 ? "" : "s");
+  printf("\n%s (%d falha%s)\n", falhas ? "FALHOU" : "ass_matriz: ok", falhas, falhas == 1 ? "" : "s");
   return falhas ? 1 : 0;
 }

@@ -56,7 +56,6 @@ typedef struct {
 } Programa;
 static Programa progs[GFX_NMODOS];
 static int progAtual = -1;
-static GLuint gfxQuadVbo;   // o quad unico de todo gfx_rect (gfx_iniciar)
 // Proporcao da textura corrente, para o "cover". Fica global porque o desenho e
 // imediato: quem chama define antes de cada rect com textura.
 float gfx_tex_aspect_atual = 0.0f;
@@ -1873,7 +1872,6 @@ int gfx_iniciar(void) {
     static const GLfloat quad[] = { 0,0, 1,0, 0,1, 1,1 };
     GLuint vbo = 0;
     glGenBuffers(1, &vbo);
-    gfxQuadVbo = vbo;   // gfx_marca_lote liga o seu e devolve este
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
@@ -1894,13 +1892,11 @@ int gfx_iniciar(void) {
 }
 
 static GfxMini warmAlvo;
-static void loteEncerrar(void);
 static void desfEncerrar(void);
 static void iconesEncerrar(void);
 static void vidLiberar(void);
 void gfx_encerrar(void) {
   gfx_mini_liberar(&warmAlvo);
-  loteEncerrar();
   iconesEncerrar();
   desfEncerrar();
   vidLiberar();
@@ -5227,195 +5223,4 @@ void gfx_mini_liberar(GfxMini *m) {
   if (m->fbo) glDeleteFramebuffers(1, &m->fbo);
   if (m->tex) { glDeleteTextures(1, &m->tex); gfx_tex_esquecer(m->tex); }
   m->fbo = m->tex = 0; m->w = m->h = 0;
-}
-
-
-/* ===== MUITAS MARCAS NUM DESENHO SO (gfx_marca_lote, gfx.h) ==================
- * As legendas do libass (assrender.c) eram um gfx_rect por imagem: troca de
- * textura, uniforms e um glDrawArrays cada. Um letreiro pesado tem centenas de
- * imagens por quadro. Aqui todas vem de UMA textura (o atlas) e saem num
- * glDrawArrays de triangulos, com posicao, coordenada e cor por vertice (como
- * o JASSUB faz no navegador, 16/11/2026). O pixel e o do GFX_MARCA: forma do
- * alfa da textura, cor da imagem. As mesmas regras do gfx_rect para a cor
- * (brilho do OSD, HDR, opacidade do grupo) e para o retangulo (transformacao,
- * escala da interface, giro) valem aqui, em CPU. */
-static const char *LOTE_VS =
-  NV_GLSL_PREFIXO
-  // highp na posicao: com o mediump do prefixo (fp16 em GPU de TV) uma borda
-  // em x = 460,67 caia em 460,5 e a coluna sumia (tests/gfx_lote_shot.sh).
-  "attribute highp vec2 aPos;\n"
-  "attribute highp vec2 aUv;\n"
-  "attribute mediump vec4 aCor;\n"
-  "uniform highp vec2 uTela;\n"
-  "varying highp vec2 vUv;\n"
-  "varying mediump vec4 vCor;\n"
-  "void main(){\n"
-  "  vUv = aUv; vCor = aCor;\n"
-  "  gl_Position = vec4(aPos.x/uTela.x*2.0-1.0, 1.0-aPos.y/uTela.y*2.0, 0.0, 1.0);\n"
-  "}\n";
-static const char *LOTE_FS =
-  NV_GLSL_PREFIXO
-  "uniform sampler2D uTex;\n"
-  "varying highp vec2 vUv;\n"
-  "varying mediump vec4 vCor;\n"
-  "void main(){\n"
-  "  gl_FragColor = vec4(vCor.rgb, vCor.a * texture2D(uTex, vUv).a);\n"
-  "}\n";
-typedef struct { float x, y, u, v; unsigned short c[4]; } LoteVert;   // 24 bytes; cor em 16 bits, como o float do uCor
-static GLuint loteProg, loteVbo;
-static GLint loteLocTela = -1, loteLocTex = -1;
-static int loteFalhou;
-static LoteVert *loteV, *loteAnt;   // o que vai e o que foi (repetido = sem upload)
-static int loteCap, loteAntN;
-static float loteTelaAtual[2];
-
-static void loteEncerrar(void) {
-  if (loteProg) glDeleteProgram(loteProg);
-  if (loteVbo) glDeleteBuffers(1, &loteVbo);
-  loteProg = 0; loteVbo = 0; loteAntN = 0; loteTelaAtual[0] = loteTelaAtual[1] = 0.0f;
-  free(loteV); free(loteAnt); loteV = loteAnt = NULL; loteCap = 0;
-}
-
-static int loteMontar(void) {
-  GLuint vs, fs;
-  GLint ok = 0;
-  if (loteProg) return 1;
-  if (loteFalhou) return 0;
-  vs = compila(GL_VERTEX_SHADER, LOTE_VS);
-  fs = compila(GL_FRAGMENT_SHADER, LOTE_FS);
-  loteProg = glCreateProgram();
-  glAttachShader(loteProg, vs); glAttachShader(loteProg, fs);
-  glBindAttribLocation(loteProg, 0, "aPos");
-  glBindAttribLocation(loteProg, 1, "aUv");
-  glBindAttribLocation(loteProg, 2, "aCor");
-  glLinkProgram(loteProg);
-  glDeleteShader(vs); glDeleteShader(fs);
-  glGetProgramiv(loteProg, GL_LINK_STATUS, &ok);
-  if (!ok) {
-    char log[700]; glGetProgramInfoLog(loteProg, 700, NULL, log);
-    printf("[gfx] lote de marcas sem programa (%s): um desenho por imagem\n", log);
-    glDeleteProgram(loteProg); loteProg = 0; loteFalhou = 1; progAtual = -1;
-    return 0;
-  }
-  loteLocTela = glGetUniformLocation(loteProg, "uTela");
-  loteLocTex = glGetUniformLocation(loteProg, "uTex");
-  glUseProgram(loteProg);
-  if (loteLocTex >= 0) glUniform1i(loteLocTex, 0);
-  progAtual = -1;
-  glGenBuffers(1, &loteVbo);
-  if (!loteVbo) { loteEncerrar(); loteFalhou = 1; return 0; }
-  return 1;
-}
-
-static unsigned short loteCanal(float v) {
-  return (unsigned short)(v <= 0.0f ? 0 : v >= 1.0f ? 65535 : (int)(v * 65535.0f + 0.5f));
-}
-
-int gfx_marca_lote(GLuint tex, const GfxMarcaItem *it, int n) {
-  int i, nv = 0;
-  float g[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
-  float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
-  unsigned soma = 2166136261u;
-  if (!tex || n <= 0) return 1;
-  if (gfx_opacidade_grupo <= 0.0f) return 1;
-  if (gfx_modos_desligados && ((gfx_modos_desligados >> (unsigned)GFX_MARCA) & 1ull)) return 1;
-  if (n > 10900) return 0;   // 6 vertices de 24 bytes por imagem: o buffer passaria de 1,5 MB
-  if (!loteMontar()) return 0;
-  if (n * 6 > loteCap) {
-    int nc = n * 6 * 2;
-    LoteVert *a = (LoteVert *)realloc(loteV, (size_t)nc * sizeof *a);
-    if (!a) return 0;
-    loteV = a;
-    a = (LoteVert *)realloc(loteAnt, (size_t)nc * sizeof *a);
-    if (!a) return 0;
-    loteAnt = a; loteCap = nc; loteAntN = 0;
-  }
-  if (giroOn) {
-    g[0] = cosf(giroLayout[0]); g[1] = sinf(giroLayout[0]);
-    g[2] = giroLayout[1] * escAtiva; g[3] = giroLayout[2] * escAtiva;
-  }
-  for (i = 0; i < n; i++) {
-    const GfxMarcaItem *m = &it[i];
-    float x = m->x, y = m->y, w = m->w, h = m->h;
-    float cr = m->r, cg = m->g, cb = m->b, ca = m->a;
-    float px[4], py[4];
-    unsigned short c[4];
-    int k;
-    static const int ORDEM[6] = { 0, 1, 2, 2, 1, 3 };
-    const float us[4] = { m->u0, m->u1, m->u0, m->u1 }, vs[4] = { m->v0, m->v0, m->v1, m->v1 };
-    if (w <= 0.0f || h <= 0.0f || ca <= 0.0f) continue;
-    if (gfx_osd_mult < 0.999f) { cr *= gfx_osd_mult; cg *= gfx_osd_mult; cb *= gfx_osd_mult; }
-    if (gfx_hdr_ui < 0.999f) esmaecer_cor_hdr(gfx_hdr_ui, &cr, &cg, &cb, &ca);
-    GFX_TR_RECT(x, y, w, h);
-    if (escAtiva != 1.0f) { x *= escAtiva; y *= escAtiva; w *= escAtiva; h *= escAtiva; }
-    px[0] = x; py[0] = y; px[1] = x + w; py[1] = y; px[2] = x; py[2] = y + h; px[3] = x + w; py[3] = y + h;
-    if (giroOn)
-      for (k = 0; k < 4; k++) {
-        float dx = px[k] - g[2], dy = py[k] - g[3];
-        px[k] = g[2] + dx * g[0] - dy * g[1];
-        py[k] = g[3] + dx * g[1] + dy * g[0];
-      }
-    for (k = 0; k < 4; k++) {
-      if (px[k] < bx0) bx0 = px[k];
-      if (py[k] < by0) by0 = py[k];
-      if (px[k] > bx1) bx1 = px[k];
-      if (py[k] > by1) by1 = py[k];
-    }
-    c[0] = loteCanal(cr); c[1] = loteCanal(cg); c[2] = loteCanal(cb); c[3] = loteCanal(ca * gfx_opacidade_grupo);
-    if (!c[3]) continue;
-    for (k = 0; k < 6; k++) {
-      LoteVert *v = &loteV[nv++];
-      int q = ORDEM[k];
-      v->x = px[q]; v->y = py[q]; v->u = us[q]; v->v = vs[q];
-      memcpy(v->c, c, sizeof c);
-    }
-  }
-  if (!nv) return 1;
-  gfx_n_rect++;
-  /* O vidro (vidroDesenho) ve o lote como um retangulo: a caixa de tudo, com
-   * a soma do conteudo no lugar do foco, para recapturar quando a legenda muda. */
-  { const unsigned char *b = (const unsigned char *)loteV;
-    size_t t = (size_t)nv * sizeof *loteV, j;
-    for (j = 0; j < t; j += 7) soma = (soma ^ b[j]) * 16777619u; }
-  if (dinPendente && !dinAdiado) dinDescarregar();
-  if (ambPendente) gfx_ambiente_descarregar();
-  { GfxRect caixa = { bx0, by0, bx1 - bx0, by1 - by0 };
-    float esc = escAtiva, tr = (float)gfxTr.on; int gi = giroOn;
-    /* vidroDesenho mede o retangulo ja em tela: sem aplicar de novo. */
-    escAtiva = 1.0f; gfxTr.on = 0; giroOn = 0;
-    vidroDesenho(caixa, tex, GFX_MARCA, (float)(soma & 0xFFFFu), (float)(soma >> 16), 0, 0, 1, 1, 1, 1);
-    escAtiva = esc; gfxTr.on = (int)tr; giroOn = gi; }
-  glUseProgram(loteProg);
-  progAtual = -1;
-  if (loteLocTela >= 0 && (loteTelaAtual[0] != uTelaW || loteTelaAtual[1] != uTelaH)) {
-    glUniform2f(loteLocTela, uTelaW, uTelaH);
-    loteTelaAtual[0] = uTelaW; loteTelaAtual[1] = uTelaH;
-  }
-  if (tex != texAtual) {
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    texAtual = tex;
-    gfx_n_bind++;
-  }
-  glBindBuffer(GL_ARRAY_BUFFER, loteVbo);
-  /* Quadro de legenda parado (o mais comum: uma fala dura segundos): os mesmos
-   * vertices, nada sobe. Senao o buffer e trocado inteiro (sem esperar a GPU). */
-  if (nv != loteAntN || memcmp(loteV, loteAnt, (size_t)nv * sizeof *loteV)) {
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)nv * sizeof *loteV), loteV, GL_STREAM_DRAW);
-    memcpy(loteAnt, loteV, (size_t)nv * sizeof *loteV);
-    loteAntN = nv;
-  }
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(LoteVert), (const void *)0);
-  glEnableVertexAttribArray(1);
-  glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(LoteVert), (const void *)(2 * sizeof(float)));
-  glEnableVertexAttribArray(2);
-  glVertexAttribPointer(2, 4, GL_UNSIGNED_SHORT, GL_TRUE, sizeof(LoteVert), (const void *)(4 * sizeof(float)));
-  glDrawArrays(GL_TRIANGLES, 0, nv);
-  glDisableVertexAttribArray(1);
-  glDisableVertexAttribArray(2);
-  /* Devolve o quad de todo gfx_rect (o atributo 0 aponta para ele). */
-  glBindBuffer(GL_ARRAY_BUFFER, gfxQuadVbo);
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (const void *)0);
-  ambIntacta = 0;
-  return 1;
 }

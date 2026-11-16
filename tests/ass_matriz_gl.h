@@ -1,6 +1,5 @@
-/* GL de mentira para tests/ass_atlas.c (incluido antes de tudo, -include):
- * as texturas vivem na memoria do teste, para comparar o que o atlas guarda
- * com o que o caminho de uma textura por imagem subiria. */
+/* GL de mentira para tests/ass_matriz.c (incluido antes de tudo, -include):
+ * as texturas vivem na memoria do teste, para ler o que cada imagem subiu. */
 #define glGenTextures    teste_glGenTextures
 #define glDeleteTextures teste_glDeleteTextures
 #define glBindTexture    teste_glBindTexture

@@ -1331,7 +1331,6 @@ static int *assMainIdx;          // e o indice dela em assTc
 static int assMainTexCap, assMainEnviado;
 static int assMainResetar;       // assrender_aplicar_invalidacao consumiu um assTexResetar
 
-static void ass_atlas_esvaziar_todos(void);
 static size_t ass_tc_tam(int w, int h) { return (size_t)w * (size_t)h; }
 
 static void ass_tc_apagar(void) {
@@ -1340,8 +1339,6 @@ static void ass_tc_apagar(void) {
     if (assTc[i].tex) { gfx_tex_esquecer(assTc[i].tex); glDeleteTextures(1, &assTc[i].tex); }
   free(assTc); assTc = NULL; assTcN = assTcCap = 0; assTcBytes = 0;
   assMainEnviado = 0;
-  /* O atlas fica alocado; so as posicoes saem (seek, troca de faixa). */
-  ass_atlas_esvaziar_todos();
 }
 
 static void ass_main_soltar(void) {
@@ -1416,213 +1413,6 @@ static GLuint ass_tc_obter(const AssCpuImage *im, unsigned long long chave, int 
   return 0;   // tudo em uso agora (raro): a imagem fica de fora deste quadro
 }
 
-/* ---- ATLAS: todas as imagens do quadro numa textura, um desenho so ---------
- * (16/11/2026, como o JASSUB do AIOStreams.) Era uma textura e um gfx_rect por
- * imagem: num letreiro pesado, centenas de trocas de textura e de chamadas GL
- * por quadro de UI no fio GL. Agora as imagens vao para um atlas GL_ALPHA de
- * ASS_AT_LADO, empacotadas em prateleiras, cada uma com uma moldura de 1 px
- * que repete a borda dela (o filtro linear nao puxa a vizinha e le o mesmo
- * que o GL_CLAMP_TO_EDGE de uma textura so), e o quadro inteiro sai em um
- * gfx_marca_lote. A CHAVE do conteudo continua valendo: o letreiro que nao
- * mudou nao sobe de novo enquanto o atlas tem lugar. Atlas cheio: o OUTRO dos
- * dois vira o atual, vazio, e o quadro sobe nele inteiro (o que a GPU ainda le
- * do quadro anterior fica intacto no primeiro). Imagem maior que o atlas ou
- * quadro que nao cabe nem num atlas vazio: o caminho de uma textura por imagem
- * (ass_tc_obter), so nesse quadro. */
-#define ASS_AT_LADO 2048
-typedef struct { unsigned long long chave; int w, h, x, y; } AssAtItem;
-typedef struct {
-  GLuint tex;
-  int lado;
-  int px, py, ph;           // prateleira: x livre, topo, altura
-  AssAtItem *it; int n, cap;
-  int *hash; int hashCap;   // indice+1 em `it` por chave (enderecamento aberto)
-} AssAtlas;
-static AssAtlas assAt[2];
-static int assAtCur;
-static int assAtFalhou;            // sem atlas (textura ou desenho): um a um
-static int assMainNoAtlas;         // o quadro em tela foi para assAt[assAtCur]
-static int *assMainAt;             // item do atlas de cada imagem (-1 = fora)
-static int assMainAtCap;
-static GfxMarcaItem *assLote;
-static int assLoteCap;
-static unsigned char *assAtPad;    // a imagem com a moldura (a borda repetida)
-static size_t assAtPadCap;
-static int assAtReinicios;         // atlas trocados por cheio (log)
-
-static void ass_atlas_esvaziar(AssAtlas *a) {
-  a->px = a->py = a->ph = 0; a->n = 0;
-  if (a->hash) memset(a->hash, 0, (size_t)a->hashCap * sizeof *a->hash);
-}
-
-static void ass_atlas_esvaziar_todos(void) {
-  if (assAt[0].tex) ass_atlas_esvaziar(&assAt[0]);
-  if (assAt[1].tex) ass_atlas_esvaziar(&assAt[1]);
-  assMainNoAtlas = 0;
-}
-
-static void ass_atlas_apagar(void) {
-  int i;
-  for (i = 0; i < 2; i++) {
-    if (assAt[i].tex) { gfx_tex_esquecer(assAt[i].tex); glDeleteTextures(1, &assAt[i].tex); }
-    free(assAt[i].it); free(assAt[i].hash);
-    memset(&assAt[i], 0, sizeof assAt[i]);
-  }
-  assAtCur = 0; assMainNoAtlas = 0;
-}
-
-static int ass_atlas_preparar(AssAtlas *a) {
-  GLint maxTex = 0;
-  if (a->tex) return 1;
-  glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
-  a->lado = maxTex >= ASS_AT_LADO ? ASS_AT_LADO : (int)maxTex;
-  if (a->lado < 512) return 0;
-  glGenTextures(1, &a->tex);
-  if (!a->tex) return 0;
-  glBindTexture(GL_TEXTURE_2D, a->tex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, a->lado, a->lado, 0, GL_ALPHA, GL_UNSIGNED_BYTE, NULL);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  if (glGetError() != GL_NO_ERROR) {
-    glDeleteTextures(1, &a->tex); a->tex = 0;
-    return 0;
-  }
-  ass_atlas_esvaziar(a);
-  return 1;
-}
-
-static unsigned ass_atlas_h(unsigned long long ch, int w, int h) {
-  unsigned long long k = ch ^ ((unsigned long long)(unsigned)w << 32) ^ (unsigned)h;
-  k ^= k >> 33; k *= 0xff51afd7ed558ccdULL; k ^= k >> 33;
-  return (unsigned)k;
-}
-
-static int ass_atlas_achar(const AssAtlas *a, unsigned long long ch, int w, int h) {
-  unsigned m, i;
-  if (!a->hashCap) return -1;
-  m = (unsigned)a->hashCap - 1u;
-  for (i = ass_atlas_h(ch, w, h) & m;; i = (i + 1u) & m) {
-    int k = a->hash[i] - 1;
-    if (k < 0) return -1;
-    if (a->it[k].chave == ch && a->it[k].w == w && a->it[k].h == h) return k;
-  }
-}
-
-static int ass_atlas_hash_por(AssAtlas *a, int k) {
-  unsigned m, i;
-  if ((a->n + 1) * 2 > a->hashCap) {   // metade cheia: dobra e refaz
-    int nc = a->hashCap ? a->hashCap * 2 : 1024, j;
-    int *nh = (int *)calloc((size_t)nc, sizeof *nh);
-    if (!nh) return 0;
-    free(a->hash); a->hash = nh; a->hashCap = nc;
-    m = (unsigned)nc - 1u;
-    for (j = 0; j < a->n; j++) {
-      if (j == k) continue;
-      for (i = ass_atlas_h(a->it[j].chave, a->it[j].w, a->it[j].h) & m; a->hash[i]; i = (i + 1u) & m) {}
-      a->hash[i] = j + 1;
-    }
-  }
-  m = (unsigned)a->hashCap - 1u;
-  for (i = ass_atlas_h(a->it[k].chave, a->it[k].w, a->it[k].h) & m; a->hash[i]; i = (i + 1u) & m) {}
-  a->hash[i] = k + 1;
-  return 1;
-}
-
-/* Lugar para (w+2) x (h+2) e o upload com a moldura. -1 = nao cabe. */
-static int ass_atlas_por(AssAtlas *a, const AssCpuImage *im, unsigned long long ch) {
-  int pw = im->w + 2, ph = im->h + 2, x, y, k, j;
-  size_t tam = (size_t)pw * (size_t)ph;
-  if (pw > a->lado || ph > a->lado) return -1;
-  if (a->px + pw > a->lado) { a->py += a->ph; a->px = 0; a->ph = 0; }
-  if (a->py + ph > a->lado) return -1;
-  x = a->px; y = a->py;
-  if (a->n == a->cap) {
-    int nc = a->cap ? a->cap * 2 : 256;
-    AssAtItem *nv = (AssAtItem *)realloc(a->it, (size_t)nc * sizeof *nv);
-    if (!nv) return -1;
-    a->it = nv; a->cap = nc;
-  }
-  if (tam > assAtPadCap) {
-    unsigned char *nb = (unsigned char *)realloc(assAtPad, tam);
-    if (!nb) return -1;
-    assAtPad = nb; assAtPadCap = tam;
-  }
-  for (j = 0; j < im->h; j++) {
-    unsigned char *d = assAtPad + (size_t)(j + 1) * (size_t)pw;
-    memcpy(d + 1, im->bitmap + (size_t)j * (size_t)im->stride, (size_t)im->w);
-    d[0] = d[1]; d[pw - 1] = d[pw - 2];
-  }
-  memcpy(assAtPad, assAtPad + (size_t)pw, (size_t)pw);
-  memcpy(assAtPad + (size_t)(ph - 1) * (size_t)pw, assAtPad + (size_t)(ph - 2) * (size_t)pw, (size_t)pw);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, pw, ph, GL_ALPHA, GL_UNSIGNED_BYTE, assAtPad);
-  a->px += pw;
-  if (ph > a->ph) a->ph = ph;
-  k = a->n++;
-  a->it[k].chave = ch; a->it[k].w = im->w; a->it[k].h = im->h; a->it[k].x = x + 1; a->it[k].y = y + 1;
-  if (!ass_atlas_hash_por(a, k)) { a->n--; return -1; }
-  return k;
-}
-
-#ifdef NV_ASS_ATLAS_TESTE
-/* tests/ass_atlas.c: o mesmo quadro pelo caminho de uma textura por imagem. */
-static int assAtlasDesligadoTeste;
-void assrender_teste_sem_atlas(int sem) { assAtlasDesligadoTeste = sem; assMainEnviado = 0; }
-int assrender_teste_atlas_trocas(void) { return assAtReinicios; }
-#endif
-
-/* Sobe o quadro no atlas atual (ou no outro, vazio). 1 = tudo no atlas. */
-/* Atlas OFF on the TV (owner 16/11/2026: ASS performance had to match
- * libass-engine-rewrite-tizen). On the S95C the atlas made heavy typeset
- * scenes slower: frame-by-frame signs fill it (no eviction) so it keeps
- * switching and re-uploading, and glTexSubImage2D lands in a texture the GPU is
- * still drawing from; draw times of 100-335 ms on the Kaguya inbox scene. The
- * per-image texture cache (80-90 % reuse, the base branch's path) is back.
- * The code stays: -DNV_ASS_ATLAS=1 turns it on (tests/ass_atlas.sh). */
-#ifndef NV_ASS_ATLAS
-#define NV_ASS_ATLAS 0
-#endif
-static int ass_atlas_subir(void) {
-  int tentativa, i;
-  if (!NV_ASS_ATLAS) {
-    static int dito;
-    if (!dito) { dito = 1; printf("[libass] atlas off: one cached texture per image (as libass-engine-rewrite-tizen)\n"); fflush(stdout); }
-    return 0;
-  }
-  if (assAtFalhou) return 0;
-#ifdef NV_ASS_ATLAS_TESTE
-  if (assAtlasDesligadoTeste) return 0;
-#endif
-  if (assMain.count > assMainAtCap) {
-    int *nv = (int *)realloc(assMainAt, (size_t)assMain.count * sizeof *nv);
-    if (!nv) return 0;
-    assMainAt = nv; assMainAtCap = assMain.count;
-  }
-  for (tentativa = 0; tentativa < 2; tentativa++) {
-    AssAtlas *a = &assAt[assAtCur];
-    int ok = 1;
-    if (!ass_atlas_preparar(a)) { assAtFalhou = 1; printf("[libass] atlas indisponivel: uma textura por imagem\n"); return 0; }
-    glBindTexture(GL_TEXTURE_2D, a->tex);
-    for (i = 0; i < assMain.count && ok; i++) {
-      const AssCpuImage *im = &assMain.images[i];
-      unsigned long long ch;
-      int k;
-      if (!im->bitmap || im->w <= 0 || im->h <= 0) { assMainAt[i] = -1; continue; }
-      ch = im->chave ? im->chave : ass_chave_bitmap(im->bitmap, im->w, im->h, 0u);
-      k = ass_atlas_achar(a, ch, im->w, im->h);
-      if (k < 0) k = ass_atlas_por(a, im, ch);
-      if (k < 0) ok = 0; else assMainAt[i] = k;
-    }
-    if (ok) return 1;
-    /* Cheio: o outro atlas, vazio, recebe o quadro inteiro. */
-    assAtCur ^= 1;
-    if (assAt[assAtCur].tex) ass_atlas_esvaziar(&assAt[assAtCur]);
-    assAtReinicios++;
-  }
-  return 0;   // nem num atlas vazio: este quadro vai um a um
-}
-
 /* A cor de uma imagem como sai na tela: cor da legenda (ou a da pessoa no
  * dialogo), ganho do contraste e curva de gama da TV (AP_CONTRASTE, AP_GAMA),
  * na mesma ordem da TV. O ganho satura em 1 antes da curva, como o video. */
@@ -1663,16 +1453,10 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
       assMainTexCap = assMain.count;
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    assMainNoAtlas = ass_atlas_subir();
     for (i = 0; i < assMain.count; i++) {
       const AssCpuImage *im = &assMain.images[i];
-      if (assMainNoAtlas) {
-        assMainTex[i] = assMainAt[i] >= 0 ? assAt[assAtCur].tex : 0;
-        assMainIdx[i] = -1;
-      } else {
-        unsigned long long ch = im->chave ? im->chave : ass_chave_bitmap(im->bitmap, im->w, im->h, 0u);
-        assMainTex[i] = ass_tc_obter(im, ch, &assMainIdx[i]);
-      }
+      unsigned long long ch = im->chave ? im->chave : ass_chave_bitmap(im->bitmap, im->w, im->h, 0u);
+      assMainTex[i] = ass_tc_obter(im, ch, &assMainIdx[i]);
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     gfx_tex_esquecer(0);
@@ -1680,12 +1464,7 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     assMainEnviado = 1;
     /* Busy-scene load (picture sync, Auto): what a new frame cost here. */
     if (quadroNovo) assperf_carga_gl(ass_ms_entre(&t0, &t1));
-    { static int logados;
-      if (assAtReinicios && logados < 20 && (assAtReinicios & (assAtReinicios - 1)) == 0) {
-        logados++;
-        printf("[libass] atlas: %d trocas por cheio (quadro de %d imagens)\n", assAtReinicios, assMain.count);
-      } }
-  } else if (!assMainNoAtlas) {
+  } else {
     /* Quadro repetido: as texturas dele continuam "em uso" (a reciclagem
      * conta quadros GL sem desenho). */
     for (i = 0; i < assMain.count; i++) {
@@ -1713,44 +1492,20 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     if (x1 > x0 && y1 > y0 && gfx_grupo_comecar(&grupo, (GfxRect){ x0 - 2.0f, y0 - 2.0f, x1 - x0 + 4.0f, y1 - y0 + 4.0f }, alpha))
       alpha = 1.0f;
   }
-  if (assMainNoAtlas && assMain.count > assLoteCap) {
-    GfxMarcaItem *nv = (GfxMarcaItem *)realloc(assLote, (size_t)assMain.count * sizeof *nv);
-    if (nv) { assLote = nv; assLoteCap = assMain.count; }
+  for (i = 0; i < assMain.count; i++) {
+    const AssCpuImage *im = &assMain.images[i];
+    GLuint tex = assMainTex[i];
+    float dx, dy, r, g, b, op;
+    if (!tex) continue;
+    gfx_tex_aspect_atual = 0.0f;
+    /* Origem arredondada ao pixel do ALVO (kk); a imagem em pixels do
+     * quadro do libass (esc = kk x resolucao), ampliada quando esc < kk. */
+    dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / esc;
+    dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / esc;
+    ass_cor_final(im, corAtiva, cr, cg, cb, gama, contraste, &r, &g, &b, &op);
+    gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
+             0, 0, 0, 0, r, g, b, alpha * op);
   }
-  { int nLote = 0, noLote = assMainNoAtlas && assLoteCap >= assMain.count;
-    const AssAtlas *a = &assAt[assAtCur];
-    const float inv = a->lado > 0 ? 1.0f / (float)a->lado : 0.0f;
-    for (i = 0; i < assMain.count; i++) {
-      const AssCpuImage *im = &assMain.images[i];
-      GLuint tex = assMainTex[i];
-      float dx, dy, r, g, b, op;
-      if (!tex) continue;
-      /* Origem arredondada ao pixel do ALVO (kk); a imagem em pixels do
-       * quadro do libass (esc = kk x resolucao), ampliada quando esc < kk. */
-      dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / esc;
-      dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / esc;
-      ass_cor_final(im, corAtiva, cr, cg, cb, gama, contraste, &r, &g, &b, &op);
-      if (noLote) {
-        const AssAtItem *t = &a->it[assMainAt[i]];
-        GfxMarcaItem *m = &assLote[nLote++];
-        m->x = dx; m->y = dy; m->w = (float)im->w / esc; m->h = (float)im->h / esc;
-        m->u0 = (float)t->x * inv; m->v0 = (float)t->y * inv;
-        m->u1 = (float)(t->x + t->w) * inv; m->v1 = (float)(t->y + t->h) * inv;
-        m->r = r; m->g = g; m->b = b; m->a = alpha * op;
-      } else {
-        if (assMainNoAtlas) continue;   // sem memoria para o lote: o quadro seguinte vai um a um
-        gfx_tex_aspect_atual = 0.0f;
-        gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
-                 0, 0, 0, 0, r, g, b, alpha * op);
-      }
-    }
-    if (noLote && nLote && !gfx_marca_lote(a->tex, assLote, nLote)) {
-      /* Sem programa do lote (link falhou) ou lote grande demais: deste
-       * quadro em diante, uma textura por imagem. */
-      assAtFalhou = 1; assMainEnviado = 0;
-      printf("[libass] lote de %d imagens recusado: uma textura por imagem\n", nLote);
-    }
-    if (assMainNoAtlas && !noLote) { assAtFalhou = 1; assMainEnviado = 0; } }
   gfx_grupo_terminar(&grupo, alphaGrupo);
   gfx_tex_aspect_atual = 0.0f;
   return assMain.count;
@@ -2736,9 +2491,6 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     if (reset || saltou || assMainResetar) {
       ass_main_soltar();
       ass_tc_apagar();
-      /* Faixa trocada ou desligada: os 2 atlas (8 MB) voltam ao sistema; o
-       * seek so os esvazia (ass_tc_apagar). */
-      if (assMainResetar) ass_atlas_apagar();
       assMainResetar = 0;
     }
     if (assMainValido && assMain.generation != generation) ass_main_soltar();
