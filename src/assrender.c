@@ -875,6 +875,13 @@ static void ass_pod_devolver_assTrava(void);
 static double ass_fps(void);
 static long long ass_grade_seguinte(long long t);
 static long long ass_grade_desde(long long ms);
+#if defined(NV_TPK) && defined(__linux__)
+// glibc declares this only under _GNU_SOURCE, and the define at the top of
+// this file comes too late in the .tpk build: its -include src/tpk.h has
+// already pulled in the system headers. Without a declaration the call was
+// an implicit one (a warning on the SDK's compiler, an error on gcc 14).
+extern int pthread_getattr_np(pthread_t fio, pthread_attr_t *attr);
+#endif
 static void *ass_worker_loop(void *unused) {
   (void)unused;
   assfios_nomear("nv-assrender");
