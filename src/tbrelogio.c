@@ -10,13 +10,12 @@
 
 static pthread_mutex_t M = PTHREAD_MUTEX_INITIALIZER;
 static unsigned ger;                  // 0 = no burned stream yet
-static int ativo, modo = TBR_POUSO;
+static int ativo;
 static double *dur, *ini, *pts;       // lengths, playlist starts, first PTS (NAN = unknown)
 static int n;
 static double alvo;                   // the last open/seek target (playlist time)
 static int conferir;                  // 1 = the next served segment is checked against `alvo`
 static int pousoLog;                  // the landing correction was logged for this target
-static int segVisto = -1, segLogs;    // Per segment: the last segment logged, how many since the target
 static int ruimLog;
 
 int tbr_segmento_de(const double *d, int k, double t, double *inicio) {
@@ -34,7 +33,7 @@ int tbr_segmento_de(const double *d, int k, double t, double *inicio) {
 static void limpar(void) {
   free(dur); free(ini); free(pts);
   dur = ini = pts = NULL; n = 0;
-  alvo = 0; conferir = 0; pousoLog = 0; segVisto = -1; segLogs = 0; ruimLog = 0;
+  alvo = 0; conferir = 0; pousoLog = 0; ruimLog = 0;
 }
 
 unsigned tbr_comecar(void) {
@@ -74,7 +73,7 @@ static void logPouso(void) {
   if (!correcaoDe(k, &c)) return;
   pousoLog = 1;
   printf("[tbburn] subtitle clock: landed in segment %d at %.3f s (playlist start %.3f s, first PTS %.3f s, TorBox's first "
-         "PTS %.3f s) -> subtitles %+.0f ms [%s]\n", k, alvo, a, pts[k], pts[0], c * 1000.0, tbr_nome_modo(modo));
+         "PTS %.3f s) -> subtitles %+.0f ms\n", k, alvo, a, pts[k], pts[0], c * 1000.0);
   fflush(stdout);
 }
 
@@ -111,7 +110,7 @@ void tbr_servido(unsigned g, int seg) {
 void tbr_ancorar(double a) {
   pthread_mutex_lock(&M);
   if (ativo && isfinite(a)) {
-    alvo = a < 0 ? 0 : a; conferir = 1; pousoLog = 0; segVisto = -1; segLogs = 0;
+    alvo = a < 0 ? 0 : a; conferir = 1; pousoLog = 0;
     logPouso();
   }
   pthread_mutex_unlock(&M);
@@ -133,43 +132,15 @@ int tbr_falta(unsigned *g, int *seg) {
 double tbr_correcao(double relogio) {
   double c = 0;
   int k, ok;
+  (void)relogio;   // Landing: the same until the next open/seek, whatever the time
   pthread_mutex_lock(&M);
-  if (!ativo || modo == TBR_DESLIGADO || !n) { pthread_mutex_unlock(&M); return 0; }
+  if (!ativo || !n) { pthread_mutex_unlock(&M); return 0; }
   k = tbr_segmento_de(dur, n, alvo, NULL);
   ok = correcaoDe(k, &c);
-  if (modo == TBR_SEGMENTO) {
-    double cs, a = 0;
-    int j = tbr_segmento_de(dur, n, relogio, &a);
-    if (correcaoDe(j, &cs)) {
-      c = cs; ok = 1;
-      if (j != segVisto && segLogs < 8) {
-        segLogs++;
-        printf("[tbburn] subtitle clock: segment %d (playlist start %.3f s, first PTS %.3f s) -> subtitles %+.0f ms [Per segment]\n",
-               j, a, pts[j], cs * 1000.0);
-        fflush(stdout);
-      }
-      segVisto = j;
-    }
-  }
   if (ok && fabs(c) > TBR_TETO_S) {
     if (!ruimLog++) { printf("[tbburn] subtitle clock: correction %+.0f ms is not believable: none\n", c * 1000.0); fflush(stdout); }
     c = 0;
   }
   pthread_mutex_unlock(&M);
   return ok ? c : 0;
-}
-
-int tbr_modo(void) { int v; pthread_mutex_lock(&M); v = modo; pthread_mutex_unlock(&M); return v; }
-void tbr_definir_modo(int m) {
-  if (m < 0 || m >= TBR_MODOS) return;
-  pthread_mutex_lock(&M);
-  modo = m; segVisto = -1; segLogs = 0;
-  printf("[tbburn] subtitle clock: test switch -> %s\n", tbr_nome_modo(m));
-  fflush(stdout);
-  pousoLog = 0; logPouso();
-  pthread_mutex_unlock(&M);
-}
-const char *tbr_nome_modo(int m) {
-  static const char *const N[TBR_MODOS] = { "Landing", "Per segment", "Off" };
-  return m >= 0 && m < TBR_MODOS ? N[m] : "?";
 }

@@ -42,15 +42,11 @@ int main(void) {
   PERTO(tbr_correcao(160.0), 1.146, "Landing: fixed until the next seek");
   VERDADE(!tbr_falta(&gg, &seg), "nothing more to read in Landing");
 
-  tbr_definir_modo(TBR_SEGMENTO);
-  PERTO(tbr_correcao(152.0), 1.146, "Per segment, segment 30 unknown: the landing value");
+  // The next segments' PTS arrive while playing on: the landing value stays
+  // (the TV does not re-tie its clock at every segment; owner 16/11).
   for (i = 30; i < 40; i++) tbr_pts(g, i, ptsReal(i));
-  PERTO(tbr_correcao(152.0), ptsReal(30) - 150.0 - 0.021, "Per segment: segment 30 -> +150 ms");
-  PERTO(tbr_correcao(157.0), ptsReal(31) - 155.0 - 0.021, "Per segment: segment 31 -> +1155 ms");
-  tbr_definir_modo(TBR_DESLIGADO);
-  PERTO(tbr_correcao(152.0), 0, "Off: 0");
-  tbr_definir_modo(TBR_POUSO);
-  PERTO(tbr_correcao(152.0), 1.146, "back to Landing");
+  PERTO(tbr_correcao(152.0), 1.146, "playing into segment 30: still the landing value");
+  PERTO(tbr_correcao(157.0), 1.146, "playing into segment 31: still the landing value");
 
   tbr_ancorar(150.5);   // a seek into an even segment
   PERTO(tbr_correcao(150.5), ptsReal(30) - 150.0 - 0.021, "seek to 150.5 s: segment 30 -> +150 ms");

@@ -13,13 +13,10 @@
  * Nuvio draws its subtitles on the player's clock: this module says how much
  * to add to it while burn-in plays (0 otherwise).
  *
- * TEST SWITCH (owner 15/11, removed once the right model is known), in the
- * Burn in list of the in-playback Subtitles menu:
- *   LANDING     the correction of the segment the player landed in, fixed
- *               until the next open/seek (the model log_18 fits);
- *   PER SEGMENT the correction of the segment that holds the current time (the
- *               player re-ties its clock at every segment);
- *   OFF         none (the behaviour before this fix), for A/B checks.
+ * THE MODEL IS "LANDING" (owner 16/11, after the TV test with the three-way
+ * test switch): the correction of the segment the player landed in, fixed
+ * until the next open/seek. "Per segment" (re-tied at every segment) and
+ * "Off" were both wrong on the TV and are gone with the switch.
  *
  * Fed by video_tpk.c (start/end, every open and seek of the burned stream) and
  * by whoever reads TorBox's segments: dts/tbaudio_tpk.c while Nuvio serves the
@@ -27,8 +24,6 @@
  * compiles everywhere (tests/tbrelogio.sh). */
 #ifndef NUVIO_TBRELOGIO_H
 #define NUVIO_TBRELOGIO_H
-
-enum { TBR_POUSO = 0, TBR_SEGMENTO = 1, TBR_DESLIGADO = 2, TBR_MODOS };
 
 /* A burned stream starts (a new TorBox URL for the player): forgets the old
  * one. Returns its generation; calls carrying an older one are ignored. */
@@ -52,17 +47,13 @@ void   tbr_servido(unsigned ger, int seg);
 void   tbr_ancorar(double alvo);
 
 /* What the head reader should fetch next: 1 with *seg = a segment whose PTS
- * the current mode needs (segment 0 first, for the origin), 0 nothing. */
+ * is needed (segment 0 first, for the origin, then the landing one), 0 nothing. */
 int    tbr_falta(unsigned *ger, int *seg);
 
 /* Seconds to ADD to the player's clock `relogio` (playlist time) to get the
- * time of the burned picture. 0 when burn-in is off, the mode is Off or the
- * PTS it needs is not known yet. */
+ * time of the burned picture. 0 when burn-in is off or the PTS it needs is not
+ * known yet. (`relogio` is not used by the Landing model; the callers pass it.) */
 double tbr_correcao(double relogio);
-
-int    tbr_modo(void);
-void   tbr_definir_modo(int modo);
-const char *tbr_nome_modo(int modo);
 
 /* ---- pure ------------------------------------------------------------------ */
 /* Segment of `t` in `n` segments of lengths `dur` (-1 when n == 0; the last
