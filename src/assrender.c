@@ -692,26 +692,27 @@ static void ass_trilha_tailandes(ASS_Track *t) {
   }
 }
 
-/* The user's Border on a libass Style (owner 14/11/2026).
- * Outline (1) is Stremio's look: its Tizen app draws subtitles with CSS
- * `text-shadow: 1px 1px 0.1em rgb(34,34,34)` and no stroke. That is a shadow
- * 1 px (1080p) down-right, blurred by a Gaussian of sigma 0.05 em (a CSS blur
- * radius r is sigma r/2). libass blurs only the BORDER when there is one and
- * makes the shadow from that blurred border, so a hair border (0.1 px) carries
- * the blur and the fill stays sharp; the border itself is invisible
- * (OutlineColour alpha FF, an image libass drops). libass sigma =
- * \blur x 2/sqrt(ln 256). With an opaque fill libass fills the shadow in under
- * the glyph, so the subtitle must fade as one (ass_desenhar_grupo).
- * Shadow (2) and None (0) are as they were. `rgb` = the shadow colour. */
+/* The user's Border on a libass Style (owner 14/11/2026, ring 16/11/2026).
+ * Outline (1) is Stremio's look: add-on subtitles drawn with 8 CSS shadows
+ * in a ring, `±0.15rem ±0.15rem 0.15rem rgb(34,34,34)` (text.c sombraSuave):
+ * 2.25 px out at 1080p, blurred by a Gaussian of sigma 1.125 px (a CSS blur
+ * radius r is sigma r/2), whatever the subtitle size. libass's nearest is an
+ * opaque 2.25 px border in the border colour; libass blurs only the BORDER
+ * when there is one, so the fill stays sharp. libass sigma =
+ * \blur x 2/sqrt(ln 256). The subtitle fades as one (ass_desenhar_grupo).
+ * Shadow (2) and None (0) are as they were. `rgb` = the border colour. */
 static void ass_borda_estilo(ASS_Style *s, const PlainAssStyle *p, int resY, double fontSize, uint32_t rgb) {
   s->Blur = 0.0;
   if (p->border == 1) {
-    double k = resY > 0 ? resY / 1080.0 : 1.0, em = fontSize * (p->emMil > 0 ? p->emMil : 800) / 1000.0;
-    s->Outline = 0.1 * k;
-    s->Shadow = 1.0 * k;
-    s->Blur = 0.05 * em / (2.0 / sqrt(log(256.0)));
-    s->OutlineColour = (rgb << 8) | 0xFFu;
-    if (s->BorderStyle == 1) s->BackColour = rgb << 8;   // opaque; BorderStyle 4 keeps its box
+    /* Stremio's ring (text.c sombraSuave, owner 16/11/2026): 8 shadows
+     * 2.25 px out at 1080p, Gaussian sigma 1.125 px, whatever the size.
+     * libass's nearest is a 2.25 px border blurred by that sigma. */
+    double k = resY > 0 ? resY / 1080.0 : 1.0;
+    (void)fontSize;
+    s->Outline = 2.25 * k;
+    s->Shadow = 0.0;
+    s->Blur = 1.125 * k / (2.0 / sqrt(log(256.0)));
+    s->OutlineColour = rgb << 8;   // opaque border = the ring
     return;
   }
   s->Outline = 0;
@@ -749,8 +750,8 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
       // BackColour carries shadow RGB unless it is a background box.
       if ((p->overrides & PLAIN_ASS_OUTLINE) && s->BorderStyle == 1)
         s->BackColour = ((uint32_t)p->outlineRgb << 8) | (s->BackColour & 255u);
-      /* Last: Outline's shadow takes the border colour (the chosen one, or
-       * the author's OutlineColour) and hides the hair border. */
+      /* Last: Outline's ring takes the border colour (the chosen one, or
+       * the author's OutlineColour). */
       if (p->overrides & PLAIN_ASS_BORDER)
         ass_borda_estilo(s, p, assTrack->PlayResY, s->FontSize, s->OutlineColour >> 8);
       if (p->overrides & PLAIN_ASS_POS) s->MarginV = p->marginV * assTrack->PlayResY / 1080;
