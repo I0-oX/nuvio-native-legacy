@@ -54,15 +54,26 @@ static int comeca(const char *p, const char *fim, const char *pre) {
   return 1;
 }
 
+/* Runs on every harvested batch (mkvass entregarFontes) over the whole body,
+ * which reaches several MB with frame-by-frame typesetting (owner 16/11/2026:
+ * ASS had become slower than libass-engine-rewrite-tizen). So the line pass
+ * stops at [Events] once the styles were read (events are most of the body),
+ * and \fn is found with memchr instead of a byte loop (memmem would need
+ * _GNU_SOURCE, which the .tpk's forced include makes unreliable). Same result. */
 void fontefam_varrer(FonteFamilias *s, const char *doc, size_t n) {
   const char *p = doc, *fim = doc + n;
-  int fontAt = -1, estilos = 0;
+  int fontAt = -1, estilos = 0, viuEstilos = 0;
   while (p < fim) {
     const char *l = p, *e = memchr(p, '\n', (size_t)(fim - p));
     if (!e) e = fim;
     p = e + 1;
     while (l < e && (*l == ' ' || *l == '\t')) l++;
-    if (l < e && *l == '[') { estilos = comeca(l, e, "[v4+ styles]") || comeca(l, e, "[v4 styles]"); fontAt = -1; continue; }
+    if (l < e && *l == '[') {
+      if (viuEstilos && comeca(l, e, "[events]")) break;
+      estilos = comeca(l, e, "[v4+ styles]") || comeca(l, e, "[v4 styles]"); fontAt = -1;
+      viuEstilos |= estilos;
+      continue;
+    }
     if (!estilos) continue;
     if (comeca(l, e, "format:")) {
       const char *c = l + 7; int k = 0;
@@ -80,13 +91,14 @@ void fontefam_varrer(FonteFamilias *s, const char *doc, size_t n) {
     }
   }
   /* \fn<nome> ate a proxima tag ou o fim do bloco; \fn vazio volta ao estilo. */
-  for (p = doc; p + 3 <= fim; p++) {
-    const char *a, *b;
-    if (p[0] != '\\' || p[1] != 'f' || p[2] != 'n') continue;
-    a = b = p + 3;
+  for (p = doc; p + 3 <= fim; ) {
+    const char *a, *b = memchr(p, '\\', (size_t)(fim - p));
+    if (!b || b + 3 > fim) break;
+    if (b[1] != 'f' || b[2] != 'n') { p = b + 1; continue; }
+    a = b = b + 3;
     while (b < fim && *b != '\\' && *b != '}' && *b != '\n') b++;
     fontefam_por(s, a, (size_t)(b - a));
-    p = b - 1;
+    p = b;
   }
 }
 

@@ -3130,7 +3130,11 @@ static void entregarFontes(Fio *f, const char *corpo, int primeira) {
   double mb = 0, mbTotal = 0;
 #ifdef NV_TPK
   if (f->nFontes > 0 && !f->fonteDada) f->fonteDada = (unsigned char *)calloc((size_t)f->nFontes, 1);
-  if (f->fonteDada) fontefam_varrer(&f->familias, corpo, strlen(corpo));
+  if (f->fonteDada) {
+    // Every attached font already in libass: nothing left to look for in the body.
+    for (i = 0; i < f->nFontes && f->fonteDada[i]; i++) {}
+    if (i < f->nFontes) fontefam_varrer(&f->familias, corpo, strlen(corpo));
+  }
 #else
   (void)corpo;
 #endif

@@ -1573,8 +1573,23 @@ int assrender_teste_atlas_trocas(void) { return assAtReinicios; }
 #endif
 
 /* Sobe o quadro no atlas atual (ou no outro, vazio). 1 = tudo no atlas. */
+/* Atlas OFF on the TV (owner 16/11/2026: ASS performance had to match
+ * libass-engine-rewrite-tizen). On the S95C the atlas made heavy typeset
+ * scenes slower: frame-by-frame signs fill it (no eviction) so it keeps
+ * switching and re-uploading, and glTexSubImage2D lands in a texture the GPU is
+ * still drawing from; draw times of 100-335 ms on the Kaguya inbox scene. The
+ * per-image texture cache (80-90 % reuse, the base branch's path) is back.
+ * The code stays: -DNV_ASS_ATLAS=1 turns it on (tests/ass_atlas.sh). */
+#ifndef NV_ASS_ATLAS
+#define NV_ASS_ATLAS 0
+#endif
 static int ass_atlas_subir(void) {
   int tentativa, i;
+  if (!NV_ASS_ATLAS) {
+    static int dito;
+    if (!dito) { dito = 1; printf("[libass] atlas off: one cached texture per image (as libass-engine-rewrite-tizen)\n"); fflush(stdout); }
+    return 0;
+  }
   if (assAtFalhou) return 0;
 #ifdef NV_ASS_ATLAS_TESTE
   if (assAtlasDesligadoTeste) return 0;
