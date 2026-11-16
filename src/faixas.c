@@ -789,8 +789,8 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
     case EST_LIBASS: snprintf(dst, tam, "%s", i18n(assperf_get(AP_LIBASS) ? "Ligado" : "Desligado")); break;
     case EST_ASS_TAM: snprintf(dst, tam, "%d%%", assperf_get(AP_ASSTAM)); break;
     case EST_ASS_OPAC: snprintf(dst, tam, "%d%%", assperf_get(AP_ASSOPAC)); break;
-    case EST_CONTRASTE: snprintf(dst, tam, "%d", 30 - assperf_get(AP_CONTRASTE)); break;
-    case EST_GAMA: { int g = assperf_get(AP_GAMA); g = g <= 5 ? -g : 11 - g;
+    case EST_CONTRASTE: snprintf(dst, tam, "%d", 30 + assperf_get(AP_CONTRASTE)); break;
+    case EST_GAMA: { int g = assperf_get(AP_GAMA);
       if (g) snprintf(dst, tam, "%+d", g); else snprintf(dst, tam, "%s", i18n("Desligado"));
       break; }
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
@@ -876,8 +876,8 @@ static const EstSlider EST_SL[EST_TOTAL] = {
 #ifdef NV_TPK
   [EST_ASS_TAM] = { 50, 200, 5, 10, 2 },                          // dialogue size %
   [EST_ASS_OPAC] = { 20, 100, 5, 10, 1 },                         // dialogue opacity %
-  [EST_CONTRASTE] = { 0, 30, 1, 1, 1 },                           // the TV's numbers
-  [EST_GAMA] = { -5, 5, 1, 1, 1 },
+  [EST_CONTRASTE] = { 0, 50, 1, 5, 2 },                           // the TV's numbers, its whole range
+  [EST_GAMA] = { -20, 20, 1, 5, 2 },                              // past the TV's -5..+5 (owner 16/11/2026)
 #endif
   // The second subtitle: steps through the choices of its setting (the value
   // shown is the setting's own text); Delay in ms like the main.
@@ -911,8 +911,8 @@ static int estLer(int i) {
 #ifdef NV_TPK
     case EST_ASS_TAM: return assperf_get(AP_ASSTAM);
     case EST_ASS_OPAC: return assperf_get(AP_ASSOPAC);
-    case EST_CONTRASTE: return 30 - assperf_get(AP_CONTRASTE);
-    case EST_GAMA: { int g = assperf_get(AP_GAMA); return g <= 5 ? -g : 11 - g; }
+    case EST_CONTRASTE: return 30 + assperf_get(AP_CONTRASTE);
+    case EST_GAMA: return assperf_get(AP_GAMA);
 #endif
     case 0: return e->tamanho;
     case 3: return (int)lroundf(video_legenda_opacidade(e) * 100.0f);
@@ -935,8 +935,8 @@ static void estGravar(int i, int v) {
 #ifdef NV_TPK
     case EST_ASS_TAM: assperf_definir(AP_ASSTAM, v); return;
     case EST_ASS_OPAC: assperf_definir(AP_ASSOPAC, v); return;
-    case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, 30 - v); return;
-    case EST_GAMA: assperf_definir(AP_GAMA, v == 0 ? 0 : v < 0 ? -v : 11 - v); return;
+    case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, v - 30); return;
+    case EST_GAMA: assperf_definir(AP_GAMA, v); return;
 #endif
     case 0: e->tamanho = v; break;
     case 3: e->opacidade = v / 10 * 10; break;
@@ -2233,8 +2233,8 @@ static void sliderCtl(int i, GfxRect r, float a, int ativo) {
     char lo[24], hi[24];
     if (i == 7) { snprintf(lo, sizeof lo, "-%d s", LEGUI_ATRASO_MAX / 1000); snprintf(hi, sizeof hi, "+%d s", LEGUI_ATRASO_MAX / 1000); }
 #ifdef NV_TPK
-    else if (i == EST_CONTRASTE) { snprintf(lo, sizeof lo, "0"); snprintf(hi, sizeof hi, "30"); }
-    else if (i == EST_GAMA) { snprintf(lo, sizeof lo, "-5"); snprintf(hi, sizeof hi, "+5"); }
+    else if (i == EST_CONTRASTE) { snprintf(lo, sizeof lo, "0"); snprintf(hi, sizeof hi, "50"); }
+    else if (i == EST_GAMA) { snprintf(lo, sizeof lo, "-20"); snprintf(hi, sizeof hi, "+20"); }
 #endif
     else { snprintf(lo, sizeof lo, "%d%%", i == 3 ? 25 : EST_SL[i].min); snprintf(hi, sizeof hi, "%d%%", i == 3 ? 100 : EST_SL[i].max); }
     { TxtLinha tl = txt_linha(TXT_G16B, lo, 243, 242, 239, 150), th = txt_linha(TXT_G16B, hi, 243, 242, 239, 150);
@@ -2257,7 +2257,7 @@ static void sliderCtl(int i, GfxRect r, float a, int ativo) {
       || i == EST_GAMA
 #endif
       ) {   // niveis discretos: um ponto por parada
-    int n = i == 3 ? 4 : i == 5 ? 8 : 11, k;
+    int n = i == 3 ? 4 : i == 5 ? 8 : 9, k;   // gamma: a dot every 5
     for (k = 0; k < n; k++) {
       float tx = x1 + (x2 - x1) * (float)k / (float)(n - 1);
       if (fabsf(tx - px) > 18.0f) gfx_cor((GfxRect){ tx - 3.0f, cy - 3.0f, 6.0f, 6.0f }, 0.5f, 1, 1, 1, 0.45f * a);
