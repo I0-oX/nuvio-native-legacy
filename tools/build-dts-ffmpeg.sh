@@ -11,6 +11,10 @@ TMPDIR="${TMPDIR%/}"
 #                   host (NUVIO_DTS_SRC; the container has no curl). Adds what the Samsung loopback
 #                   converter needs: TrueHD/MLP
 #                   decoders, mpegts/matroska/mp4 muxers, mlp/ac3 parsers, truehd_core.
+#                   The opus parser: Matroska-laced Opus without DefaultDuration
+#                   (mkvmerge) only has a timestamp on each block's first frame;
+#                   the parser gives every frame its length, so FFmpeg fills
+#                   the rest (without it 15 of 100 packets per 2 s: no sound).
 #                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c): the FLAC
 #                   decoder (FLAC conversion, kept without a menu row) and the adts muxer
 #                   (the MPEG-TS muxer wraps copied AAC with it). The Opus decoder
@@ -34,7 +38,7 @@ if [ "$TARGET" = tpk ]; then
   CC=${CC:-gcc}
   DECODERS=$DECODERS,truehd,mlp,flac,opus
   MUXERS=mpegts,matroska,mp4,adts
-  PARSERS=$PARSERS,mlp,ac3
+  PARSERS=$PARSERS,mlp,ac3,opus
   BSFS=$BSFS,truehd_core
   # zlib: Matroska tracks stored zlib-compressed (ContentCompression) and MP4
   # with a compressed header (cmov) arrive raw without it ("Unsupported encoding

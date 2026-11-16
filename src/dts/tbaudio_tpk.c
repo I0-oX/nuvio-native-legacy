@@ -1014,25 +1014,11 @@ static int drenarFifo(Sessao *s, int tudo) {
   }
   return 0;
 }
-// Samples (48 kHz) in one Opus packet, from its TOC byte (RFC 6716 3.1); 0 = unreadable.
-static int opusAmostras(const uint8_t *d, int n) {
-  static const int F[32] = { 480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 480, 960,
-                             120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960 };
-  int c, q;
-  if (!d || n < 1) return 0;
-  c = d[0] & 3;
-  q = c == 0 ? 1 : c < 3 ? 2 : n >= 2 ? (d[1] & 0x3f) : 0;
-  return q * F[d[0] >> 3];
-}
-// A packet's length in its stream's time base: the container's, else from the
-// codec (Opus: TOC; others: FFmpeg's frame size). 0 = unknown.
+// A packet's length in its stream's time base: the container's or the
+// parser's, else FFmpeg's frame size for the codec. 0 = unknown.
 static int64_t pacoteDur(const AVStream *st, const AVPacket *p) {
   int a;
   if (p->duration > 0) return p->duration;
-  if (st->codecpar->codec_id == AV_CODEC_ID_OPUS) {
-    a = opusAmostras(p->data, p->size);
-    return a > 0 ? av_rescale_q(a, (AVRational){1, 48000}, st->time_base) : 0;
-  }
   a = av_get_audio_frame_duration2(st->codecpar, p->size);
   return a > 0 && st->codecpar->sample_rate > 0 ? av_rescale_q(a, (AVRational){1, st->codecpar->sample_rate}, st->time_base) : 0;
 }
@@ -1054,9 +1040,11 @@ static int produzir(Sessao *s, const Faixa *f, char *err, size_t en) {
     if (s->pk->stream_index != f->si) { av_packet_unref(s->pk); continue; }
     if (s->pk->pts == AV_NOPTS_VALUE) s->pk->pts = s->pk->dts;
     // Matroska lacing without BlockDuration/DefaultDuration (owner 16/11, an
-    // mkvmerge Opus track): only the block's first frame has a timestamp, the
-    // others come with none and no length. They used to be dropped (14 of 100
-    // Opus packets per 2 s: no sound). Each one follows the one before it.
+    // mkvmerge Opus track): only the block's first frame has a timestamp.
+    // FFmpeg's parser for the codec gives the rest theirs (the Opus parser is
+    // in the .tpk's FFmpeg for this: tools/build-dts-ffmpeg.sh). Safety net
+    // for a codec without a parser: the packet follows the one before it
+    // instead of being dropped (dropped = 14 of 100 Opus packets: no sound).
     {
       int64_t d = pacoteDur(st, s->pk);
       if (s->pk->pts == AV_NOPTS_VALUE && s->proxPts != AV_NOPTS_VALUE) {
