@@ -6,8 +6,9 @@
 #include <math.h>
 #include <stdio.h>
 
-static int quer, aberto, chamadas, ultimo = -1;
+static int quer, aberto, chamadas, ultimo = -1, app;
 int assrender_borda_quer(void) { return quer; }
+int player_legenda_app_quer(void) { return app; }   // app-drawn (SRT) text on screen
 int player_aberto(void) { return aberto; }
 void nv_tpk_premult_registrar(void (*f)(int));
 static void host(int v) { chamadas++; ultimo = v; }
@@ -25,6 +26,10 @@ int main(void) {
   quer = 1; aberto = 0; tpkborda_quadro(); assert(chamadas == 2);       // player fechado: fica off
   aberto = 1; tpkborda_quadro(); assert(chamadas == 3 && ultimo == 1);
   aberto = 0; tpkborda_quadro(); assert(chamadas == 4 && ultimo == 0);  // fechou: off na hora
+  // App-drawn subtitle text asks for it too (faint colours at low opacity).
+  quer = 0; aberto = 1; app = 1; tpkborda_quadro(); assert(chamadas == 5 && ultimo == 1);
+  app = 0; tpkborda_quadro(); assert(chamadas == 6 && ultimo == 0);
+  aberto = 0;
 
   // Subtitle contrast: indice 0 = 30 (1,00) .. 30 = 0 (0,70), ganho (c + 70) / 100.
   for (int v = 0; v <= 30; v++) {
