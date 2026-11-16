@@ -44,6 +44,8 @@ enum {
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
+  AP_TVASS,        // TEST (16/11/2026): how the TV is kept off ASS tracks (mkvfix.h):
+                   // 0 Auto (Tizen 4-6 Void, 7+ Hidden), 1 Hidden (2.0.8), 2 Void, 3 Direct (2.0.7)
   AP_N
 };
 

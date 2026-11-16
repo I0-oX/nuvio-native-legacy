@@ -18,6 +18,7 @@
 static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __attribute__((unused)) = {
   [AP_ESCALA] = { "escala", 0, 5, 5 }, [AP_GAMA] = { "gama", 0, 10, 0 }, [AP_CONTRASTE] = { "contraste", 0, 30, 0 },
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
+  [AP_TVASS] = { "tvass", 0, 3, 0 },
 };
 
 static int val[AP_N] __attribute__((unused));   // read off the .tpk only by the tests
@@ -115,7 +116,9 @@ void assperf_restaurar(void) {
   int i;
   assperf_iniciar();
   pthread_mutex_lock(&trava);
-  for (i = 0; i < AP_N; i++) if (i != AP_LIBASS) __atomic_store_n(&val[i], PESSOA[i].padrao, __ATOMIC_RELAXED);
+  /* libass on/off and the TV test switch are not style: Restore keeps them. */
+  for (i = 0; i < AP_N; i++)
+    if (i != AP_LIBASS && i != AP_TVASS) __atomic_store_n(&val[i], PESSOA[i].padrao, __ATOMIC_RELAXED);
   gravar();
   pthread_mutex_unlock(&trava);
   __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
@@ -234,6 +237,13 @@ int assperf_pesado(void) {
 #define AUTO_MIN75_S  5.0
 #define AUTO_MIN100_S 2.0
 static struct { int em75; double desde; } A;
+/* Render resolution Auto in a busy scene: 75 %; Tizen 4/5 50 % (owner,
+ * 16/11/2026: the 2019 TV still dropped to ~11 fps at 75 %). "em75" = busy. */
+#ifdef NV_TPK40
+#define ESCALA_PESADA 0.5
+#else
+#define ESCALA_PESADA 0.75
+#endif
 
 static void auto_trocar_locked(int em75, double t) { A.em75 = em75; A.desde = t; }
 
@@ -251,7 +261,7 @@ double assperf_escala_quadro(void) {
   { int pesado = pesado_locked(t) || CG.prevCedo;
     if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t);
     else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t); }
-  r = A.em75 ? 0.75 : 1.0;
+  r = A.em75 ? ESCALA_PESADA : 1.0;
   pthread_mutex_unlock(&autoTrava);
   return r;
 }
@@ -267,5 +277,5 @@ double assperf_escala(void) {
   int v = assperf_get(AP_ESCALA), em75;
   if (v != 5) return v == 2 ? 0.75 : 1.0;
   pthread_mutex_lock(&autoTrava); em75 = A.em75; pthread_mutex_unlock(&autoTrava);
-  return em75 ? 0.75 : 1.0;
+  return em75 ? ESCALA_PESADA : 1.0;
 }

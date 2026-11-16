@@ -598,13 +598,15 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
         * defaults (always the last cell). With libass off it is the ordinary
         * column plus the libass row, Restore defaults last. */
        EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
+       EST_TVASS,
 #endif
        EST_TOTAL };
 static const char *const EST_ROT[EST_TOTAL] = {
   "Tamanho", "Fonte OpenSubtitles", "Cor", "Opacidade", "Fundo", "Posição", "Borda", "Atraso",
   "Negrito", "Restaurar padrão", "Cor da borda"
 #ifdef NV_TPK
-  , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
+  , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem",
+  "TV and ASS (test)"   // test row (16/11/2026), English only: not a translated key
 #endif
 };
 
@@ -626,12 +628,13 @@ static void estMapa(void) {
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
       static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
-                               EST_LIBASS, EST_RESTAURAR };
+                               EST_TVASS, EST_LIBASS, EST_RESTAURAR };
       for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) estLinhas[estNLinhas++] = L[i];
       return;
     }
     /* Restore defaults stays the last cell (owner 27/10), after libass. */
     for (i = 0; i <= EST_COR_BORDA; i++) if (i != EST_RESTAURAR) estLinhas[estNLinhas++] = i;
+    estLinhas[estNLinhas++] = EST_TVASS;
     estLinhas[estNLinhas++] = EST_LIBASS;
     estLinhas[estNLinhas++] = EST_RESTAURAR;
     return;
@@ -723,6 +726,11 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
       snprintf(dst, tam, "%s", v == 5 ? i18n("Automático") : v == 2 ? "75%" : "100%");
       break; }
+    case EST_TVASS: {   // how the TV is kept off ASS tracks (mkvfix.h); applies when a video opens
+      static const char *const M[4] = { "Auto", "Hidden (2.0.8)", "Void", "Direct (2.0.7)" };
+      int v = assperf_get(AP_TVASS);
+      snprintf(dst, tam, "%s \xc2\xb7 next open", M[v >= 0 && v <= 3 ? v : 0]);
+      break; }
     case EST_SINC: { int lv, ps, ag;
       legimagem_valores(&lv, &ps, &ag);
       if (ctl == EST_SINC) snprintf(dst, tam, sincPesada ? "%d / [%d] ms" : "[%d] / %d ms", lv, ps);
@@ -759,6 +767,12 @@ static void ciclarEstilo(int linha) {
       int v = assperf_get(AP_ESCALA);
       assperf_definir(AP_ESCALA, v == 5 ? 0 : v == 0 ? 2 : 5);
       return; }
+    case EST_TVASS:   // Auto -> Hidden -> Void -> Direct
+      assperf_definir(AP_TVASS, (assperf_get(AP_TVASS) + 1) % 4);
+      printf("[mkvfix] test row: ASS tracks and the TV -> %d (0 Auto, 1 Hidden, 2 Void, 3 Direct), from the next open\n",
+             assperf_get(AP_TVASS));
+      fflush(stdout);
+      return;
     case EST_LIBASS:
       /* The same track again, so libass takes it (or lets it go). */
       assperf_definir(AP_LIBASS, !assperf_get(AP_LIBASS));

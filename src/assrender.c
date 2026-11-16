@@ -122,6 +122,7 @@ char *assrender_marcar_tailandes(const char *txt) {
 #ifdef NV_TPK
 #include "video.h"    // video_tpk_leituras ("[ass] 10s tv")
 #include "memlog.h"
+#include "mkvfix.h"   // mkvfix_medidas ("[mkvfix] 10s")
 #endif
 #if !defined(__EMSCRIPTEN__)
 #include <sys/resource.h>
@@ -820,7 +821,11 @@ static void ass_aplicar_assperf_locked(void) {
       feito = 1;
       ass_nv_set_engine(assRenderer, 1);
       assfios_nome_trocar("nv-assblur", nomeAnt);
+#ifdef NV_TPK40
+      ass_nv_set_threads(2);   /* Tizen 4/5: 2 blur threads, one core left to the TV (owner, 16/11) */
+#else
       ass_nv_set_threads(ASSPERF_FIOS);
+#endif
       assfios_nome_voltar(nomeAnt);
       /* WHAT THIS TV IS, once per session (libass on the Tizen 4/5 .tpk, 09/11):
        * the engine's values are the S95C's on every .tpk, so a 2018-2020 TV's
@@ -865,6 +870,16 @@ static long long ass_grade_desde(long long ms);
 static void *ass_worker_loop(void *unused) {
   (void)unused;
   assfios_nomear("nv-assrender");
+#ifdef NV_TPK40
+  /* TIZEN 4/5 (owner, 16/11/2026, after the UE55RU7170 log of 10/11: frames
+   * of 65-107 ms in a sign-heavy scene): the TV's player comes first. This
+   * worker and the blur helpers it starts (they inherit it) run at nice 10. */
+  if (setpriority(PRIO_PROCESS, 0, 10) == 0)
+    printf("[ass] tizen 4/5: subtitle worker and blur threads at low priority (nice 10)\n");
+  else
+    printf("[ass] tizen 4/5: could not lower the subtitle threads' priority\n");
+  fflush(stdout);
+#endif
   for (;;) {
     AssCpuFrame frame;
     unsigned generation, serial, epoch;
@@ -1259,8 +1274,30 @@ static GLuint ass_tc_obter(const AssCpuImage *im, unsigned long long chave, int 
 }
 
 /* Sobe (se o quadro e novo) e desenha assMain. Fio GL. */
+/* "[ass] 10s tv" (Tizen 4-6 playback damage, 16/11): what drawing the subtitles
+ * costs the GL thread per frame (uploads of new frames + the draw calls). */
+static long long glDesUs, glDesMaxUs;   // __atomic: the GL thread adds, the 10 s report takes
+static long glDesN, glDesNovos;
+static int ass_main_desenhar_corpo(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
+                                   int quadroNovo);
 static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
                              int quadroNovo) {
+  struct timespec t0, t1;
+  long long us, mx;
+  int r;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  r = ass_main_desenhar_corpo(x, y, alpha, corAtiva, cr, cg, cb, quadroNovo);
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  us = (long long)(t1.tv_sec - t0.tv_sec) * 1000000LL + (t1.tv_nsec - t0.tv_nsec) / 1000;
+  __atomic_add_fetch(&glDesUs, us, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&glDesN, 1, __ATOMIC_RELAXED);
+  if (quadroNovo) __atomic_add_fetch(&glDesNovos, 1, __ATOMIC_RELAXED);
+  mx = __atomic_load_n(&glDesMaxUs, __ATOMIC_RELAXED);
+  while (us > mx && !__atomic_compare_exchange_n(&glDesMaxUs, &mx, us, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+  return r;
+}
+static int ass_main_desenhar_corpo(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
+                                   int quadroNovo) {
   int i;
   float kk = assMain.k > 1 ? (float)assMain.k : 1.0f, esc = assMain.esc > 0.01f ? assMain.esc : kk;
   assGlQuadro++;
@@ -2043,6 +2080,90 @@ static double ass_mono(void) {
 
 /* Medidas por quadro desenhado, sob assFilaTrava. `agora` e o relogio do
  * video em ms (o mesmo que foi pedido ao libass). */
+#if defined(NV_TPK) && ASS_NOVO && defined(__linux__)
+/* CPU EVERY 10 s (Tizen 4-6 playback damage, 16/11/2026): the whole TV (from
+ * /proc/stat) and this app's threads (/proc/self/task/<tid>/stat), as % of one
+ * core over the window. The TV's own player runs in other processes: what the
+ * TV is busy with beyond this app shows as "TV" minus "app". */
+#define CPU_FIOS 160
+static struct { int tid; unsigned long long t; } cpuAnt[CPU_FIOS];
+static int cpuAntN;
+static unsigned long long cpuTvOcupado, cpuTvTotal;
+static double cpuEm;
+
+static int cpu_ler(const char *arq, char *b, size_t n) {
+  FILE *f = fopen(arq, "r");
+  size_t k;
+  if (!f) return 0;
+  k = fread(b, 1, n - 1, f);
+  fclose(f);
+  b[k] = 0;
+  return (int)k;
+}
+
+static void cpu_10s(double agora) {
+  typedef struct { int tid; unsigned long long t; char nome[20]; double pct; } Fio;
+  static Fio f[CPU_FIOS];
+  int n = 0, i, j;
+  char b[512], linha[700];
+  size_t o = 0;
+  double dt = cpuEm > 0 ? agora - cpuEm : 0.0, tck = (double)sysconf(_SC_CLK_TCK), app = 0, tv = -1;
+  unsigned long long u = 0, ni = 0, sy = 0, id = 0, io = 0, irq = 0, sirq = 0, st = 0;
+  DIR *d;
+  struct dirent *e;
+  if (tck <= 0) tck = 100;
+  if (cpu_ler("/proc/stat", b, sizeof b) &&
+      sscanf(b, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &u, &ni, &sy, &id, &io, &irq, &sirq, &st) >= 4) {
+    unsigned long long ocup = u + ni + sy + irq + sirq + st, tot = ocup + id + io;
+    if (cpuTvTotal && tot > cpuTvTotal)
+      tv = 100.0 * (double)(ocup - cpuTvOcupado) / (double)(tot - cpuTvTotal) * (double)sysconf(_SC_NPROCESSORS_ONLN);
+    cpuTvOcupado = ocup; cpuTvTotal = tot;
+  }
+  d = opendir("/proc/self/task");
+  while (d && (e = readdir(d)) != NULL && n < CPU_FIOS) {
+    char arq[64], *p, *q;
+    unsigned long long ut = 0, stt = 0;
+    int tid = atoi(e->d_name);
+    if (tid <= 0) continue;
+    snprintf(arq, sizeof arq, "/proc/self/task/%d/stat", tid);
+    if (!cpu_ler(arq, b, sizeof b) || !(p = strchr(b, '(')) || !(q = strrchr(b, ')'))) continue;
+    f[n].tid = tid;
+    snprintf(f[n].nome, sizeof f[n].nome, "%.*s", (int)(q - p - 1 < 15 ? q - p - 1 : 15), p + 1);
+    /* after ")": state(3) ppid ... utime is field 14, stime 15 */
+    if (sscanf(q + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &stt) != 2) continue;
+    f[n].t = ut + stt;
+    f[n].pct = -1;
+    for (j = 0; j < cpuAntN; j++)
+      if (cpuAnt[j].tid == tid) {
+        if (dt > 0 && f[n].t >= cpuAnt[j].t) f[n].pct = 100.0 * (double)(f[n].t - cpuAnt[j].t) / tck / dt;
+        break;
+      }
+    if (f[n].pct < 0) f[n].pct = 0;   /* new thread: counted from the next window */
+    app += f[n].pct;
+    n++;
+  }
+  if (d) closedir(d);
+  for (i = 0; i < n; i++) { cpuAnt[i].tid = f[i].tid; cpuAnt[i].t = f[i].t; }
+  cpuAntN = n;
+  cpuEm = agora;
+  if (dt <= 0) return;
+  /* busiest first, same names summed ("nv-assblur" x3) */
+  for (i = 0; i < n; i++)
+    for (j = i + 1; j < n; j++)
+      if (!strcmp(f[i].nome, f[j].nome)) { f[i].pct += f[j].pct; f[j].pct = -1; }
+  for (i = 0; i < 8; i++) {
+    int m = -1;
+    for (j = 0; j < n; j++) if (f[j].pct >= 0.5 && (m < 0 || f[j].pct > f[m].pct)) m = j;
+    if (m < 0) break;
+    o += (size_t)snprintf(linha + o, sizeof linha - o, "%s%s %.0f%%", i ? ", " : "", f[m].nome, f[m].pct);
+    f[m].pct = -1;
+    if (o >= sizeof linha - 40) break;
+  }
+  printf("[ass] 10s cpu: TV busy=%.0f%% of %ld cores | app=%.0f%% (%d threads) | %s\n",
+         tv, sysconf(_SC_NPROCESSORS_ONLN) * 100L, app, n, o ? linha : "-");
+}
+#endif
+
 static void ass_medir_locked(long long agora, int temTexto, long long inicioMax) {
   double m = ass_mono();
   assMed.quadros++;
@@ -2092,7 +2213,27 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
                "free RAM=%ldMB | queue=%d frames %.1fMB | textures=%d %.1fMB | scale=%d%% busy=%d\n",
                n, n / dt, fora, n ? (double)somaMs / n : 0.0, maxMs, memlog_livre_mb(),
                assFilaN, ass_fila_bytes_locked() / 1048576.0, assTcN, assTcBytes / 1048576.0,
-               (int)(assperf_escala() * 100.0 + 0.5), assperf_pesado()); }
+               (int)(assperf_escala() * 100.0 + 0.5), assperf_pesado());
+      /* Drawing the subtitles on the GL thread, and the local server feeding
+       * the TV (Tizen 4-6 playback damage, 16/11): every window, also paused. */
+      { long long us = __atomic_exchange_n(&glDesUs, 0, __ATOMIC_RELAXED),
+                  mx = __atomic_exchange_n(&glDesMaxUs, 0, __ATOMIC_RELAXED);
+        long gn = __atomic_exchange_n(&glDesN, 0, __ATOMIC_RELAXED), gnov = __atomic_exchange_n(&glDesNovos, 0, __ATOMIC_RELAXED);
+        MkvfixMedidas md;
+        mkvfix_medidas(&md);
+        if (dt > 0.0) {
+          printf("[ass] 10s draw: GL frames with subtitles=%ld (new %ld) avg=%.2fms max=%.1fms\n",
+                 gn, gnov, gn ? us / 1000.0 / gn : 0.0, mx / 1000.0);
+          printf("[mkvfix] 10s: mode=%s | to the TV %.2f MB/s (%.1f Mbit/s), blocked sending %lldms, waiting on the CDN %lldms, "
+                 "connections=%d | Void: %ld block(s) %.1fKB, resync %ld, lost %ld, undecided %ld\n",
+                 mkvfix_modo_ass_atual() == MKVFIX_ASS_ANULAR ? "Void" : mkvfix_modo_ass_atual() == MKVFIX_ASS_DIRETO ? "Direct" : "Hidden",
+                 md.bytes / 1048576.0 / dt, md.bytes * 8.0 / 1e6 / dt, md.envioMs, md.cdnMs, md.conexoes,
+                 md.anulados, md.bytesAnulados / 1024.0, md.sincronias, md.perdas, md.indecisos);
+        } }
+#if defined(__linux__)
+      cpu_10s(m);
+#endif
+    }
 #endif
     fflush(stdout);
     assMed.quadros = assMed.trocas = assMed.renders = assMed.iguais = 0;

@@ -39,6 +39,7 @@
 #include "cdnlink.h"
 #include "debrid.h"
 #include "mkvfix.h"
+#include "assperf.h"
 #include <SDL2/SDL.h>
 #include <math.h>
 #include <pthread.h>
@@ -458,6 +459,7 @@ static struct {
 } mf;
 static char mfEspUrl[sizeof urlAtual], mfEspCab[sizeof cabecalhos];
 static int mfEsperarAntes(const char *url, const char *cab);
+static int modoAss(void);   // mkvfix.h: Hidden / Void / Direct for this TV (below, next to tizenMaior)
 static atomic_int mfRecusas;   // EV_BUSCA_FALHOU (fio do host)
 static atomic_int mfAviso;     // video_tpk_aviso_busca consome
 static atomic_uint buscaFalhas;  // EV_BUSCA_FALHOU, so cresce (player.c: seek em voo)
@@ -757,6 +759,7 @@ static int mfPode(void) {
 static void mfSondar(void) {
   if (!mfPode()) return;
   mf.sondou = 1;
+  mkvfix_modo_ass(modoAss());
   if (cdn.arquivo) mkvfix_sondar_arquivo(hostUrl, hostCab, cdn.usenet, cdn.item, cdn.file);
   else mkvfix_sondar(hostUrl, hostCab, strcmp(urlAtual, hostUrl) ? urlAtual : NULL);
 }
@@ -780,6 +783,14 @@ static int mfEsperarAntes(const char *url, const char *cab) {
   // mkvfix, cujo curl manda os cabecalhos em todo Range.
   int relay = cab && mkvfix_cab_fora_da_tv(cab);
   if (!relay && (mkvEstado != 3 || !mkvTemAss())) return 0;
+  mkvfix_modo_ass(modoAss());
+  // Direct (2.0.7, test switch): an ASS file opens as it is; the probe after
+  // "ready" still runs for the seek fix and leaves the subtitles to the TV.
+  if (!relay && mkvfix_modo_ass_atual() == MKVFIX_ASS_DIRETO) {
+    printf("[mkvfix] the file has ASS/SSA subtitles: Direct mode (as 2.0.7), the TV opens the file as it is\n");
+    fflush(stdout);
+    return 0;
+  }
   mf.sondou = 1; mf.esperando = 1; mf.esperaDesde = SDL_GetTicks();
   snprintf(mfEspUrl, sizeof mfEspUrl, "%s", url ? url : "");
   snprintf(mfEspCab, sizeof mfEspCab, "%s", cab ? cab : "");
@@ -2048,6 +2059,26 @@ static void encaixar(int x, int y, int w, int h, int *fx, int *fy, int *fw, int 
 // Versao da Tizen (gpunivel.c le platform.version); so o maior importa.
 static int tizenMaior;
 void video_tpk_tizen_definir(const char *v) { tizenMaior = v ? atoi(v) : 0; }
+// How the TV is kept off the ASS tracks (mkvfix.h). Auto: Void on Tizen 4-6
+// (their players show blocky damage with 2.0.8's Hidden, 16/11/2026), Hidden on
+// 7+ and when the version is unknown (the S95C is fine with it). The Style
+// test row (AP_TVASS) overrides; it applies when a video opens.
+static int modoAss(void) {
+  int v = assperf_get(AP_TVASS), m;
+  static int logado = -1;
+  if (v == 1) m = MKVFIX_ASS_ESCONDER;
+  else if (v == 2) m = MKVFIX_ASS_ANULAR;
+  else if (v == 3) m = MKVFIX_ASS_DIRETO;
+  else m = tizenMaior >= 4 && tizenMaior <= 6 ? MKVFIX_ASS_ANULAR : MKVFIX_ASS_ESCONDER;
+  if (logado != v * 10 + m) {
+    logado = v * 10 + m;
+    printf("[mkvfix] ASS tracks and the TV: %s (setting %s, Tizen %d)\n",
+           m == MKVFIX_ASS_ANULAR ? "Void" : m == MKVFIX_ASS_DIRETO ? "Direct (2.0.7)" : "Hidden (2.0.8)",
+           v == 0 ? "Auto" : "test row", tizenMaior);
+    fflush(stdout);
+  }
+  return m;
+}
 // COVER NO CARTAO (#471): so na Tizen 6.x (a TV do relato, uma AU7000 6.0) ou com
 // o zoom experimental ligado. ROI com origem negativa nunca foi visto no 4/5 (#426)
 // e apaga o plano na Tizen 9 (#188), entao as demais familias ficam no quadro
