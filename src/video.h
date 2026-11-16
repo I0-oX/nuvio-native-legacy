@@ -197,6 +197,9 @@ int      video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsi
 int      video_pos_incerta(void);
 // Frame rate and HDR of the playing file (MKV header); 0 = unknown.
 int      video_tpk_quadro(double *fps, int *hdr);
+// Colour of the playing MKV's video (Colour element): MatrixCoefficients and
+// Range as in the file (0 = not stated), and HDR. 0 = no MKV video track.
+int      video_tpk_cor(int *matriz, int *faixa, int *hdr);
 #endif
 int    video_tocando(void);
 // Pausa comprovada pelo backend da sessao atual, nao a intencao local de

@@ -5820,6 +5820,9 @@ static void desenharLegendaPrincipal(float *topoPilha){
                              assrender_texto_simples() ? 1.0 : escalaFonteAss());
 #ifdef NV_TPK
     assrender_definir_fps(legimagem_fps());   // frame grid (assrender.c)
+    { int mz, fx, hdr;   // YCbCr matrix of styled ASS (assrender.c)
+      if (!video_tpk_cor(&mz, &fx, &hdr)) mz = fx = hdr = 0;
+      assrender_definir_cor_video(mz, fx, hdr, video_altura()); }
 #endif
     assrender_desenhar(posLeg, atraso, alpha,
                         0, 0, NV_TELA_W, NV_TELA_H);

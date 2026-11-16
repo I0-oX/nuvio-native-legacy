@@ -111,6 +111,8 @@ static void lerTexto(const unsigned char *p, long n, char *dst, size_t tam) {
 #define ID_VIDEO       0xE0UL        // TrackEntry > Video
 #define ID_COLOUR      0x55B0UL      // Video > Colour
 #define ID_TRANSFER    0x55BAUL      // Colour > TransferCharacteristics
+#define ID_MATRIZ      0x55B1UL      // Colour > MatrixCoefficients
+#define ID_FAIXACOR    0x55B9UL      // Colour > Range
 #define ID_BLOCKADDMAP 0x41E4UL      // BlockAdditionMapping (Dolby Vision config)
 #define ID_BLOCKADDTYPE 0x41E7UL     // BlockAddIDType: 'dvcC' / 'dvvC'
 #define ID_BLOCKADDDATA 0x41EDUL     // BlockAddIDExtraData: the DOVI record
@@ -197,6 +199,8 @@ static int lerTracks(const unsigned char *p, long n, MkvFaixa *saida, int max) {
                   if (ctam < 0 || c + ci + ct + ctam > atam) break;
                   c += ci + ct;
                   if (cid == ID_TRANSFER) f.transferencia = (int)lerUint(v + r + c, ctam);
+                  else if (cid == ID_MATRIZ) f.matriz = (int)lerUint(v + r + c, ctam);
+                  else if (cid == ID_FAIXACOR) f.faixaCor = (int)lerUint(v + r + c, ctam);
                   c += ctam;
                 }
               }

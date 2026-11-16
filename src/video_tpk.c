@@ -2773,6 +2773,17 @@ int video_tpk_quadro(double *fps, int *hdr) {
     }
   return *fps > 1.0;
 }
+int video_tpk_cor(int *matriz, int *faixa, int *hdr) {
+  int i;
+  *matriz = 0; *faixa = 0; *hdr = 0;
+  for (i = 0; i < mkvN; i++)
+    if (mkvFx[i].tipo == 1) {
+      *matriz = mkvFx[i].matriz; *faixa = mkvFx[i].faixaCor;
+      *hdr = mkvFx[i].transferencia == 16 || mkvFx[i].transferencia == 18 || mkvFx[i].dvPerfil > 0;
+      return 1;
+    }
+  return 0;
+}
 int video_pos_incerta(void) {
   if (!atomic_load(&posIncerta)) return 0;
   // Sem leitura em 1,5 s (consulta presa): volta ao de antes em vez de esconder.

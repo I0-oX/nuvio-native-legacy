@@ -46,6 +46,10 @@ typedef struct {
   // 18 HLG; 0 = not stated).
   unsigned long long quadroNs;
   int  transferencia;
+  // Colour > MatrixCoefficients (1 BT.709, 5/6 BT.601, 9 BT.2020; 0 = not in
+  // the file, as 2 = unspecified) and Colour > Range (1 TV, 2 PC; 0 = not
+  // stated): the colour matrix of ASS subtitles (assrender.c, 16/11/2026).
+  int  matriz, faixaCor;
 } MkvFaixa;
 
 // O que a ultima sonda (mkv_faixas_e_caps / mkv_faixas_do_trecho) viu. Estado

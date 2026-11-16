@@ -1211,6 +1211,92 @@ static GLuint ass_textura_locked(int slot, const AssCpuImage *im) {
   return assTex[slot].tex;
 }
 
+/* ===== MATRIZ YCbCr DAS CORES DO ASS (16/11/2026) =============================
+ * Uma cor do script foi escolhida olhando o video decodificado com a matriz do
+ * "YCbCr Matrix:" do script (o VSFilter decodificava tudo em BT.601). A TV
+ * decodifica o video com a matriz DELE (BT.709 num 1080p). Sem conversao, um
+ * letreiro que casava com a parede do video sai com outro tom em cima dela.
+ * Como o mpv (sd_ass.c, mangle_colors) e o JASSUB: a cor do script volta ao
+ * YCbCr com a matriz e a faixa do script e sai em RGB com as do video.
+ *   - script sem cabecalho (YCBCR_DEFAULT): BT.601 TV, a regra do VSFilter;
+ *   - "None" ou desconhecida: nada muda;
+ *   - video RGB, BT.2020 ou HDR: nada muda (a TV mapeia o HDR por conta dela);
+ *   - matriz do video nao declarada: BT.709 de 720 linhas para cima, senao
+ *     BT.601 (a regra do mpv). Faixa nao declarada: TV.
+ * A cor que a pessoa escolheu para o dialogo e o texto simples nao convertem. */
+static int assTrackMatriz = -1;   // ASS_YCbCrMatrix da faixa; -1 = sem faixa / texto simples
+static int assVidMatriz, assVidFaixa, assVidHdr, assVidAlt;
+
+void assrender_definir_cor_video(int matriz, int faixa, int hdr, int altura) {
+  __atomic_store_n(&assVidMatriz, matriz, __ATOMIC_RELAXED);
+  __atomic_store_n(&assVidFaixa, faixa, __ATOMIC_RELAXED);
+  __atomic_store_n(&assVidHdr, hdr, __ATOMIC_RELAXED);
+  __atomic_store_n(&assVidAlt, altura, __ATOMIC_RELAXED);
+}
+
+typedef struct { double kr, kb; int pc; } AssCsp;
+
+static int ass_csp_script(int m, AssCsp *c) {
+  c->pc = 0;
+  switch (m) {
+    case YCBCR_DEFAULT: case YCBCR_BT601_TV: c->kr = 0.299; c->kb = 0.114; return 1;
+    case YCBCR_BT601_PC: c->kr = 0.299; c->kb = 0.114; c->pc = 1; return 1;
+    case YCBCR_BT709_TV: c->kr = 0.2126; c->kb = 0.0722; return 1;
+    case YCBCR_BT709_PC: c->kr = 0.2126; c->kb = 0.0722; c->pc = 1; return 1;
+    case YCBCR_SMPTE240M_TV: c->kr = 0.212; c->kb = 0.087; return 1;
+    case YCBCR_SMPTE240M_PC: c->kr = 0.212; c->kb = 0.087; c->pc = 1; return 1;
+    case YCBCR_FCC_TV: c->kr = 0.30; c->kb = 0.11; return 1;
+    case YCBCR_FCC_PC: c->kr = 0.30; c->kb = 0.11; c->pc = 1; return 1;
+    default: return 0;   // UNKNOWN, NONE
+  }
+}
+
+/* Matriz do video (ISO/IEC 23001-8, a mesma numeracao do MKV). */
+static int ass_csp_video(int m, int faixa, int hdr, int altura, AssCsp *c) {
+  if (hdr) return 0;
+  if (m == 0 || m == 2 || m == 3) m = altura >= 720 || altura <= 0 ? 1 : 6;   // nao declarada
+  c->pc = faixa == 2;
+  switch (m) {
+    case 1: c->kr = 0.2126; c->kb = 0.0722; return 1;
+    case 4: c->kr = 0.30; c->kb = 0.11; return 1;
+    case 5: case 6: c->kr = 0.299; c->kb = 0.114; return 1;
+    case 7: c->kr = 0.212; c->kb = 0.087; return 1;
+    default: return 0;   // BT.2020 e o resto
+  }
+}
+
+/* RGB 0..1 do script -> RGB 0..1 como a TV mostraria o mesmo YCbCr. */
+static void ass_csp_converter(const AssCsp *s, const AssCsp *v, double rgb[3]) {
+  double y = s->kr * rgb[0] + (1.0 - s->kr - s->kb) * rgb[1] + s->kb * rgb[2];
+  double pb = (rgb[2] - y) / (2.0 * (1.0 - s->kb)), pr = (rgb[0] - y) / (2.0 * (1.0 - s->kr));
+  double yd, cb, cr, g;
+  int k;
+  /* Codigos de 8 bits divididos por 255, como no arquivo. */
+  if (s->pc) { yd = y; cb = 128.0 / 255.0 + pb; cr = 128.0 / 255.0 + pr; }
+  else { yd = (16.0 + 219.0 * y) / 255.0; cb = (128.0 + 224.0 * pb) / 255.0; cr = (128.0 + 224.0 * pr) / 255.0; }
+  if (v->pc) { y = yd; pb = cb - 128.0 / 255.0; pr = cr - 128.0 / 255.0; }
+  else { y = (yd * 255.0 - 16.0) / 219.0; pb = (cb * 255.0 - 128.0) / 224.0; pr = (cr * 255.0 - 128.0) / 224.0; }
+  rgb[0] = y + 2.0 * (1.0 - v->kr) * pr;
+  rgb[2] = y + 2.0 * (1.0 - v->kb) * pb;
+  g = (y - v->kr * rgb[0] - v->kb * rgb[2]) / (1.0 - v->kr - v->kb);
+  rgb[1] = g;
+  for (k = 0; k < 3; k++) rgb[k] = rgb[k] < 0.0 ? 0.0 : rgb[k] > 1.0 ? 1.0 : rgb[k];
+}
+
+/* Converte `v` (RGB 0..1 de uma imagem do libass) quando o script e o video
+ * diferem. Fio GL; le so atomicos. */
+static __attribute__((unused)) void ass_cor_matriz(double v[3]) {
+  AssCsp s, d;
+  int tm = __atomic_load_n(&assTrackMatriz, __ATOMIC_ACQUIRE);
+  if (tm < 0 || !ass_csp_script(tm, &s)) return;
+  if (!ass_csp_video(__atomic_load_n(&assVidMatriz, __ATOMIC_RELAXED),
+                     __atomic_load_n(&assVidFaixa, __ATOMIC_RELAXED),
+                     __atomic_load_n(&assVidHdr, __ATOMIC_RELAXED),
+                     __atomic_load_n(&assVidAlt, __ATOMIC_RELAXED), &d)) return;
+  if (s.kr == d.kr && s.kb == d.kb && s.pc == d.pc) return;
+  ass_csp_converter(&s, &d, v);
+}
+
 #if ASS_NOVO   /* only built where it runs (.tpk): off it, nothing of this is used */
 /* ===== O CAMINHO NOVO DO DESENHO (fio GL, ASS_NOVO) =========================
  *
@@ -1245,6 +1331,7 @@ static int *assMainIdx;          // e o indice dela em assTc
 static int assMainTexCap, assMainEnviado;
 static int assMainResetar;       // assrender_aplicar_invalidacao consumiu um assTexResetar
 
+static void ass_atlas_esvaziar_todos(void);
 static size_t ass_tc_tam(int w, int h) { return (size_t)w * (size_t)h; }
 
 static void ass_tc_apagar(void) {
@@ -1253,6 +1340,8 @@ static void ass_tc_apagar(void) {
     if (assTc[i].tex) { gfx_tex_esquecer(assTc[i].tex); glDeleteTextures(1, &assTc[i].tex); }
   free(assTc); assTc = NULL; assTcN = assTcCap = 0; assTcBytes = 0;
   assMainEnviado = 0;
+  /* O atlas fica alocado; so as posicoes saem (seek, troca de faixa). */
+  ass_atlas_esvaziar_todos();
 }
 
 static void ass_main_soltar(void) {
@@ -1327,6 +1416,218 @@ static GLuint ass_tc_obter(const AssCpuImage *im, unsigned long long chave, int 
   return 0;   // tudo em uso agora (raro): a imagem fica de fora deste quadro
 }
 
+/* ---- ATLAS: todas as imagens do quadro numa textura, um desenho so ---------
+ * (16/11/2026, como o JASSUB do AIOStreams.) Era uma textura e um gfx_rect por
+ * imagem: num letreiro pesado, centenas de trocas de textura e de chamadas GL
+ * por quadro de UI no fio GL. Agora as imagens vao para um atlas GL_ALPHA de
+ * ASS_AT_LADO, empacotadas em prateleiras, cada uma com uma moldura de 1 px
+ * que repete a borda dela (o filtro linear nao puxa a vizinha e le o mesmo
+ * que o GL_CLAMP_TO_EDGE de uma textura so), e o quadro inteiro sai em um
+ * gfx_marca_lote. A CHAVE do conteudo continua valendo: o letreiro que nao
+ * mudou nao sobe de novo enquanto o atlas tem lugar. Atlas cheio: o OUTRO dos
+ * dois vira o atual, vazio, e o quadro sobe nele inteiro (o que a GPU ainda le
+ * do quadro anterior fica intacto no primeiro). Imagem maior que o atlas ou
+ * quadro que nao cabe nem num atlas vazio: o caminho de uma textura por imagem
+ * (ass_tc_obter), so nesse quadro. */
+#define ASS_AT_LADO 2048
+typedef struct { unsigned long long chave; int w, h, x, y; } AssAtItem;
+typedef struct {
+  GLuint tex;
+  int lado;
+  int px, py, ph;           // prateleira: x livre, topo, altura
+  AssAtItem *it; int n, cap;
+  int *hash; int hashCap;   // indice+1 em `it` por chave (enderecamento aberto)
+} AssAtlas;
+static AssAtlas assAt[2];
+static int assAtCur;
+static int assAtFalhou;            // sem atlas (textura ou desenho): um a um
+static int assMainNoAtlas;         // o quadro em tela foi para assAt[assAtCur]
+static int *assMainAt;             // item do atlas de cada imagem (-1 = fora)
+static int assMainAtCap;
+static GfxMarcaItem *assLote;
+static int assLoteCap;
+static unsigned char *assAtPad;    // a imagem com a moldura (a borda repetida)
+static size_t assAtPadCap;
+static int assAtReinicios;         // atlas trocados por cheio (log)
+
+static void ass_atlas_esvaziar(AssAtlas *a) {
+  a->px = a->py = a->ph = 0; a->n = 0;
+  if (a->hash) memset(a->hash, 0, (size_t)a->hashCap * sizeof *a->hash);
+}
+
+static void ass_atlas_esvaziar_todos(void) {
+  if (assAt[0].tex) ass_atlas_esvaziar(&assAt[0]);
+  if (assAt[1].tex) ass_atlas_esvaziar(&assAt[1]);
+  assMainNoAtlas = 0;
+}
+
+static void ass_atlas_apagar(void) {
+  int i;
+  for (i = 0; i < 2; i++) {
+    if (assAt[i].tex) { gfx_tex_esquecer(assAt[i].tex); glDeleteTextures(1, &assAt[i].tex); }
+    free(assAt[i].it); free(assAt[i].hash);
+    memset(&assAt[i], 0, sizeof assAt[i]);
+  }
+  assAtCur = 0; assMainNoAtlas = 0;
+}
+
+static int ass_atlas_preparar(AssAtlas *a) {
+  GLint maxTex = 0;
+  if (a->tex) return 1;
+  glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+  a->lado = maxTex >= ASS_AT_LADO ? ASS_AT_LADO : (int)maxTex;
+  if (a->lado < 512) return 0;
+  glGenTextures(1, &a->tex);
+  if (!a->tex) return 0;
+  glBindTexture(GL_TEXTURE_2D, a->tex);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, a->lado, a->lado, 0, GL_ALPHA, GL_UNSIGNED_BYTE, NULL);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  if (glGetError() != GL_NO_ERROR) {
+    glDeleteTextures(1, &a->tex); a->tex = 0;
+    return 0;
+  }
+  ass_atlas_esvaziar(a);
+  return 1;
+}
+
+static unsigned ass_atlas_h(unsigned long long ch, int w, int h) {
+  unsigned long long k = ch ^ ((unsigned long long)(unsigned)w << 32) ^ (unsigned)h;
+  k ^= k >> 33; k *= 0xff51afd7ed558ccdULL; k ^= k >> 33;
+  return (unsigned)k;
+}
+
+static int ass_atlas_achar(const AssAtlas *a, unsigned long long ch, int w, int h) {
+  unsigned m, i;
+  if (!a->hashCap) return -1;
+  m = (unsigned)a->hashCap - 1u;
+  for (i = ass_atlas_h(ch, w, h) & m;; i = (i + 1u) & m) {
+    int k = a->hash[i] - 1;
+    if (k < 0) return -1;
+    if (a->it[k].chave == ch && a->it[k].w == w && a->it[k].h == h) return k;
+  }
+}
+
+static int ass_atlas_hash_por(AssAtlas *a, int k) {
+  unsigned m, i;
+  if ((a->n + 1) * 2 > a->hashCap) {   // metade cheia: dobra e refaz
+    int nc = a->hashCap ? a->hashCap * 2 : 1024, j;
+    int *nh = (int *)calloc((size_t)nc, sizeof *nh);
+    if (!nh) return 0;
+    free(a->hash); a->hash = nh; a->hashCap = nc;
+    m = (unsigned)nc - 1u;
+    for (j = 0; j < a->n; j++) {
+      if (j == k) continue;
+      for (i = ass_atlas_h(a->it[j].chave, a->it[j].w, a->it[j].h) & m; a->hash[i]; i = (i + 1u) & m) {}
+      a->hash[i] = j + 1;
+    }
+  }
+  m = (unsigned)a->hashCap - 1u;
+  for (i = ass_atlas_h(a->it[k].chave, a->it[k].w, a->it[k].h) & m; a->hash[i]; i = (i + 1u) & m) {}
+  a->hash[i] = k + 1;
+  return 1;
+}
+
+/* Lugar para (w+2) x (h+2) e o upload com a moldura. -1 = nao cabe. */
+static int ass_atlas_por(AssAtlas *a, const AssCpuImage *im, unsigned long long ch) {
+  int pw = im->w + 2, ph = im->h + 2, x, y, k, j;
+  size_t tam = (size_t)pw * (size_t)ph;
+  if (pw > a->lado || ph > a->lado) return -1;
+  if (a->px + pw > a->lado) { a->py += a->ph; a->px = 0; a->ph = 0; }
+  if (a->py + ph > a->lado) return -1;
+  x = a->px; y = a->py;
+  if (a->n == a->cap) {
+    int nc = a->cap ? a->cap * 2 : 256;
+    AssAtItem *nv = (AssAtItem *)realloc(a->it, (size_t)nc * sizeof *nv);
+    if (!nv) return -1;
+    a->it = nv; a->cap = nc;
+  }
+  if (tam > assAtPadCap) {
+    unsigned char *nb = (unsigned char *)realloc(assAtPad, tam);
+    if (!nb) return -1;
+    assAtPad = nb; assAtPadCap = tam;
+  }
+  for (j = 0; j < im->h; j++) {
+    unsigned char *d = assAtPad + (size_t)(j + 1) * (size_t)pw;
+    memcpy(d + 1, im->bitmap + (size_t)j * (size_t)im->stride, (size_t)im->w);
+    d[0] = d[1]; d[pw - 1] = d[pw - 2];
+  }
+  memcpy(assAtPad, assAtPad + (size_t)pw, (size_t)pw);
+  memcpy(assAtPad + (size_t)(ph - 1) * (size_t)pw, assAtPad + (size_t)(ph - 2) * (size_t)pw, (size_t)pw);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, pw, ph, GL_ALPHA, GL_UNSIGNED_BYTE, assAtPad);
+  a->px += pw;
+  if (ph > a->ph) a->ph = ph;
+  k = a->n++;
+  a->it[k].chave = ch; a->it[k].w = im->w; a->it[k].h = im->h; a->it[k].x = x + 1; a->it[k].y = y + 1;
+  if (!ass_atlas_hash_por(a, k)) { a->n--; return -1; }
+  return k;
+}
+
+#ifdef NV_ASS_ATLAS_TESTE
+/* tests/ass_atlas.c: o mesmo quadro pelo caminho de uma textura por imagem. */
+static int assAtlasDesligadoTeste;
+void assrender_teste_sem_atlas(int sem) { assAtlasDesligadoTeste = sem; assMainEnviado = 0; }
+int assrender_teste_atlas_trocas(void) { return assAtReinicios; }
+#endif
+
+/* Sobe o quadro no atlas atual (ou no outro, vazio). 1 = tudo no atlas. */
+static int ass_atlas_subir(void) {
+  int tentativa, i;
+  if (assAtFalhou) return 0;
+#ifdef NV_ASS_ATLAS_TESTE
+  if (assAtlasDesligadoTeste) return 0;
+#endif
+  if (assMain.count > assMainAtCap) {
+    int *nv = (int *)realloc(assMainAt, (size_t)assMain.count * sizeof *nv);
+    if (!nv) return 0;
+    assMainAt = nv; assMainAtCap = assMain.count;
+  }
+  for (tentativa = 0; tentativa < 2; tentativa++) {
+    AssAtlas *a = &assAt[assAtCur];
+    int ok = 1;
+    if (!ass_atlas_preparar(a)) { assAtFalhou = 1; printf("[libass] atlas indisponivel: uma textura por imagem\n"); return 0; }
+    glBindTexture(GL_TEXTURE_2D, a->tex);
+    for (i = 0; i < assMain.count && ok; i++) {
+      const AssCpuImage *im = &assMain.images[i];
+      unsigned long long ch;
+      int k;
+      if (!im->bitmap || im->w <= 0 || im->h <= 0) { assMainAt[i] = -1; continue; }
+      ch = im->chave ? im->chave : ass_chave_bitmap(im->bitmap, im->w, im->h, 0u);
+      k = ass_atlas_achar(a, ch, im->w, im->h);
+      if (k < 0) k = ass_atlas_por(a, im, ch);
+      if (k < 0) ok = 0; else assMainAt[i] = k;
+    }
+    if (ok) return 1;
+    /* Cheio: o outro atlas, vazio, recebe o quadro inteiro. */
+    assAtCur ^= 1;
+    if (assAt[assAtCur].tex) ass_atlas_esvaziar(&assAt[assAtCur]);
+    assAtReinicios++;
+  }
+  return 0;   // nem num atlas vazio: este quadro vai um a um
+}
+
+/* A cor de uma imagem como sai na tela: cor da legenda (ou a da pessoa no
+ * dialogo), ganho do contraste e curva de gama da TV (AP_CONTRASTE, AP_GAMA),
+ * na mesma ordem da TV. O ganho satura em 1 antes da curva, como o video. */
+static void ass_cor_final(const AssCpuImage *im, int corAtiva, int cr, int cg, int cb,
+                          double gama, double contraste, float *r, float *g, float *b, float *op) {
+  unsigned c = im->color;
+  double v[3];
+  int k;
+  v[0] = (double)((c >> 24) & 255u) / 255.0; v[1] = (double)((c >> 16) & 255u) / 255.0;
+  v[2] = (double)((c >> 8) & 255u) / 255.0; *op = (float)(255u - (c & 255u)) / 255.0f;
+  if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) { v[0] = cr / 255.0; v[1] = cg / 255.0; v[2] = cb / 255.0; }
+  else ass_cor_matriz(v);   // a cor da pessoa nao veio do script: fica como ela escolheu
+  if (gama != 1.0 || contraste != 1.0)
+    for (k = 0; k < 3; k++) {
+      double t = v[k] * contraste;
+      v[k] = pow(t < 0.0 ? 0.0 : t > 1.0 ? 1.0 : t, gama);
+    }
+  *r = (float)v[0]; *g = (float)v[1]; *b = (float)v[2];
+}
+
 /* Sobe (se o quadro e novo) e desenha assMain. Fio GL. */
 static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
                              int quadroNovo) {
@@ -1347,10 +1648,16 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
       assMainTexCap = assMain.count;
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    assMainNoAtlas = ass_atlas_subir();
     for (i = 0; i < assMain.count; i++) {
       const AssCpuImage *im = &assMain.images[i];
-      unsigned long long ch = im->chave ? im->chave : ass_chave_bitmap(im->bitmap, im->w, im->h, 0u);
-      assMainTex[i] = ass_tc_obter(im, ch, &assMainIdx[i]);
+      if (assMainNoAtlas) {
+        assMainTex[i] = assMainAt[i] >= 0 ? assAt[assAtCur].tex : 0;
+        assMainIdx[i] = -1;
+      } else {
+        unsigned long long ch = im->chave ? im->chave : ass_chave_bitmap(im->bitmap, im->w, im->h, 0u);
+        assMainTex[i] = ass_tc_obter(im, ch, &assMainIdx[i]);
+      }
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     gfx_tex_esquecer(0);
@@ -1358,7 +1665,12 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     assMainEnviado = 1;
     /* Busy-scene load (picture sync, Auto): what a new frame cost here. */
     if (quadroNovo) assperf_carga_gl(ass_ms_entre(&t0, &t1));
-  } else {
+    { static int logados;
+      if (assAtReinicios && logados < 20 && (assAtReinicios & (assAtReinicios - 1)) == 0) {
+        logados++;
+        printf("[libass] atlas: %d trocas por cheio (quadro de %d imagens)\n", assAtReinicios, assMain.count);
+      } }
+  } else if (!assMainNoAtlas) {
     /* Quadro repetido: as texturas dele continuam "em uso" (a reciclagem
      * conta quadros GL sem desenho). */
     for (i = 0; i < assMain.count; i++) {
@@ -1386,26 +1698,44 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
     if (x1 > x0 && y1 > y0 && gfx_grupo_comecar(&grupo, (GfxRect){ x0 - 2.0f, y0 - 2.0f, x1 - x0 + 4.0f, y1 - y0 + 4.0f }, alpha))
       alpha = 1.0f;
   }
-  for (i = 0; i < assMain.count; i++) {
-    const AssCpuImage *im = &assMain.images[i];
-    GLuint tex = assMainTex[i];
-    unsigned c = im->color;
-    float dx, dy, r, g, b, op;
-    if (!tex) continue;
-    gfx_tex_aspect_atual = 0.0f;
-    /* Origem arredondada ao pixel do ALVO (kk); a imagem em pixels do
-     * quadro do libass (esc = kk x resolucao), ampliada quando esc < kk. */
-    dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / esc;
-    dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / esc;
-    r = (float)((c >> 24) & 255u) / 255.0f; g = (float)((c >> 16) & 255u) / 255.0f;
-    b = (float)((c >> 8) & 255u) / 255.0f; op = (float)(255u - (c & 255u)) / 255.0f;
-    if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) { r = cr / 255.0f; g = cg / 255.0f; b = cb / 255.0f; }
-    if (gama != 1.0 || contraste != 1.0) {
-      r = (float)pow(r * contraste, gama); g = (float)pow(g * contraste, gama); b = (float)pow(b * contraste, gama);
-    }
-    gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
-             0, 0, 0, 0, r, g, b, alpha * op);
+  if (assMainNoAtlas && assMain.count > assLoteCap) {
+    GfxMarcaItem *nv = (GfxMarcaItem *)realloc(assLote, (size_t)assMain.count * sizeof *nv);
+    if (nv) { assLote = nv; assLoteCap = assMain.count; }
   }
+  { int nLote = 0, noLote = assMainNoAtlas && assLoteCap >= assMain.count;
+    const AssAtlas *a = &assAt[assAtCur];
+    const float inv = a->lado > 0 ? 1.0f / (float)a->lado : 0.0f;
+    for (i = 0; i < assMain.count; i++) {
+      const AssCpuImage *im = &assMain.images[i];
+      GLuint tex = assMainTex[i];
+      float dx, dy, r, g, b, op;
+      if (!tex) continue;
+      /* Origem arredondada ao pixel do ALVO (kk); a imagem em pixels do
+       * quadro do libass (esc = kk x resolucao), ampliada quando esc < kk. */
+      dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / esc;
+      dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / esc;
+      ass_cor_final(im, corAtiva, cr, cg, cb, gama, contraste, &r, &g, &b, &op);
+      if (noLote) {
+        const AssAtItem *t = &a->it[assMainAt[i]];
+        GfxMarcaItem *m = &assLote[nLote++];
+        m->x = dx; m->y = dy; m->w = (float)im->w / esc; m->h = (float)im->h / esc;
+        m->u0 = (float)t->x * inv; m->v0 = (float)t->y * inv;
+        m->u1 = (float)(t->x + t->w) * inv; m->v1 = (float)(t->y + t->h) * inv;
+        m->r = r; m->g = g; m->b = b; m->a = alpha * op;
+      } else {
+        if (assMainNoAtlas) continue;   // sem memoria para o lote: o quadro seguinte vai um a um
+        gfx_tex_aspect_atual = 0.0f;
+        gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
+                 0, 0, 0, 0, r, g, b, alpha * op);
+      }
+    }
+    if (noLote && nLote && !gfx_marca_lote(a->tex, assLote, nLote)) {
+      /* Sem programa do lote (link falhou) ou lote grande demais: deste
+       * quadro em diante, uma textura por imagem. */
+      assAtFalhou = 1; assMainEnviado = 0;
+      printf("[libass] lote de %d imagens recusado: uma textura por imagem\n", nLote);
+    }
+    if (assMainNoAtlas && !noLote) { assAtFalhou = 1; assMainEnviado = 0; } }
   gfx_grupo_terminar(&grupo, alphaGrupo);
   gfx_tex_aspect_atual = 0.0f;
   return assMain.count;
@@ -1779,6 +2109,7 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   /* Authored ASS retains its own margins after a converted plain track. */
   ass_set_selective_style_override_enabled(assRenderer, 0);
   __atomic_store_n(&assTextoSimples, simples, __ATOMIC_RELEASE);
+  __atomic_store_n(&assTrackMatriz, simples ? -1 : (int)track->YCbCrMatrix, __ATOMIC_RELEASE);
   plainAplValido = 0;
   assEventos = track->n_events;
   assResolucaoFonte = 0;
@@ -1972,6 +2303,7 @@ void assrender_limpar(void) {
   pthread_mutex_lock(&assTrava);
   ass_authored_styles_free();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
+  __atomic_store_n(&assTrackMatriz, -1, __ATOMIC_RELEASE);
   assEventos = 0;
   assCoberturaIni = assCoberturaFim = 0;
   __atomic_store_n(&assTrackGeracao, 0, __ATOMIC_RELEASE);
@@ -1993,6 +2325,7 @@ void assrender_limpar_fontes(void) {
   ass_atuais_limpar_locked();
   ass_authored_styles_free();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
+  __atomic_store_n(&assTrackMatriz, -1, __ATOMIC_RELEASE);
   assEventos = 0; assFontes = 0; assResolucaoFonte = 0;
   assCoberturaIni = assCoberturaFim = 0;
   __atomic_store_n(&assTrackGeracao, 0, __ATOMIC_RELEASE);
@@ -2388,6 +2721,9 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     if (reset || saltou || assMainResetar) {
       ass_main_soltar();
       ass_tc_apagar();
+      /* Faixa trocada ou desligada: os 2 atlas (8 MB) voltam ao sistema; o
+       * seek so os esvazia (ass_tc_apagar). */
+      if (assMainResetar) ass_atlas_apagar();
       assMainResetar = 0;
     }
     if (assMainValido && assMain.generation != generation) ass_main_soltar();
@@ -2521,6 +2857,7 @@ int assrender_carregar(const char *corpo, size_t tamanho, unsigned geracao) { (v
 int assrender_atualizar(const char *corpo, size_t tamanho, unsigned geracao) { (void)corpo; (void)tamanho; (void)geracao; return 0; }
 void assrender_limpar(void) { assGeracao++; }
 void assrender_definir_fps(double fps) { (void)fps; }
+void assrender_definir_cor_video(int matriz, int faixa, int hdr, int altura) { (void)matriz; (void)faixa; (void)hdr; (void)altura; }
 void assrender_limpar_fontes(void) {}
 void assrender_aliviar(void) {}
 int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanho) {

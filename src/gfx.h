@@ -530,6 +530,12 @@ void gfx_encerrar(void);
 // repetidos. Quem binda ou destroi textura POR FORA dele precisa avisar:
 // passe o nome destruido, ou 0 para "esqueca tudo" (apos um upload).
 void gfx_tex_esquecer(GLuint tex);
+// MUITAS MARCAS (GFX_MARCA) DE UMA TEXTURA SO NUM DESENHO: a forma vem do alfa
+// da textura em (u0,v0)-(u1,v1), a cor de r,g,b,a. As regras de cor e de
+// retangulo do gfx_rect(.., GFX_MARCA, ..) valem para cada item. 0 = nao deu
+// (sem programa, lote grande demais): quem chamou desenha um a um.
+typedef struct { float x, y, w, h, u0, v0, u1, v1, r, g, b, a; } GfxMarcaItem;
+int gfx_marca_lote(GLuint tex, const GfxMarcaItem *it, int n);
 
 // Desenha um retangulo. `foco` 0..1 controla especular/sombra; `parx/pary`
 // so deslocam a luz; a arte nunca e cortada nem deslocada (#176); `raio` em fracao do menor lado.
