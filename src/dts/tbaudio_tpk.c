@@ -338,6 +338,7 @@ int tba_ts_sem_audio(const unsigned char *in, size_t n, unsigned char *out, size
     if (pi + 3 + (size_t)len > 188) return 0;   // a PMT spanning packets: not handled
     pcr = (t[pi + 8] & 0x1F) << 8 | t[pi + 9];
     pil = (t[pi + 10] & 0x0F) << 8 | t[pi + 11];
+    if (12 + (size_t)pil + 4 > 3 + (size_t)len) return 0;   // program info past the section (and past `sec`)
     memcpy(sec, t + pi, 12 + (size_t)pil); nsec = 12 + (size_t)pil;
     e = pi + 3 + (size_t)len - 4;
     for (j = pi + 12 + (size_t)pil; j + 5 <= e; ) {
