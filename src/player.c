@@ -42,6 +42,7 @@
 #include "posplay.h"
 #include "extras.h"
 #include "video.h"
+#include "passo.h"
 #include "seekprobe.h"
 #include "faixas.h"
 #include "gfx.h"
@@ -460,7 +461,7 @@ static double posLegenda(void) {
   if (relLeg.carimbo && relLeg.tocando && !video_pos_incerta()) v -= legimagem_ms() / 1000.0;
   /* TORBOX BURN-IN (tbrelogio.h, owner 15/11): on TorBox's burned stream the
    * player's clock runs behind the picture by the segment it landed in. */
-  v += tbr_correcao(v);
+  v += tbr_correcao();
 #endif
   return v;
 }
@@ -474,7 +475,7 @@ static double posGravar(void) {
   double p = posSeg;
 #ifdef NV_TPK
   if (comVideo) {
-    p += tbr_correcao(p);
+    p += tbr_correcao();
     if (p > duracaoSeg) p = duracaoSeg;
     if (p < 0) p = 0;
   }
@@ -4638,6 +4639,7 @@ void player_atualizar(float dt, Uint32 agora) {
 #ifdef NV_TOUCH_UI
   playerTelaAtualizar();
 #endif
+  NV_PASSO("player: inicio");
   if (retido) { player_validar_retido(agora); return; }
   if (aberto || mini) atualizarIdentidade();
 #ifdef NV_TPK
@@ -4833,6 +4835,7 @@ void player_atualizar(float dt, Uint32 agora) {
     if (!scrubbing) posSeg = (float)video_pos();
     // Move a janela de colheita da legenda ASS embutida (#92). Barato: so
     // acorda o fio quando a posicao andou meio segundo.
+    NV_PASSO("player: mkvass/legsync");
     mkvass_passo(posSeg);
     // Folga do buffer de video para a VARREDURA pausar (webOS informa o fim
     // do buffer; no Tizen video_buffer_fim e 0 = desconhecido, sem pausa).
@@ -4846,6 +4849,7 @@ void player_atualizar(float dt, Uint32 agora) {
       legsync_audio_dados_moveis(ajustes_legenda_sync_audio_movel());
       legsync_passo(xtream_url_limitada(video_url_atual()) ? "" : video_url_atual(), posSeg, bf > 0.5 ? bf - (double)posSeg : -1.0,
                     scrubbing || video_bufferando_ms() > 0, agora); }
+    NV_PASSO("player: duracao/miniaturas/resto");
     if (d > 1.0) {
       duracaoSeg = (float)d; duracaoReal = 1;
       durFonteAtualizar(d, agora);
@@ -5875,7 +5879,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
                cues[0].inicio, cues[0].fim, t, (int)lround((t - cues[0].inicio) * 1000.0),
                comVideo ? video_pos() : posSeg, posLegenda(),
 #ifdef NV_TPK
-               legimagem_ms(), (int)lround(tbr_correcao(comVideo ? video_pos() : posSeg) * 1000.0),
+               legimagem_ms(), (int)lround(tbr_correcao() * 1000.0),
 #else
                0, 0,
 #endif

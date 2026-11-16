@@ -64,9 +64,9 @@ codec() { ffprobe -v error -select_streams a -show_entries stream=codec_name,cha
 "$work/t" puros "$work/src/tb/s0.ts" "$work/src/tb4/init.mp4" "$work/src/tb4/s0.m4s" "$work/out/strip.ts" || fail=1
 check "TS strip: ffprobe sees the video only" "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/strip.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ]"
 
-sessao() {   # <playlist path> <modo> <ordinal> <conv: 1 FLAC, 2 Opus> [original file, default orig.mkv]
+sessao() {   # <playlist path> <modo> <ordinal> [original file, default orig.mkv]
   rm -f "$work/url"
-  "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/${5:-orig.mkv}" "$2" "$3" "$4" "$work/url" > "$work/s.log" 2>&1 &
+  "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/${4:-orig.mkv}" "$2" "$3" "$work/url" > "$work/s.log" 2>&1 &
   sp=$!; pids+=($sp)
   for _ in $(seq 50); do [ -s "$work/url" ] && break; sleep 0.1; done
   U=$(cat "$work/url"); B=${U%/*}
@@ -76,10 +76,10 @@ fim() { kill "$sp" 2>/dev/null || true; wait "$sp" 2>/dev/null || true; }
 # Modes: 0 Passthrough (TorBox's video without its audio + the original audio),
 # 1 TorBox audio (no session: tba_abrir refuses).
 # 0. TorBox audio: no session.
-"$work/t" sessao "http://127.0.0.1:$port/tb/playlist.m3u8?token=secret" "http://127.0.0.1:$port/orig.mkv" 1 0 0 "$work/url1" > "$work/s1.log" 2>&1 || true
+"$work/t" sessao "http://127.0.0.1:$port/tb/playlist.m3u8?token=secret" "http://127.0.0.1:$port/orig.mkv" 1 0 "$work/url1" > "$work/s1.log" 2>&1 || true
 check "TorBox audio: no Nuvio stream" "[ ! -s '$work/url1' ]"
 # 1. Passthrough over MPEG-TS: every codec, on TorBox's timeline, 2 s segments.
-sessao tb/playlist.m3u8 0 0 0
+sessao tb/playlist.m3u8 0 0
 curl -s "$U" > "$work/out/master.m3u8"
 # The very first request: segment 0, right after the index read moved the reader to mid-file.
 curl -s -o "$work/out/a0_0.ts" "$B/a0_0.ts"
@@ -123,7 +123,7 @@ fim
 
 
 # 1b. The same session, the video side: TorBox's segments without their audio.
-sessao tb/playlist.m3u8 0 0 0
+sessao tb/playlist.m3u8 0 0
 curl -s "$B/vs.m3u8" | grep -q '^v_0.ts' && curl -s -o "$work/out/v2.ts" "$B/v_2.ts"
 check "strip: video segment without audio, same start as TorBox's" \
   "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/v2.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ] && perto $(inicio "$work/out/v2.ts" v 2>/dev/null || echo 0) $(inicio "$work/src/tb/s2.ts" v) 0.001"
@@ -132,23 +132,8 @@ check "strip: a player reads it, video + Nuvio's audio together" \
   "[ -s '$work/out/plays.ts' ] && perto $(inicio "$work/out/plays.ts" v 2>/dev/null || echo 9) $(inicio "$work/out/plays.ts" a 2>/dev/null || echo 0) 0.05"
 fim
 
-# 2. FLAC converted (no menu row; the code stays), Passthrough.
-sessao tb/playlist.m3u8 0 2 1
-curl -s -o "$work/out/f.ts" "$B/a2_3.ts"
-check "FLAC converted: AAC 2.0 in MPEG-TS ($(codec "$work/out/f.ts"))" "[ '$(codec "$work/out/f.ts")' = 'aac,2' ]"
-fim
-
-
-# 3. Opus converted (the retry after the TV refused Opus as is), Passthrough.
-sessao tb/playlist.m3u8 0 3 2
-curl -s -o "$work/out/o.ts" "$B/a3_3.ts"
-check "Opus converted: AAC 2.0 in MPEG-TS ($(codec "$work/out/o.ts"))" "[ '$(codec "$work/out/o.ts")' = 'aac,2' ] && perto $(inicio "$work/out/o.ts" a) $(awk "BEGIN{print 6+$(inicio "$work/src/tb/s0.ts" v)}") 0.1"
-check "Opus converted: the session says so" "grep -q 'Opus converted (AAC 2.0 / AC3 5.1)' '$work/s.log'"
-fim
-
-
 # 3b. Laced Opus without timestamps on every frame: all frames reach the segment.
-sessao tb/playlist.m3u8 0 0 0 opus_laced.mkv
+sessao tb/playlist.m3u8 0 0 opus_laced.mkv
 curl -s -o "$work/out/li.mp4" "$B/a0_init.mp4"; curl -s -o "$work/out/l5.m4s" "$B/a0_5.m4s"
 cat "$work/out/li.mp4" "$work/out/l5.m4s" > "$work/out/laced.mp4"
 lp=$(ffprobe -v error -select_streams a -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$work/out/laced.mp4" 2>/dev/null || echo 0)
@@ -160,7 +145,7 @@ fim
 
 
 # 4. fMP4 TorBox behind a master playlist.
-sessao tb4/master.m3u8 0 1 0
+sessao tb4/master.m3u8 0 1
 curl -s -o "$work/out/m1.ts" "$B/a1_2.ts"
 check "fMP4 source: first PTS from tfdt, audio placed" "grep -q \"TorBox's first video PTS: 0.000 s\" '$work/s.log' && [ '$(codec "$work/out/m1.ts")' = 'ac3,6' ]"
 fim

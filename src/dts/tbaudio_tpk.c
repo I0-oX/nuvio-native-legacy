@@ -519,8 +519,8 @@ int tba_sockets_contar_por(int *nuvio, int por[4]) { if (nuvio) *nuvio = -1; if 
 // ---- the server (Samsung .tpk with FFmpeg, and the host test) ---------------
 #if !defined(NV_DTS_FFMPEG) || !(defined(NV_TPK) || defined(NV_TBAUDIO_TEST))
 int  tba_disponivel(void) { return 0; }
-int  tba_abrir(const char *t, const char *o, const char *c, int a, int m, int f, char *out, size_t n) {
-  (void)t; (void)o; (void)c; (void)a; (void)m; (void)f; if (out && n) out[0] = 0; return 0;
+int  tba_abrir(const char *t, const char *o, const char *c, int a, int m, char *out, size_t n) {
+  (void)t; (void)o; (void)c; (void)a; (void)m; if (out && n) out[0] = 0; return 0;
 }
 void tba_fechar(void) {}
 int  tba_ativo(void) { return 0; }
@@ -531,11 +531,6 @@ int  tba_n_rendicoes(void) { return 0; }
 int  tba_rendicao_de(int o) { (void)o; return -1; }
 void tba_definir_audio(int o) { (void)o; }
 int  tba_audio(void) { return -1; }
-void tba_definir_flac(int c) { (void)c; }
-int  tba_flac_converter(void) { return 0; }
-int  tba_tem_flac(void) { return 0; }
-int  tba_audio_e_flac(void) { return 0; }
-int  tba_opus_inalterado(void) { return 0; }
 void tba_log(void) {}
 #else
 
@@ -590,7 +585,7 @@ typedef struct Sessao {
   volatile int cancel;
   pthread_mutex_t m;                   // state below
   pthread_cond_t c;
-  int pronto, falhou, modo, flacConv, opusConv, audio;   // audio: index in fx[]
+  int pronto, falhou, modo, audio;   // audio: index in fx[]
   int opusLog;                         // Opus packet lines logged (first segments only)
   int64_t proxPts;                     // the reading track's next timestamp (laced frames carry none)
   int semPts, semPtsLog;               // packets that came without a timestamp (filled in) / lines logged
@@ -758,26 +753,20 @@ static const char *nomeLingua(const char *l) {
 }
 // Opus (owner 16/11): copied into MPEG-TS the TV player never started (two
 // Opus files, both stuck before the first frame). It goes as is in fMP4, like
-// FLAC; `opusConv` (the retry after a refusal) converts it to AAC / AC3.
-static int modoDe(const Faixa *f, int flacConv, int opusConv) {
+// FLAC; both play that way on the S95C (the AAC/AC3 conversion was never used).
+static int modoDe(const Faixa *f) {
   int ok = avcodec_find_decoder(f->id) != NULL;
   switch (f->id) {
-    case AV_CODEC_ID_OPUS:
-      if (!opusConv || !ok) return M_MP4;
-      return f->canais > 2 ? M_AC3 : M_AAC;
+    case AV_CODEC_ID_OPUS: case AV_CODEC_ID_FLAC: return M_MP4;
     case AV_CODEC_ID_AAC: case AV_CODEC_ID_AC3: case AV_CODEC_ID_EAC3:
     case AV_CODEC_ID_MP3: case AV_CODEC_ID_MP2: return M_TS;
-    case AV_CODEC_ID_FLAC:
-      if (!flacConv) return M_MP4;
-      if (!ok) return M_FORA;
-      return f->canais > 2 ? M_AC3 : M_AAC;
     case AV_CODEC_ID_DTS: case AV_CODEC_ID_TRUEHD: case AV_CODEC_ID_MLP: return ok ? M_AC3 : M_FORA;
     default: if (!ok) return M_FORA; return f->canais > 2 ? M_AC3 : M_AAC;
   }
 }
 static void modosRecalcular(Sessao *s) {
   int i;
-  for (i = 0; i < s->nfx; i++) s->fx[i].modo = modoDe(&s->fx[i], s->flacConv, s->opusConv);
+  for (i = 0; i < s->nfx; i++) s->fx[i].modo = modoDe(&s->fx[i]);
 }
 
 static int prepTorbox(Sessao *s) {
@@ -1415,16 +1404,6 @@ static void nomeRendicao(const Faixa *f, char *o, size_t n) {
   snprintf(o, n, "%s %d (%s %dch)", f->nome[0] ? f->nome : nomeLingua(f->lingua), f->ord + 1, f->codec, f->canais);
   for (c = o; *c; c++) if (*c == '"' || *c == ',' || (unsigned char)*c < 32) *c = ' ';
 }
-static __attribute__((unused)) const char *codecsAudio(const Faixa *f) {
-  switch (f->modo) {
-    case M_AC3: return "ac-3";
-    case M_AAC: return "mp4a.40.2";
-    case M_MP4: return f->id == AV_CODEC_ID_OPUS ? "Opus" : "fLaC";
-    default:
-      return f->id == AV_CODEC_ID_AC3 ? "ac-3" : f->id == AV_CODEC_ID_EAC3 ? "ec-3" : f->id == AV_CODEC_ID_OPUS ? "Opus" :
-             f->id == AV_CODEC_ID_MP3 ? "mp4a.40.34" : f->id == AV_CODEC_ID_MP2 ? "mp4a.40.33" : "mp4a.40.2";
-  }
-}
 static void plMaster(Sessao *s, Txt *t) {
   int i, mp4 = 0;
   for (i = 0; i < s->nfx; i++) if (s->fx[i].modo == M_MP4) mp4 = 1;
@@ -1634,7 +1613,7 @@ static int subirServidor(void) {
 // ---- API ----------------------------------------------------------------------------
 int tba_disponivel(void) { return avcodec_find_encoder(AV_CODEC_ID_AC3) != NULL; }
 
-int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal, int modo, int conv,
+int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal, int modo,
               char *out, size_t n) {
   Sessao *s;
   pthread_t t;
@@ -1651,7 +1630,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   pthread_mutex_init(&s->m, NULL); pthread_cond_init(&s->c, NULL); pthread_mutex_init(&s->gm, NULL);
   pthread_mutex_init(&s->vm, NULL);
   atomic_store(&s->espChave, -1L);
-  s->modo = modo; s->flacConv = (conv & TBA_CONV_FLAC) ? 1 : 0; s->opusConv = (conv & TBA_CONV_OPUS) ? 1 : 0;
+  s->modo = modo;
   s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1; s->proxPts = AV_NOPTS_VALUE;
   s->tbrGer = tbr_geracao();
   s->tbUrl = strdup(tbUrl); s->orig = strdup(orig); s->cab = strdup(cab ? cab : "");
@@ -1663,9 +1642,8 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   if (pthread_create(&t, NULL, preparar, s) != 0) { atomic_fetch_sub(&s->refs, 1); falhar(s, "no thread"); }
   else pthread_detach(t);
   snprintf(out, n, "http://127.0.0.1:%d/%s/master.m3u8", porta, s->tok);
-  printf("[tbaudio] session open: %s, audio %d, FLAC %s, Opus %s; the player opens http://127.0.0.1:%d/<token>/master.m3u8\n",
-         modoNome(s->modo), ordinal, s->flacConv ? "converted" : "as is (fMP4)",
-         s->opusConv ? "converted (AAC 2.0 / AC3 5.1)" : "as is (fMP4)", porta);
+  printf("[tbaudio] session open: %s, audio %d, FLAC and Opus as is (fMP4); the player opens http://127.0.0.1:%d/<token>/master.m3u8\n",
+         modoNome(s->modo), ordinal, porta);
   fflush(stdout);
   return 1;
 }
@@ -1726,41 +1704,6 @@ void tba_definir_audio(int ord) {
   soltar(s);
 }
 int tba_audio(void) { Sessao *s = pegar(); int v = s && s->pronto && s->audio >= 0 ? s->fx[s->audio].ord : -1; soltar(s); return v; }
-static int flacGlobal;
-void tba_definir_flac(int c) {
-  Sessao *s = pegar();
-  flacGlobal = c ? 1 : 0;
-  if (s) {
-    pthread_mutex_lock(&s->gm);
-    s->flacConv = flacGlobal;
-    if (s->pronto) { modosRecalcular(s); s->gOk = 0; }
-    pthread_mutex_unlock(&s->gm);
-    printf("[tbaudio] FLAC test row: %s\n", flacGlobal ? "convert" : "as is");
-    fflush(stdout);
-  }
-  soltar(s);
-}
-int tba_flac_converter(void) { return flacGlobal; }
-int tba_tem_flac(void) {
-  Sessao *s = pegar();
-  int v = 0, i;
-  if (s && s->pronto) for (i = 0; i < s->nfx; i++) if (s->fx[i].id == AV_CODEC_ID_FLAC) v = 1;
-  soltar(s);
-  return v;
-}
-int tba_opus_inalterado(void) {
-  Sessao *s = pegar();
-  int v = 0, i;
-  if (s && s->pronto) for (i = 0; i < s->nfx; i++) if (s->fx[i].id == AV_CODEC_ID_OPUS && s->fx[i].modo == M_MP4) v = 1;
-  soltar(s);
-  return v;
-}
-int tba_audio_e_flac(void) {
-  Sessao *s = pegar();
-  int v = s && s->pronto && s->audio >= 0 && s->fx[s->audio].id == AV_CODEC_ID_FLAC;
-  soltar(s);
-  return v;
-}
 void tba_log(void) {
   Sessao *s = pegar();
   if (s) {

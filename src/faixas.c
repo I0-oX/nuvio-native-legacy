@@ -6,6 +6,7 @@
 #include "idioma.h"
 #include "player.h"
 #include "video.h"
+#include "passo.h"
 #include "xtream.h"
 #include "addons.h"
 #include "gfx.h"
@@ -1549,7 +1550,9 @@ void faixas_legenda_reaplicar(void) {
 
 
 void faixas_atualizar(float dt, Uint32 agora) {
+  NV_PASSO("faixas: legendasui_atualizar");
   if (aberta && modo && coluna == 1) legendasui_atualizar(dt);
+  NV_PASSO("faixas: queimada/velocidade");
 #ifdef NV_TPK
   // Burned in stopped (TorBox failed: toast; or Burn in Off): the ASS tracks
   // are back in Main's list, so with Main off the automatic pick runs again
@@ -1581,10 +1584,14 @@ void faixas_atualizar(float dt, Uint32 agora) {
   // Fechando a partir da barra, ela sai como barra: sem isto a folha inteira
   // piscaria no caminho de volta.
   if (aberta || anim < .01f) animTopo = anim_mola(animTopo, faixas_estilo_topo() ? 1.0f : 0.0f, dt, NV_MOLA_TELA);
+  NV_PASSO("faixas: legendaPreDownload");
   legendaPreDownload();
+  NV_PASSO("faixas: legendaAutomatica");
   legendaAutomatica(agora);
   if (!legAuto) legenda_pre_descartar("automatica encerrada");
+  NV_PASSO("faixas: pilAtualizar");
   pilAtualizar(agora);
+  NV_PASSO("faixas: resto");
   // Recuo vencido: a MESMA faixa de novo. O overlay nao foi desligado — o que
   // ja estava colhido continua na tela, e o fio novo retoma do sidecar parcial.
   if (legOverlay >= 0 && legOverlayRetomar && (Sint32)(agora - legOverlayRetomar) >= 0) {

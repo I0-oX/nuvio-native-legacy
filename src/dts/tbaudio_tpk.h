@@ -13,9 +13,8 @@
  * Audio by codec: AAC / AC3 / E-AC3 / MP3 copied into MPEG-TS; DTS,
  * TrueHD/MLP converted to AC3 (5.1 640 kb/s, 2.0 192 kb/s); FLAC and Opus
  * copied as is into fragmented-MP4 segments (MPEG-TS has no FLAC; Opus in
- * MPEG-TS never started on the S95C, owner 16/11). TBA_CONV_OPUS converts Opus
- * to AAC 2.0 / AC3 5.1 (the retry after the TV refuses Opus). The FLAC
- * conversion stays in the code (tba_definir_flac) with no menu row.
+ * MPEG-TS never started on the S95C, owner 16/11). Both play as is on the
+ * S95C; their conversion to AAC/AC3 was never needed and is gone (16/11).
  *
  * Connections: the original file 1 + one TorBox segment download at a time.
  * Audio generation is serialized; a segment the player hung up on, or left
@@ -37,9 +36,8 @@ int  tba_disponivel(void);
  * audio_ordinal: the file's audio track (0-based among audio tracks, container
  * order). Writes the URL the TV player opens. 0 = cannot (no FFmpeg, no
  * server); the caller then plays TorBox's URL as before. */
-enum { TBA_CONV_FLAC = 1, TBA_CONV_OPUS = 2 };   /* tba_abrir `conv` bits */
 int  tba_abrir(const char *tb_m3u8, const char *orig, const char *cab, int audio_ordinal,
-               int modo, int conv, char *out, size_t n);
+               int modo, char *out, size_t n);
 void tba_fechar(void);
 int  tba_ativo(void);
 int  tba_modo(void);
@@ -55,15 +53,6 @@ int  tba_rendicao_de(int audio_ordinal);
 /* The track the next playlist/segments use (the DEFAULT=YES rendition). */
 void tba_definir_audio(int audio_ordinal);
 int  tba_audio(void);
-/* FLAC conversion (session-wide; no menu row since 14/11, FLAC goes as is): 1 = convert. */
-void tba_definir_flac(int converter);
-int  tba_flac_converter(void);
-/* 1 = the file has a FLAC audio track. */
-int  tba_tem_flac(void);
-/* 1 = the session offers an Opus track as is (fMP4): the retry converts it. */
-int  tba_opus_inalterado(void);
-/* 1 = the track the session plays is FLAC. */
-int  tba_audio_e_flac(void);
 /* A summary line for the 10 s log (counts, timings). */
 void tba_log(void);
 

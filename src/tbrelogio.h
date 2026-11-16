@@ -50,10 +50,10 @@ void   tbr_ancorar(double alvo);
  * is needed (segment 0 first, for the origin, then the landing one), 0 nothing. */
 int    tbr_falta(unsigned *ger, int *seg);
 
-/* Seconds to ADD to the player's clock `relogio` (playlist time) to get the
- * time of the burned picture. 0 when burn-in is off or the PTS it needs is not
- * known yet. (`relogio` is not used by the Landing model; the callers pass it.) */
-double tbr_correcao(double relogio);
+/* Seconds to ADD to the player's clock (playlist time) to get the time of the
+ * burned picture: the segment the player landed in at the last open/seek sets
+ * it (Landing). 0 when burn-in is off or the PTS it needs is not known yet. */
+double tbr_correcao(void);
 
 /* ---- pure ------------------------------------------------------------------ */
 /* Segment of `t` in `n` segments of lengths `dur` (-1 when n == 0; the last

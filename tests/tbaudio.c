@@ -109,14 +109,14 @@ static int puros(const char *ts, const char *init, const char *seg, const char *
 
 int main(int argc, char **argv) {
   if (argc == 6 && !strcmp(argv[1], "puros")) return puros(argv[2], argv[3], argv[4], argv[5]);
-  if (argc == 8 && !strcmp(argv[1], "sessao")) {
+  if (argc == 7 && !strcmp(argv[1], "sessao")) {
     char url[256];
     FILE *f;
-    if (!tba_abrir(argv[2], argv[3], "", atoi(argv[5]), atoi(argv[4]), atoi(argv[6]), url, sizeof url)) {
+    if (!tba_abrir(argv[2], argv[3], "", atoi(argv[5]), atoi(argv[4]), url, sizeof url)) {
       fprintf(stderr, "tba_abrir failed (disponivel=%d)\n", tba_disponivel());
       return 1;
     }
-    f = fopen(argv[7], "w");
+    f = fopen(argv[6], "w");
     if (!f) return 1;
     fprintf(f, "%s\n", url);
     fclose(f);

@@ -129,10 +129,9 @@ int tbr_falta(unsigned *g, int *seg) {
   return r;
 }
 
-double tbr_correcao(double relogio) {
+double tbr_correcao(void) {
   double c = 0;
   int k, ok;
-  (void)relogio;   // Landing: the same until the next open/seek, whatever the time
   pthread_mutex_lock(&M);
   if (!ativo || !n) { pthread_mutex_unlock(&M); return 0; }
   k = tbr_segmento_de(dur, n, alvo, NULL);

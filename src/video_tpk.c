@@ -20,6 +20,7 @@
 // "[video] tpk: first subtitle cue ..." ou "... no subtitle cue in 60 s ...".
 #ifdef NV_TPK
 #include "video.h"
+#include "passo.h"
 #include "mediaurl.h"
 #include "video_reconexao.h"
 #include "idioma.h"
@@ -194,15 +195,13 @@ static struct {
   int tocouLog;
   char url[4096];               // what the TV player opens: Nuvio's local stream (tba) or TorBox's
   // Original audio (dts/tbaudio_tpk.h, owner 13/11): tba = Nuvio serves the
-  // player (Parallel or Remux); urlTb = TorBox's playlist; hostA = audio
-  // tracks the TV player listed for it (-1 none yet).
+  // player (Passthrough); urlTb = TorBox's playlist; hostA = audio tracks the
+  // TV player listed for it (-1 none yet).
   int tba, hostA;
   char urlTb[4096];
   Uint32 retentouEm;            // B (owner 14/11): one retry of Nuvio's stream, at most once a minute
-  // Opus (owner 16/11): the retry after the TV refuses Opus as is converts it
-  // (TBA_CONV_OPUS) for this file. esperaDesde: when the player was handed a
-  // burned stream that has not prepared yet (0 = prepared / nothing pending).
-  int opusConv;
+  // esperaDesde: when the player was handed a burned stream that has not
+  // prepared yet (0 = prepared / nothing pending).
   Uint32 esperaDesde;
 } tb;
 static volatile int mkvN, mkvEstado, faixasNovas;
@@ -898,13 +897,19 @@ static void tbDesligar(const char *porque, int desistir) {
   if (!tb.ativo) return;
   // The player's clock on the burned stream runs behind its picture
   // (tbrelogio.h): the original reopens where the picture was (owner 15/11).
-  corr = tbr_correcao(alvo);
+  corr = tbr_correcao();
   alvo += corr;
   if (video_duracao() > 0 && alvo > video_duracao()) alvo = video_duracao();
   if (alvo < 0) alvo = 0;
   tbr_encerrar();
   tb.ativo = 0;
-  if (tb.tba) { tba_fechar(); tb.tba = 0; }
+  if (tb.tba) {
+    Uint32 t0 = SDL_GetTicks();
+    NV_PASSO("tbDesligar: tba_fechar");
+    tba_fechar(); tb.tba = 0;
+    // Owner 16/11: Burn in Off froze the app (195 ms at the key, 2.3 s later).
+    printf("[tbburn] Passthrough session closed in %u ms\n", (unsigned)(SDL_GetTicks() - t0));
+  }
   if (desistir) { tb.desistiu = 1; tb.voltar = 1; }
   printf("[tbburn] back to the original file at %.1f s (player clock %+.0f ms to the burned picture): %s\n",
          alvo, corr * 1000.0, porque);
@@ -952,12 +957,19 @@ void video_tpk_queimar_faixa(int i) {
     else { printf("[tbburn] Burn in pick not sent: TorBox burn-in is not allowed now (plan, key or refused)\n"); fflush(stdout); }
     return;
   }
-  tbburn_definir_escolha(0);
-  tbburn_lembrar(NULL);
-  if (tbHdr()) tbburn_hdr_lembrar(0);
-  if (tb.pend) { tb.pend = 0; tbburn_cancelar(); printf("[tbburn] request dropped: Burn in Off\n"); fflush(stdout); }
-  if (tb.pre) tbSoltar("Burn in Off");
-  if (tb.ativo) tbDesligar("Burn in Off", 0);
+  { Uint32 t0 = SDL_GetTicks();
+    NV_PASSO("Burn in Off: remember");
+    tbburn_definir_escolha(0);
+    tbburn_lembrar(NULL);
+    if (tbHdr()) tbburn_hdr_lembrar(0);
+    NV_PASSO("Burn in Off: cancel/release");
+    if (tb.pend) { tb.pend = 0; tbburn_cancelar(); printf("[tbburn] request dropped: Burn in Off\n"); fflush(stdout); }
+    if (tb.pre) tbSoltar("Burn in Off");
+    NV_PASSO("Burn in Off: back to the original");
+    if (tb.ativo) tbDesligar("Burn in Off", 0);
+    printf("[tbburn] Burn in Off handled in %u ms\n", (unsigned)(SDL_GetTicks() - t0));
+    fflush(stdout);
+    NV_PASSO("evento (tecla/janela)"); }
   tb.voltar = 2;   // the ASS tracks are back in Main/Second: let the pick run again (no toast)
 }
 void video_tpk_queimar_ligar(int ligar) {
@@ -1182,8 +1194,7 @@ static void tbUrlPlayer(const char *m) {
   tba_sockets_vigiar(m, urlAtual, NULL, NULL);
   tb.esperaDesde = SDL_GetTicks();
   if (modo != TBA_TORBOX && tba_disponivel() &&
-      tba_abrir(m, urlAtual, cabecalhos, aud, modo, (tba_flac_converter() ? TBA_CONV_FLAC : 0) | (tb.opusConv ? TBA_CONV_OPUS : 0),
-                loc, sizeof loc)) {
+      tba_abrir(m, urlAtual, cabecalhos, aud, modo, loc, sizeof loc)) {
     tb.tba = 1;
     snprintf(tb.url, sizeof tb.url, "%s", loc);
     printf("[tbburn] original audio: Nuvio serves the player (%s)\n", TBA_NOME[modo]);
@@ -2277,13 +2288,14 @@ void video_bombear(void) {
     atomic_store(&playerPreso, -2);
     return;
   }
-  cdnBombear();
-  mfBombear();
-  tbBombear();
-  convBombear();
-  reabrindoVigiar();
-  escolhasPendentes();
-  legendaVigiarSilencio(SDL_GetTicks());
+  NV_PASSO("video: cdnBombear"); cdnBombear();
+  NV_PASSO("video: mfBombear"); mfBombear();
+  NV_PASSO("video: tbBombear"); tbBombear();
+  NV_PASSO("video: convBombear"); convBombear();
+  NV_PASSO("video: reabrindoVigiar"); reabrindoVigiar();
+  NV_PASSO("video: escolhasPendentes"); escolhasPendentes();
+  NV_PASSO("video: legendaVigiarSilencio"); legendaVigiarSilencio(SDL_GetTicks());
+  NV_PASSO("video: player/recon");
   // O SetPlaybackRate exige Ready/Playing/Paused: so com o prepare feito.
   if (!velRecusada && pronto && hEscolher && velEnviada != velPedida) {
     velEnviada = velPedida;
@@ -2369,10 +2381,7 @@ void video_bombear(void) {
       double pos = video_pos();
       tb.retentouEm = SDL_GetTicks();
       snprintf(m, sizeof m, "%s", tb.urlTb);
-      // Opus as is refused: the retry converts it (AAC 2.0 / AC3 5.1) instead of the same try again.
-      if (!tb.opusConv && tba_opus_inalterado()) tb.opusConv = 1;
-      printf("[tbaudio] retrying Nuvio's stream once at %.1f s (%s%s)\n", pos, TBA_NOME[ajustes_tb_audio_modo()],
-             tb.opusConv ? ", Opus converted to AAC 2.0 / AC3 5.1" : "");
+      printf("[tbaudio] retrying Nuvio's stream once at %.1f s (%s)\n", pos, TBA_NOME[ajustes_tb_audio_modo()]);
       fflush(stdout);
       tbUrlPlayer(m);
       tbReabrir(pos);
