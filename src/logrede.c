@@ -49,7 +49,7 @@ static void cortarEsquemas(char *s) {
 
 // "apikey=XYZ", "token: XYZ", "Authorization: Bearer XYZ" -> valor "…".
 static void cortarSegredos(char *s) {
-  static const char *const CH[] = { "apikey", "api_key", "api-key", "token", "password", "passwd",
+  static const char *const CH[] = { "apikey", "api_key", "api-key", "presigned_token", "user_token", "token", "password", "passwd",
                                     "senha", "secret", "authorization", "bearer", "auth", "key",
                                     "pass", "cookie", "sessionid", "signature", "sig" };
   for (size_t k = 0; k < sizeof CH / sizeof *CH; k++) {

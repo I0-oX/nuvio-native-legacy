@@ -106,6 +106,66 @@ int tbburn_eh_recusa_plano(int st, const char *corpo) {
   return corpo && debrid_eh_sem_plano(st, corpo);
 }
 
+// ---- what may go to the log (pure) -------------------------------------------
+// [v, fim) becomes `por`; a span shorter than `por` becomes '*' of its own
+// length (the text never grows). Returns the end of what was written.
+static char *logCortar(char *v, char *fim, const char *por) {
+  size_t np = strlen(por);
+  if ((size_t)(fim - v) < np) { memset(v, '*', (size_t)(fim - v)); return fim; }
+  memmove(v + np, fim, strlen(fim) + 1);
+  memcpy(v, por, np);
+  return v + np;
+}
+static int logFimUrl(int c) { return !c || c == '"' || c == ' ' || c == '|' || c == ',' || c == '\n' || c == '\r'; }
+// End of a value: a JSON escape (backslash + character) is part of it.
+static char *logFimValor(char *q) {
+  while (*q && *q != '"' && *q != '&' && *q != '|' && *q != ' ' && *q != ',' && *q != '}' && *q != '\n' && *q != '\r')
+    q += (*q == '\\' && q[1]) ? 2 : 1;
+  return q;
+}
+void tbburn_log_mascarar(char *s) {
+  char *p;
+  if (!s) return;
+  // 1. Absolute URLs, plain or JSON-escaped: the host stays, nothing after it.
+  for (p = s; *p; ) {
+    char *h = NULL, *ini, *a;
+    if (!strncasecmp(p, "http://", 7)) h = p + 7;
+    else if (!strncasecmp(p, "https://", 8)) h = p + 8;
+    else if (!strncasecmp(p, "http:\\/\\/", 9)) h = p + 9;
+    else if (!strncasecmp(p, "https:\\/\\/", 10)) h = p + 10;
+    if (!h) { p++; continue; }
+    ini = h;
+    while (*h && *h != '/' && *h != '\\' && *h != '?' && *h != '#' && !logFimUrl((unsigned char)*h)) h++;
+    for (a = ini; a < h && *a != '@'; a++) {}
+    if (a < h) { char *n = logCortar(ini, a, "***"); h -= a - n; }   // user:password@
+    { char *f = h;
+      while (!logFimUrl((unsigned char)*f)) f++;
+      p = f > h ? logCortar(h, f, "/...") : h; }
+  }
+  // 2. Query strings of what is left (relative URIs in a playlist).
+  for (p = s; *p; p++) {
+    char *q;
+    if (*p != '?') continue;
+    for (q = p + 1; isalnum((unsigned char)*q) || *q == '_' || *q == '-'; q++) {}
+    if (q == p + 1 || *q != '=') continue;
+    q = p + 1;
+    while (!logFimUrl((unsigned char)*q) && *q != '\\') q++;
+    p = logCortar(p + 1, q, "***") - 1;
+  }
+  // 3. Values of anything named ...token (JSON field, query, "token: x").
+  for (p = s; *p; ) {
+    char *q;
+    if (strncasecmp(p, "token", 5)) { p++; continue; }
+    q = p + 5;
+    if (*q == '"' || *q == '\'') q++;
+    while (*q == ' ') q++;
+    if (*q != '=' && *q != ':') { p += 5; continue; }
+    q++;
+    while (*q == ' ' || *q == '"' || *q == '\'') q++;
+    p = logCortar(q, logFimValor(q), "***");
+  }
+}
+
 void tbburn_rota_criar(char *out, unsigned n, int item, int arquivo, int usenet, int sub, int audio) {
   snprintf(out, n, "stream/createstream?id=%d&file_id=%d&type=%s&chosen_subtitle_index=%d"
                    "&chosen_audio_index=%d&scrobbling_enabled=false", item, arquivo, usenet ? "usenet" : "torrent",
@@ -211,12 +271,14 @@ static unsigned msAgora(void) {
   return (unsigned)(t.tv_sec * 1000u + t.tv_nsec / 1000000u);
 }
 
-// Logs up to ~1500 bytes of a TorBox answer, with the key redacted.
+// Logs up to ~1500 bytes of a TorBox answer: the key, every ...token value,
+// query strings and everything after a URL's host are masked first.
 static void logCorpo(const char *rotulo, int st, unsigned ms, const char *r) {
   char *c = malloc(1600);
   if (!c) return;
   snprintf(c, 1600, "%s", r ? r : "(no body)");
   debrid_tb_redigir(c);
+  tbburn_log_mascarar(c);
   for (char *p = c; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
   printf("[tbburn] %s: HTTP %d in %u ms: %s%s\n", rotulo, st, ms, c, r && strlen(r) >= 1599 ? " (...)" : "");
   fflush(stdout);
@@ -269,6 +331,7 @@ static void logPlaylist(const char *m3u8) {
   if (c) {
     snprintf(c, 2400, "%s", r);
     debrid_tb_redigir(c);
+    tbburn_log_mascarar(c);
     for (char *p = c; *p; p++) if (*p == '\n') *p = '|'; else if (*p == '\r') *p = ' ';
     printf("[tbburn] playlist: HTTP %d in %u ms, %u bytes: %s%s\n", st, msAgora() - t0, (unsigned)strlen(r), c,
            strlen(r) >= 2399 ? " (...)" : "");
@@ -335,7 +398,7 @@ static void *trabalhar(void *arg) {
   if (log) {
     snprintf(log, TBB_URL_MAX, "%s", m3u8);
     debrid_tb_redigir(log);
-    { char *qq = strstr(log, "token="); if (qq) { qq += 6; size_t k = strcspn(qq, "&"); if (k > 4) { memmove(qq + 3, qq + k, strlen(qq + k) + 1); memcpy(qq, "***", 3); } } }
+    tbburn_log_mascarar(log);   // the host only
     printf("[tbburn] stream ready in %u ms: %s\n", msAgora() - t0, log);
     fflush(stdout);
     free(log);

@@ -64,6 +64,26 @@ int main(void) {
   // A key that is a suffix of another is not matched ("user_token" vs "token").
   CHECA(!tbburn_json_texto("{\"user_token\":\"u\"}", "token", tmp, sizeof tmp));
 
+  // 2b) What goes to the log: no token value, no query string, URLs cut to
+  // the host; the rest of the answer stays readable.
+  snprintf(out, sizeof out, "%s",
+           "{\"success\":true,\"detail\":\"Stream created successfully.\",\"data\":{\"hls_url\":"
+           "\"https:\\/\\/s7.tb-cdn.st\\/hls\\/5f3a9c\\/playlist.m3u8?token=eyJhbGciOi.J9&user=12345\","
+           "\"presigned_token\":\"pst_9f8e7d6c5b4a\",\"token\":\"0a1b2c3d-4e5f\",\"user_token\" : \"ut\\/77\\\"x\",\"title\":\"Show.S03E02\"}}");
+  tbburn_log_mascarar(out);
+  CHECA(!strstr(out, "pst_9f8e") && !strstr(out, "0a1b2c3d") && !strstr(out, "eyJhbGci") && !strstr(out, "12345") &&
+        !strstr(out, "5f3a9c") && !strstr(out, "77") && strstr(out, "s7.tb-cdn.st") &&
+        strstr(out, "Stream created successfully.") && strstr(out, "\"title\":\"Show.S03E02\"") &&
+        strstr(out, "\"presigned_token\":\"***\""));
+  snprintf(out, sizeof out, "%s", "#EXTM3U|#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080|video/index.m3u8?token=abcdef&e=99|"
+                                  "https://user:pw@h.tb-cdn.st:8443/a/b.m3u8?x=1|");
+  tbburn_log_mascarar(out);
+  CHECA(!strcmp(out, "#EXTM3U|#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080|video/index.m3u8?***|https://***@h.tb-cdn.st:8443/...|"));
+  snprintf(out, sizeof out, "%s", "token=ab https://h.io ?a=b");   // values shorter than the mask: starred, never longer
+  tbburn_log_mascarar(out);
+  CHECA(!strcmp(out, "token=** https://h.io ?***"));
+  tbburn_log_mascarar(NULL);
+
   // 3) The createstream route: indices per kind, scrobbling off, never the key.
   tbburn_rota_criar(tmp, sizeof tmp, 123, 4, 0, 1, 0);
   CHECA(!strcmp(tmp, "stream/createstream?id=123&file_id=4&type=torrent&chosen_subtitle_index=1&chosen_audio_index=0&scrobbling_enabled=false"));

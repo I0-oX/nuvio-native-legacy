@@ -122,5 +122,9 @@ int  tbburn_json_texto(const char *corpo, const char *chave, char *out, unsigned
 int  tbburn_eh_recusa_plano(int st, const char *corpo);
 // The createstream route for item/file/sub/audio (no key in it).
 void tbburn_rota_criar(char *out, unsigned n, int item, int arquivo, int usenet, int sub, int audio);
+// Before a TorBox answer, playlist or URL goes to the log, in place: URLs keep
+// only their host, query strings and the value of every "...token" field
+// become ***. The text never grows.
+void tbburn_log_mascarar(char *s);
 
 #endif
