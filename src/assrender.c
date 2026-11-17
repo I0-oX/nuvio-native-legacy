@@ -2229,7 +2229,7 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
                  gn, gnov, gn ? us / 1000.0 / gn : 0.0, mx / 1000.0);
           printf("[mkvfix] 10s: mode=%s | to the TV %.2f MB/s (%.1f Mbit/s), blocked sending %lldms, waiting on the CDN %lldms, "
                  "connections=%d | Void: %ld block(s) %.1fKB, resync %ld, lost %ld, undecided %ld\n",
-                 mkvfix_modo_ass_atual() == MKVFIX_ASS_ANULAR ? "Void" : mkvfix_modo_ass_atual() == MKVFIX_ASS_DIRETO ? "Direct" : "Hidden",
+                 mkvfix_modo_ass_atual() == MKVFIX_ASS_ANULAR ? "Void" : "Hidden",
                  md.bytes / 1048576.0 / dt, md.bytes * 8.0 / 1e6 / dt, md.envioMs, md.cdnMs, md.conexoes,
                  md.anulados, md.bytesAnulados / 1024.0, md.sincronias, md.perdas, md.indecisos);
         } }

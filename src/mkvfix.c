@@ -533,7 +533,7 @@ static int sockOuvir = -1, porta;
 static atomic_int vivos;
 static atomic_int modoAss = MKVFIX_ASS_ESCONDER;
 void mkvfix_modo_ass(int m) {
-  if (m < MKVFIX_ASS_ESCONDER || m > MKVFIX_ASS_DIRETO) m = MKVFIX_ASS_ESCONDER;
+  if (m != MKVFIX_ASS_ANULAR) m = MKVFIX_ASS_ESCONDER;
   atomic_store(&modoAss, m);
 }
 int mkvfix_modo_ass_atual(void) { return atomic_load(&modoAss); }
@@ -667,10 +667,6 @@ static void sondaLegendas(Sess *s, const unsigned char *b, long n, const MkvfixC
         printf("[mkvfix] subtitles: Void mode, but %d of %d track(s) have no track number: hidden instead\n", k - nv, k);
         modo = MKVFIX_ASS_ESCONDER;
       }
-    }
-    if (k > 0 && modo == MKVFIX_ASS_DIRETO) {
-      printf("[mkvfix] subtitles: %d text subtitle track(s) with ASS/SSA left to the TV player (Direct mode, as 2.0.7)\n", k);
-      k = 0;
     }
     if (k > 0 && modo == MKVFIX_ASS_ESCONDER) {
       for (int i = 0; i < k; i++) s->oculta[i] = tp + off[i];

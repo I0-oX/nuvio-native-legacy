@@ -18,7 +18,6 @@
 static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __attribute__((unused)) = {
   [AP_ESCALA] = { "escala", 0, 5, 5 }, [AP_GAMA] = { "gama", 0, 10, 0 }, [AP_CONTRASTE] = { "contraste", 0, 30, 0 },
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
-  [AP_TVASS] = { "tvass", 0, 3, 0 },
 };
 
 static int val[AP_N] __attribute__((unused));   // read off the .tpk only by the tests
@@ -116,9 +115,7 @@ void assperf_restaurar(void) {
   int i;
   assperf_iniciar();
   pthread_mutex_lock(&trava);
-  /* libass on/off and the TV test switch are not style: Restore keeps them. */
-  for (i = 0; i < AP_N; i++)
-    if (i != AP_LIBASS && i != AP_TVASS) __atomic_store_n(&val[i], PESSOA[i].padrao, __ATOMIC_RELAXED);
+  for (i = 0; i < AP_N; i++) if (i != AP_LIBASS) __atomic_store_n(&val[i], PESSOA[i].padrao, __ATOMIC_RELAXED);
   gravar();
   pthread_mutex_unlock(&trava);
   __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);

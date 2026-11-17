@@ -103,10 +103,9 @@ int  mkvfix_legendas_texto_num(const unsigned char *b, long n, int64_t *off, uin
 // VOID keeps the TrackEntry as it is and turns every block of those tracks
 // into an EBML Void element of the same size (its one-byte ID A0/A3 -> EC):
 // every Matroska reader skips Void, so the TV gets no ASS data and no block of
-// an unknown track. DIRECT is 2.0.7: no local server for ASS, the TV gets the
-// file as it is (the #638 stall can come back on a huge ASS drawing).
-enum { MKVFIX_ASS_ESCONDER = 1, MKVFIX_ASS_ANULAR = 2, MKVFIX_ASS_DIRETO = 3 };
-// Mode for the next probe (video_tpk.c resolves Auto by the Tizen version).
+// an unknown track. Void fixed it on a Tizen 6 TV (17/11/2026).
+enum { MKVFIX_ASS_ESCONDER = 1, MKVFIX_ASS_ANULAR = 2 };
+// Mode for the next probe (video_tpk.c picks it by the Tizen version).
 void mkvfix_modo_ass(int modo);
 int  mkvfix_modo_ass_atual(void);
 
