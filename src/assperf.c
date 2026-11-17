@@ -237,13 +237,19 @@ int assperf_pesado(void) {
 #define AUTO_MIN75_S  5.0
 #define AUTO_MIN100_S 2.0
 static struct { int em75; double desde; } A;
-/* Render resolution Auto in a busy scene: 75 %; Tizen 4/5 50 % (owner,
- * 16/11/2026: the 2019 TV still dropped to ~11 fps at 75 %). "em75" = busy. */
+/* Render resolution Auto in a busy scene: 75 %; Tizen 4-6 50 % (owner,
+ * 16-17/11/2026: the 2019 Tizen 5 TV dropped to ~11 fps at 75 %, the 2021
+ * Tizen 6 TV rendered heavy signs at 118-192 ms per frame). "em75" = busy. */
+static int tvLenta;   /* __atomic: set once by video_tpk.c from the Tizen version */
+void assperf_tv_lenta_definir(int sim) { __atomic_store_n(&tvLenta, sim ? 1 : 0, __ATOMIC_RELAXED); }
+int assperf_tv_lenta(void) {
 #ifdef NV_TPK40
-#define ESCALA_PESADA 0.5
+  return 1;
 #else
-#define ESCALA_PESADA 0.75
+  return __atomic_load_n(&tvLenta, __ATOMIC_RELAXED);
 #endif
+}
+#define ESCALA_PESADA (assperf_tv_lenta() ? 0.5 : 0.75)
 
 static void auto_trocar_locked(int em75, double t) { A.em75 = em75; A.desde = t; }
 

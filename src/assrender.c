@@ -218,6 +218,7 @@ static long long assAgoraUiMs = LLONG_MIN;     // o quadro em tela agora (desenh
 static unsigned assAgoraUiGeracao;
 static int assPedidoForcado;                   // documento/tela mudou: nada de pular pela validade
 static double assRenderPico;                   // ms: pico recente do render (cai 5 % por render), __atomic
+static int assAdianteMax;                      // ms: largest render-ahead asked in the 10 s window ("[ass] 10s tv"), __atomic
 static int assEventos, assFontes, assResolucaoFonte;
 static long long assCoberturaIni, assCoberturaFim;
 static ASS_Library *assLib;
@@ -2210,10 +2211,12 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
       video_tpk_leituras(&n, &fora, &somaMs, &maxMs);
       if (dt > 0.0)
         printf("[ass] 10s tv: position readings=%d (%.1f/s, %d dropped) query avg=%.1fms max=%dms | "
-               "free RAM=%ldMB | queue=%d frames %.1fMB | textures=%d %.1fMB | scale=%d%% busy=%d\n",
+               "free RAM=%ldMB | queue=%d frames %.1fMB | textures=%d %.1fMB | scale=%d%% busy=%d | "
+               "ahead up to %dms (slow TV rules %s)\n",
                n, n / dt, fora, n ? (double)somaMs / n : 0.0, maxMs, memlog_livre_mb(),
                assFilaN, ass_fila_bytes_locked() / 1048576.0, assTcN, assTcBytes / 1048576.0,
-               (int)(assperf_escala() * 100.0 + 0.5), assperf_pesado());
+               (int)(assperf_escala() * 100.0 + 0.5), assperf_pesado(),
+               __atomic_exchange_n(&assAdianteMax, 0, __ATOMIC_RELAXED), assperf_tv_lenta() ? "on" : "off");
       /* Drawing the subtitles on the GL thread, and the local server feeding
        * the TV (Tizen 4-6 playback damage, 16/11): every window, also paused. */
       { long long us = __atomic_exchange_n(&glDesUs, 0, __ATOMIC_RELAXED),
@@ -2298,6 +2301,21 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
      * tique de trabalho 0 — uma cena parada que toca conta como leve; pausado, nao. */
     assperf_carga_gl(0.0);
     adiante = ASSPERF_ADIANTE_MS;
+    /* TIZEN 4-6, BUSY SCENE (owner, 17/11/2026): a heavy frame there takes
+     * 118-192 ms (Tizen 6, Kaguya inbox), so a frame asked 100 ms ahead came
+     * out late and the signs trailed by up to 0.5 s. Ask far enough ahead for
+     * the recent render peak to finish in time (+ one frame), 100..600 ms: the
+     * busy worker renders only the newest request, so signs update less often
+     * but each one is on time. Hold-until-due keeps it off the screen early. */
+    if (assperf_tv_lenta() && assperf_pesado()) {
+      double pico, fps = ass_fps();
+      __atomic_load(&assRenderPico, &pico, __ATOMIC_RELAXED);
+      adiante = (int)lround(pico * 1.25 + (fps > 0 ? 1000.0 / fps : 42.0));
+      if (adiante < ASSPERF_ADIANTE_MS) adiante = ASSPERF_ADIANTE_MS;
+      if (adiante > 600) adiante = 600;
+    }
+    { int mx = __atomic_load_n(&assAdianteMax, __ATOMIC_RELAXED);
+      if (adiante > mx) __atomic_store_n(&assAdianteMax, adiante, __ATOMIC_RELAXED); }
   }
   /* Hold until due: com render ahead o quadro feito para daqui a 100 ms
    * espera a sua vez na fila. */

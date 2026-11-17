@@ -2058,7 +2058,10 @@ static void encaixar(int x, int y, int w, int h, int *fx, int *fy, int *fw, int 
 }
 // Versao da Tizen (gpunivel.c le platform.version); so o maior importa.
 static int tizenMaior;
-void video_tpk_tizen_definir(const char *v) { tizenMaior = v ? atoi(v) : 0; }
+void video_tpk_tizen_definir(const char *v) {
+  tizenMaior = v ? atoi(v) : 0;
+  assperf_tv_lenta_definir(tizenMaior >= 4 && tizenMaior <= 6);   /* busy ASS scenes: 50 %, further ahead */
+}
 // How the TV is kept off the ASS tracks (mkvfix.h). Auto: Void on Tizen 4-6
 // (their players show blocky damage with 2.0.8's Hidden, 16/11/2026), Hidden on
 // 7+ and when the version is unknown (the S95C is fine with it). The Style
