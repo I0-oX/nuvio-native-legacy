@@ -29,7 +29,7 @@ static int contemSemCaixa(const char *h, const char *n) {
 #define LR_BLOCO_MAX (64L * 1024L)
 #define LR_VAO      (8L * 1024L)         // junta Ranges vizinhos a menos disto
 #define LR_LEITURA_MAX (128L * 1024L)
-#define LR_FAIXAS   64
+#define LR_FAIXAS   192   // 64 ate 17/11 (remux com 145 faixas): ver mkv.h
 #define LR_EVENTOS_MAX 7999              // acima disto o AutoSync recusa de qualquer jeito
 
 // --- EBML -------------------------------------------------------------------
