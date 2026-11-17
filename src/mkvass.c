@@ -2167,6 +2167,12 @@ static int lerCues(Fio *f) {
   tam = lerTam(p + ui, n - ui, &ut);
   if (tam <= 0 || tam > MKVASS_CUES_MAX) {
     free(p);
+    // 17/11: sem esta linha o log so dizia "o indice nao aponta os blocos
+    // desta faixa", e o indice nem tinha sido lido (Cues de 9,35 MB).
+    if (tam > MKVASS_CUES_MAX)
+      printf("[mkvass] faixa %d: Cues de %ld bytes, acima do teto de %ld: o indice nao e lido e a faixa e varrida pelo arquivo\n",
+             f->faixa, tam, (long)MKVASS_CUES_MAX);
+    fflush(stdout);
     return armarVarreduraInteira(f) ? 0 : MKVASS_NOGO_SEM_INDICE;
   }
   if (ui + ut + tam <= n) {
@@ -3880,9 +3886,10 @@ static void *trabalhar(void *arg) {
     // o app NAO entregou a faixa a TV, esta varrendo.
     // Sem ';' dentro do formato: a varredura-i18n anda para tras ate o ';'
     // anterior para achar o printf, e um ';' no texto a deixava sem contexto.
-    printf("[mkvass] faixa %d: o indice nao aponta os blocos desta faixa — VARREDURA de %d trecho(s) "
+    printf("[mkvass] faixa %d: %s — VARREDURA de %d trecho(s) "
            "(lista=%s, baixa os Clusters e nao so as falas, Segment ate %lld)\n",
-           f->faixa, f->nPontos, f->varreEncadeia ? "cues-do-video" : "cues-da-faixa", f->segFim);
+           f->faixa, f->varreInteira ? "sem indice utilizavel" : "o indice nao aponta os blocos desta faixa", f->nPontos,
+           f->varreInteira ? "arquivo-inteiro" : f->varreEncadeia ? "cues-do-video" : "cues-da-faixa", f->segFim);
     fflush(stdout);
   }
 
