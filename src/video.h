@@ -200,6 +200,10 @@ int      video_tpk_quadro(double *fps, int *hdr);
 // Colour of the playing MKV's video (Colour element): MatrixCoefficients and
 // Range as in the file (0 = not stated), and HDR. 0 = no MKV video track.
 int      video_tpk_cor(int *matriz, int *faixa, int *hdr);
+// Measurements for the libass log (assrender.c): position readings since the
+// last call. n = arrived, fora = dropped (query older than the last seek),
+// somaMs / maxMs = time the query took. Resets the counters.
+void     video_tpk_leituras(int *n, int *fora, long *somaMs, int *maxMs);
 #endif
 int    video_tocando(void);
 // Pausa comprovada pelo backend da sessao atual, nao a intencao local de
