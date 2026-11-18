@@ -23,11 +23,29 @@ void debrid_tb_redigir(char *t) {
 }
 char *debrid_tb_api_get(const char *r, int p, int *st) { (void)r; (void)p; if (st) *st = 0; return NULL; }
 static char viuArquivo[512]; static uint64_t viuBytes;
+// The account lookup: misses unless partesAchar; partesAtrasoMs = how long it takes.
+static int partesAchar, partesAtrasoMs, conta = 1;
+static volatile int partesN;
+unsigned debrid_tb_geracao(void) { return (unsigned)conta; }
+void rede_fio_fechar(void) {}
 int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, char *c, unsigned n) {
-  (void)u; (void)h; (void)i; (void)f; (void)c; (void)n;
+  (void)u; (void)h;
   snprintf(viuArquivo, sizeof viuArquivo, "%s", a ? a : ""); viuBytes = b;
-  return 0;
+  if (partesAtrasoMs) { struct timespec t = {partesAtrasoMs / 1000, (long)(partesAtrasoMs % 1000) * 1000000L}; nanosleep(&t, NULL); }
+  __atomic_add_fetch(&partesN, 1, __ATOMIC_SEQ_CST);
+  if (!partesAchar) return 0;
+  if (i) *i = 500;
+  if (f) *f = 7;
+  if (c && n) snprintf(c, n, "hash");
+  return 1;
 }
+static void dormir(int ms) { struct timespec t = {ms / 1000, (long)(ms % 1000) * 1000000L}; nanosleep(&t, NULL); }
+// Waits for the burn-in request to end (no playlist in these stubs: TBB_FALHOU).
+static int fimPedido(void) {
+  for (int k = 0; k < 500 && tbburn_resultado(NULL, 0, NULL, 0) == TBB_BUSCANDO; k++) dormir(10);
+  return tbburn_resultado(NULL, 0, NULL, 0);
+}
+static int partesEsperar(int alvo) { for (int k = 0; k < 500 && partesN < alvo; k++) dormir(10); dormir(30); return partesN; }
 char *rede_baixar_st(const char *u, int s, const char *const *c, int *st) { (void)u; (void)s; (void)c; (void)st; return NULL; }
 int rede_torbox_em_voo(int *p) { if (p) *p = 0; return 0; }
 // In-memory data files, one profile, a two-letter language match.
@@ -184,6 +202,71 @@ int main(void) {
     tbburn_titulo("tt7"); CHECA(tbburn_memoria(&r) == 2 && !tbburn_hdr_permitido());
     perfil = 1;
     tbburn_hdr_fonte(1); CHECA(tbburn_hdr_da_fonte()); tbburn_hdr_fonte(0); CHECA(!tbburn_hdr_da_fonte()); }
+
+  // 11) Early lookup (owner 18/11): the key, the MKV guess, then the flow.
+  tbburn_chave(tmp, sizeof tmp, "https://a/x", "ABCDEF0123456789ABCDEF0123456789ABCDEF01", "/d/Show.S01E02.mkv", 42);
+  CHECA(!strcmp(tmp, "h:abcdef0123456789abcdef0123456789abcdef01|n:Show.S01E02.mkv|b:42"));
+  tbburn_chave(tmp, sizeof tmp, "https://a/x", "nothex", "", 0);      // no usable hash/name/size: the URL
+  CHECA(!strcmp(tmp, "u:https://a/x"));
+  tbburn_chave(tmp, sizeof tmp, "", "", "", 0); CHECA(!tmp[0]);
+  CHECA(tbburn_parece_mkv("https://a/b.mkv", "") && tbburn_parece_mkv("https://a/b", "") &&
+        tbburn_parece_mkv("https://a/play?id=1.mp4", "") && tbburn_parece_mkv("https://host", "") &&
+        tbburn_parece_mkv("", "Show.S01E02.1080p.WEB") && tbburn_parece_mkv("https://a/b.mp4", "Show.MKV"));
+  CHECA(!tbburn_parece_mkv("https://a/b.mp4?x=1", "") && !tbburn_parece_mkv("", "dir/Movie.2020.AVI") &&
+        !tbburn_parece_mkv("https://a/b.mkv", "Movie.m2ts"));
+  pro = 1; ligado = 1; chave = 1; tbburn_definir_escolha(-1);
+  // a) Focused source found early; the burn-in request uses it (one lookup in all).
+  partesAchar = 1; partesAtrasoMs = 0; partesN = 0;
+  tbburn_procurar_cedo("https://s/1", "", "A.S01E01.mkv", 1001, "source focused 1 s");
+  CHECA(partesEsperar(1) == 1);
+  tbburn_procurar_cedo("https://s/1", "", "A.S01E01.mkv", 1001, "source focused 1 s");   // known: no new lookup
+  dormir(50); CHECA(partesN == 1);
+  tbburn_fonte("https://played/1", "", "A.S01E01.mkv", 1001);   // the played URL differs; same file
+  tbburn_pedir("https://played/1", 0, 0);
+  CHECA(fimPedido() == TBB_FALHOU && partesN == 1);
+  // b) The request starts while the early lookup runs: it waits for it, no second lookup.
+  partesN = 0; partesAtrasoMs = 300;
+  tbburn_procurar_cedo("https://s/2", "", "A.S01E02.mkv", 1002, "Play");
+  dormir(50);
+  tbburn_fonte("https://s/2", "", "A.S01E02.mkv", 1002);
+  tbburn_pedir("https://s/2", 0, 0);
+  CHECA(fimPedido() == TBB_FALHOU && partesEsperar(1) == 1);
+  // c) A miss: no new early lookup of that file for a while, but the request looks again.
+  partesN = 0; partesAtrasoMs = 0; partesAchar = 0;
+  tbburn_procurar_cedo("https://s/3", "", "A.S01E03.mkv", 1003, "source focused 1 s");
+  CHECA(partesEsperar(1) == 1);
+  tbburn_procurar_cedo("https://s/3", "", "A.S01E03.mkv", 1003, "Play");
+  dormir(50); CHECA(partesN == 1);
+  tbburn_fonte("https://s/3", "", "A.S01E03.mkv", 1003);
+  tbburn_pedir("https://s/3", 0, 0);
+  CHECA(fimPedido() == TBB_FALHOU && partesN == 2);
+  // d) Not for an MP4, nor when burn-in is not possible.
+  partesN = 0; partesAchar = 1;
+  tbburn_procurar_cedo("https://s/4.mp4", "", "", 0, "Play");
+  tbburn_definir_escolha(0); tbburn_procurar_cedo("https://s/5", "", "A.S01E05.mkv", 1005, "Play"); tbburn_definir_escolha(-1);
+  pro = 0; tbburn_procurar_cedo("https://s/6", "", "A.S01E06.mkv", 1006, "Play"); pro = 1;
+  dormir(100); CHECA(partesN == 0);
+  // e) Play: tbburn_fonte arms it, the next frame starts it once; a picked file skips it.
+  tbburn_cedo_bombear(); dormir(50); CHECA(partesN == 0);           // nothing armed
+  tbburn_fonte("https://s/7", "", "A.S01E07.mkv", 1007);
+  tbburn_cedo_bombear(); CHECA(partesEsperar(1) == 1);
+  tbburn_cedo_bombear(); dormir(50); CHECA(partesN == 1);           // once
+  tbburn_fonte("https://s/8", "", "A.S01E08.mkv", 1008);
+  tbburn_ids("https://s/8", 0, 900, 2);
+  tbburn_cedo_bombear(); dormir(50); CHECA(partesN == 1);
+  // f) While one runs, only the newest waiting request is looked up after it.
+  partesN = 0; partesAtrasoMs = 200;
+  tbburn_procurar_cedo("https://s/9", "", "A.S01E09.mkv", 1009, "source focused 1 s");
+  dormir(30);
+  tbburn_procurar_cedo("https://s/10", "", "A.S01E10.mkv", 1010, "source focused 1 s");
+  tbburn_procurar_cedo("https://s/11", "", "A.S01E11.mkv", 1011, "source focused 1 s");
+  CHECA(partesEsperar(2) == 2 && !strcmp(viuArquivo, "A.S01E11.mkv"));
+  dormir(300); CHECA(partesN == 2);
+  // g) Another TorBox account: hits of the old one are not used.
+  partesN = 0; partesAtrasoMs = 0; conta = 2;
+  tbburn_procurar_cedo("https://s/1", "", "A.S01E01.mkv", 1001, "source focused 1 s");
+  CHECA(partesEsperar(1) == 1);
+  conta = 1;
 
   if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
   printf("tbburn: ok\n");

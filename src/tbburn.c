@@ -172,6 +172,45 @@ void tbburn_rota_criar(char *out, unsigned n, int item, int arquivo, int usenet,
            sub, audio < 0 ? 0 : audio);
 }
 
+void tbburn_chave(char *out, unsigned n, const char *url, const char *hash, const char *arquivo, uint64_t bytes) {
+  char h[41] = "";
+  const char *nome = arquivo ? strrchr(arquivo, '/') : NULL;
+  int i;
+  if (!out || !n) return;
+  out[0] = 0;
+  nome = nome ? nome + 1 : arquivo ? arquivo : "";
+  if (hash && strlen(hash) == 40) {
+    for (i = 0; i < 40 && isxdigit((unsigned char)hash[i]); i++) h[i] = (char)tolower((unsigned char)hash[i]);
+    h[i == 40 ? 40 : 0] = 0;
+  }
+  if (h[0] || nome[0] || bytes) snprintf(out, n, "h:%s|n:%s|b:%llu", h, nome, (unsigned long long)bytes);
+  else if (url && url[0]) snprintf(out, n, "u:%s", url);
+}
+
+int tbburn_parece_mkv(const char *url, const char *arquivo) {
+  static const char *const outros[] = { "mp4", "m4v", "mov", "avi", "ts", "m2ts", "mts", "webm", "wmv", "flv",
+                                        "mpg", "mpeg", "iso", "m3u8", "mpd", NULL };
+  char nome[512] = "";
+  const char *b, *ponto;
+  size_t k;
+  if (arquivo && arquivo[0]) {
+    b = strrchr(arquivo, '/');
+    snprintf(nome, sizeof nome, "%s", b ? b + 1 : arquivo);
+  } else if (url && url[0]) {
+    const char *ini = strstr(url, "://");
+    ini = ini ? ini + 3 : url;
+    k = strcspn(ini, "?#");
+    snprintf(nome, sizeof nome, "%.*s", (int)(k < sizeof nome - 1 ? k : sizeof nome - 1), ini);
+    b = strrchr(nome, '/');
+    if (!b) return 1;   // a bare host: nothing to judge by
+    memmove(nome, b + 1, strlen(b + 1) + 1);
+  }
+  ponto = strrchr(nome, '.');
+  if (!ponto || !ponto[1] || strlen(ponto + 1) > 5) return 1;
+  for (int i = 0; outros[i]; i++) if (!strcasecmp(ponto + 1, outros[i])) return 0;
+  return 1;
+}
+
 // ---- state -----------------------------------------------------------------
 
 static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
@@ -182,6 +221,7 @@ static struct {
 // The file found for fonte.url (cached: one account lookup per source).
 static struct { char url[TBB_URL_MAX]; int item, arquivo, usenet, achou, procurou; char como[72]; } ids;
 static int escolha = -1, temAss, recusado;
+static int cedoFontePend;   // tbburn_fonte -> tbburn_cedo_bombear (the early lookup at Play)
 static struct {
   int estado;
   unsigned geracao;
@@ -215,6 +255,7 @@ void tbburn_fonte(const char *url, const char *hash, const char *arquivo, uint64
     fonte.bytes = bytes;
     temAss = 0;
   }
+  cedoFontePend = url && url[0];   // tbburn_cedo_bombear, next frame
   pthread_mutex_unlock(&trava);
 }
 
@@ -254,6 +295,151 @@ int tbburn_linha_visivel(void) {
   ok = !(ids.procurou && !ids.achou && !strcmp(ids.url, fonte.url));
   pthread_mutex_unlock(&trava);
   return ok;
+}
+
+// ---- the early lookup (tbburn.h, owner 18/11) ----------------------------------
+#define TBB_CHAVE 640
+#ifndef TBB_CEDO_VIDA_MS
+#define TBB_CEDO_VIDA_MS (30u * 60u * 1000u)   // a hit
+#endif
+#ifndef TBB_CEDO_ERRO_MS
+#define TBB_CEDO_ERRO_MS 60000u                // a miss: no new EARLY lookup of that file
+#endif
+#ifndef TBB_CEDO_ESPERA_MS
+#define TBB_CEDO_ESPERA_MS 20000u              // the worker waits this long for a running one
+#endif
+#define TBB_CEDO_N 8
+typedef struct {
+  char chave[TBB_CHAVE];
+  int achou, item, arquivo;
+  char como[72];
+  unsigned em, conta;
+} Cedo;
+typedef struct {
+  char url[TBB_URL_MAX], hash[48], arquivo[512], chave[TBB_CHAVE], porque[48];
+  uint64_t bytes;
+} CedoPedido;
+static Cedo cedo[TBB_CEDO_N];
+static int cedoProx;
+static pthread_cond_t cedoSinal = PTHREAD_COND_INITIALIZER;
+static int cedoRodando, cedoTemPend;
+static char cedoAtual[TBB_CHAVE];   // the key being looked up now
+static CedoPedido cedoPend;         // the newest one waiting (latest wins)
+
+static unsigned msAgora(void);
+// With `trava`. A still valid entry of `chave` (a hit; a miss only if `erros`).
+static Cedo *cedoAchar(const char *chave, int erros) {
+  unsigned agora = msAgora(), conta = debrid_tb_geracao();
+  for (int i = 0; i < TBB_CEDO_N; i++) {
+    Cedo *c = &cedo[i];
+    if (!c->chave[0] || strcmp(c->chave, chave) || c->conta != conta) continue;
+    if (c->achou ? agora - c->em < TBB_CEDO_VIDA_MS : erros && agora - c->em < TBB_CEDO_ERRO_MS) return c;
+  }
+  return NULL;
+}
+static void cedoGuardar(const char *chave, int achou, int item, int arquivo, const char *como) {
+  Cedo *c = NULL;
+  for (int i = 0; i < TBB_CEDO_N && !c; i++) if (!strcmp(cedo[i].chave, chave)) c = &cedo[i];
+  if (!c) { c = &cedo[cedoProx]; cedoProx = (cedoProx + 1) % TBB_CEDO_N; }
+  snprintf(c->chave, sizeof c->chave, "%s", chave);
+  c->achou = achou; c->item = item; c->arquivo = arquivo;
+  snprintf(c->como, sizeof c->como, "%s", como ? como : "");
+  c->em = msAgora(); c->conta = debrid_tb_geracao();
+}
+static void cedoLogPedido(const CedoPedido *p, const char *o) {
+  const char *b = strrchr(p->arquivo, '/');
+  printf("[tbburn] early lookup (%s): %s | file=%s | size=%llu | hash=%s\n", p->porque, o,
+         b ? b + 1 : p->arquivo[0] ? p->arquivo : "-", (unsigned long long)p->bytes, p->hash[0] ? "from the add-on" : "none");
+  fflush(stdout);
+}
+static void *fioCedo(void *arg) {
+  CedoPedido *p = arg;
+  for (;;) {
+    char como[72] = "";
+    int item = 0, arquivo = -1, achou;
+    unsigned t0 = msAgora();
+    cedoLogPedido(p, "looking the file up in your TorBox");
+    achou = partes_achar_exato(p->url, p->hash, p->arquivo, p->bytes, &item, &arquivo, como, sizeof como);
+    if (achou) printf("[tbburn] early lookup (%s): found item %d, file %d (by %s) in %u ms\n", p->porque, item, arquivo, como, msAgora() - t0);
+    else printf("[tbburn] early lookup (%s): not found in %u ms (the burn-in request looks again)\n", p->porque, msAgora() - t0);
+    fflush(stdout);
+    pthread_mutex_lock(&trava);
+    cedoGuardar(p->chave, achou, item, arquivo, como);
+    cedoAtual[0] = 0;
+    if (cedoTemPend) {
+      *p = cedoPend; cedoTemPend = 0;
+      snprintf(cedoAtual, sizeof cedoAtual, "%s", p->chave);
+      pthread_cond_broadcast(&cedoSinal);
+      pthread_mutex_unlock(&trava);
+      continue;
+    }
+    cedoRodando = 0;
+    pthread_cond_broadcast(&cedoSinal);
+    pthread_mutex_unlock(&trava);
+    break;
+  }
+  free(p);
+  rede_fio_fechar();   // no idle socket left behind by this thread
+  return NULL;
+}
+
+void tbburn_procurar_cedo(const char *url, const char *hash, const char *arquivo, uint64_t bytes, const char *porque) {
+  CedoPedido *p;
+  pthread_t f;
+  if (!tbburn_pode() || !tbburn_parece_mkv(url, arquivo)) return;
+  p = calloc(1, sizeof *p);
+  if (!p) return;
+  tbburn_chave(p->chave, sizeof p->chave, url, hash, arquivo, bytes);
+  if (!p->chave[0]) { free(p); return; }
+  snprintf(p->url, sizeof p->url, "%s", url ? url : "");
+  snprintf(p->hash, sizeof p->hash, "%s", hash ? hash : "");
+  snprintf(p->arquivo, sizeof p->arquivo, "%s", arquivo ? arquivo : "");
+  snprintf(p->porque, sizeof p->porque, "%s", porque ? porque : "");
+  p->bytes = bytes;
+  pthread_mutex_lock(&trava);
+  if (cedoAchar(p->chave, 1) || (cedoRodando && !strcmp(cedoAtual, p->chave)) ||
+      (cedoTemPend && !strcmp(cedoPend.chave, p->chave))) {
+    pthread_mutex_unlock(&trava); free(p); return;   // known, just missed, or already asked for
+  }
+  if (cedoRodando) {
+    if (cedoTemPend) cedoLogPedido(&cedoPend, "dropped: a newer one waits instead");
+    cedoPend = *p; cedoTemPend = 1;
+    pthread_mutex_unlock(&trava);
+    cedoLogPedido(p, "waits for the running one");
+    free(p);
+    return;
+  }
+  cedoRodando = 1;
+  snprintf(cedoAtual, sizeof cedoAtual, "%s", p->chave);
+  pthread_mutex_unlock(&trava);
+  if (pthread_create(&f, NULL, fioCedo, p) == 0) { pthread_detach(f); return; }
+  pthread_mutex_lock(&trava);
+  cedoRodando = 0; cedoAtual[0] = 0;
+  pthread_cond_broadcast(&cedoSinal);
+  pthread_mutex_unlock(&trava);
+  free(p);
+}
+
+// The frame after Play: the source tbburn_fonte just set, unless the file is
+// already known (a file picked in "Files in source": tbburn_ids).
+void tbburn_cedo_bombear(void) {
+  char url[TBB_URL_MAX], hash[48], arquivo[512];
+  uint64_t bytes;
+  pthread_mutex_lock(&trava);
+  if (!cedoFontePend) { pthread_mutex_unlock(&trava); return; }
+  cedoFontePend = 0;
+  if (ids.procurou && ids.achou && !strcmp(ids.url, fonte.url)) {
+    pthread_mutex_unlock(&trava);
+    printf("[tbburn] early lookup (Play): not needed, the TorBox file is known (%s)\n", ids.como);
+    fflush(stdout);
+    return;
+  }
+  snprintf(url, sizeof url, "%s", fonte.url);
+  snprintf(hash, sizeof hash, "%s", fonte.hash);
+  snprintf(arquivo, sizeof arquivo, "%s", fonte.arquivo);
+  bytes = fonte.bytes;
+  pthread_mutex_unlock(&trava);
+  tbburn_procurar_cedo(url, hash, arquivo, bytes, "Play");
 }
 
 // ---- the worker -------------------------------------------------------------
@@ -310,12 +496,49 @@ static int pegarIds(const Pedido *p, int *item, int *arquivo, int *usenet, char 
     pthread_mutex_unlock(&trava);
     return achou;
   }
-  pthread_mutex_unlock(&trava);
+  // The early lookup of this file: wait for it if it is running, use its hit.
+  {
+    char chave[TBB_CHAVE];
+    unsigned t0 = msAgora();
+    int esperou = 0;
+    Cedo *c;
+    tbburn_chave(chave, sizeof chave, p->url, p->hash, p->arquivo, p->bytes);
+    while (chave[0] && cedoRodando && !strcmp(cedoAtual, chave) && msAgora() - t0 < TBB_CEDO_ESPERA_MS) {
+      struct timespec ate;
+      clock_gettime(CLOCK_REALTIME, &ate);
+      ate.tv_nsec += 200000000L;
+      if (ate.tv_nsec >= 1000000000L) { ate.tv_sec++; ate.tv_nsec -= 1000000000L; }
+      pthread_cond_timedwait(&cedoSinal, &trava, &ate);
+      esperou = 1;
+    }
+    c = chave[0] ? cedoAchar(chave, 0) : NULL;
+    if (c) {
+      *item = c->item; *arquivo = c->arquivo;
+      snprintf(como, n, "%.48s (early lookup)", c->como);
+      snprintf(ids.url, sizeof ids.url, "%s", p->url);
+      ids.item = c->item; ids.arquivo = c->arquivo; ids.usenet = 0; ids.achou = ids.procurou = 1;
+      snprintf(ids.como, sizeof ids.como, "%s", como);
+      pthread_mutex_unlock(&trava);
+      printf("[tbburn] burn-in request: the early lookup had the file (waited %u ms for it)\n", esperou ? msAgora() - t0 : 0u);
+      fflush(stdout);
+      return 1;
+    }
+    pthread_mutex_unlock(&trava);
+    if (esperou) {
+      printf("[tbburn] burn-in request: the early lookup did not find the file (waited %u ms); looking again\n", msAgora() - t0);
+      fflush(stdout);
+    }
+  }
   achou = partes_achar_exato(p->url, p->hash, p->arquivo, p->bytes, item, arquivo, como, n);
   pthread_mutex_lock(&trava);
   snprintf(ids.url, sizeof ids.url, "%s", p->url);
   ids.item = *item; ids.arquivo = *arquivo; ids.usenet = 0; ids.achou = achou; ids.procurou = 1;
   snprintf(ids.como, sizeof ids.como, "%s", como);
+  if (achou) {
+    char chave[TBB_CHAVE];
+    tbburn_chave(chave, sizeof chave, p->url, p->hash, p->arquivo, p->bytes);
+    if (chave[0]) cedoGuardar(chave, 1, *item, *arquivo, como);
+  }
   pthread_mutex_unlock(&trava);
   return achou;
 }

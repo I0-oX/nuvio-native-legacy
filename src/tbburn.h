@@ -30,6 +30,18 @@ void tbburn_ids(const char *url, int usenet, int item, int arquivo);
 // size and hash, used when the player opens that URL without the add-on list.
 void tbburn_fonte_guardada(const char *url, const char *hash, const char *arquivo, uint64_t bytes);
 
+// EARLY LOOKUP (owner 18/11). The account lookup (partes_achar_exato: TorBox's
+// list has no hash filter, 0.7-3.6 s) starts before the file's header is read:
+// when a source has been focused 1 s in the source list, and on the frame after
+// Play (tbburn_cedo_bombear, video_tpk.c). Only with burn-in possible
+// (tbburn_pode) and a file that may be MKV. One lookup at a time; the newest
+// request waits for it (older waiting ones are dropped). A hit is kept 30 min
+// per file (hash + file name + size); a miss only stops new early lookups of
+// that file for 1 min: the worker still looks up again (owner 14/11). The
+// worker waits for a running early lookup of its file instead of asking twice.
+void tbburn_procurar_cedo(const char *url, const char *hash, const char *arquivo, uint64_t bytes, const char *porque);
+void tbburn_cedo_bombear(void);
+
 // Settings On + plan Pro + a TorBox key, not refused by TorBox this app
 // session, and not switched Off for this playback.
 int  tbburn_pode(void);
@@ -113,6 +125,12 @@ void video_tpk_tba_soltar(void);
 #endif
 
 // ---- pure (tests) ----------------------------------------------------------
+// The early lookup's key for a file: hash (40 hex, lower case) + file name +
+// size; the URL only when none of them is known. "" = nothing to look up by.
+void tbburn_chave(char *out, unsigned n, const char *url, const char *hash, const char *arquivo, uint64_t bytes);
+// 0 = the file name (else the URL's last path part) ends in a video extension
+// other than .mkv (mp4, avi, ts...): no embedded ASS to burn. 1 otherwise.
+int  tbburn_parece_mkv(const char *url, const char *arquivo);
 // First http(s) URL ending a path in ".m3u8" anywhere in `corpo` (JSON string
 // values unescaped: \/ \" \\). 1 found.
 int  tbburn_achar_m3u8(const char *corpo, char *out, unsigned n);
