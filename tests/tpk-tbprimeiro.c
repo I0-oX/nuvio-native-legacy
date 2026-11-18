@@ -125,6 +125,11 @@ static void sairEVoltar(int hostMs, double alvoTela) {
 
 
 #include "tbburn.h"
+#define MF_ESPERA_MS 4000u   // video_tpk.c
+#ifndef RET_PRAZO_MS
+#define RET_PRAZO_MS 20000u
+#endif
+int video_tpk_queimar_voltou(void);
 // ---- burn-in possible; the account answers what the test says --------------
 static int fase = 1, memoria, pedidos, resultado = TBB_BUSCANDO;
 static unsigned char cabMkv[256]; static long cabMkvN; static int temCab;
@@ -135,7 +140,7 @@ int  tbburn_memoria(TbFaixa *m) { (void)m; return memoria; }
 int  tbburn_escolher_auto(const TbFaixa *f, int n, int mem, const TbFaixa *m, const char *p) {
   (void)f; (void)m; (void)p; return mem == 1 || n <= 0 ? -1 : 0;
 }
-void tbburn_pedir(const char *u, int s, int a) { (void)u; (void)s; (void)a; pedidos++; }
+void tbburn_pedir(const char *u, int s, int a) { (void)u; (void)s; (void)a; pedidos++; resultado = TBB_BUSCANDO; }
 int  tbburn_resultado(char *m, unsigned n, char *mo, unsigned mn) {
   if (m && n) snprintf(m, n, "%s", resultado == TBB_PRONTO ? "https://flux.tb-cdn.io/stream/1/playlist.m3u8" : "");
   if (mo && mn) mo[0] = 0;
@@ -167,6 +172,23 @@ static void abrir(const char *url, double ponto) {
   zerarHost(); pedidos = 0; resultado = TBB_BUSCANDO;
   video_definir_reconexao(1);
   if (ponto > 0) video_tocar_retomada(url, ponto, 0.0); else video_tocar(url);
+}
+
+// A burned stream playing (header known, TorBox ready), started at `ponto`.
+static void queimadoTocando(const char *url, double ponto) {
+  temCab = 1; fase = 2; memoria = 0;
+  abrir(url, ponto);
+  resultado = TBB_PRONTO;
+  bombearPor(40);
+  nv_tpk_video_evento(EV_PRONTO, 1425000, 0);
+  if (ponto > 0) nv_tpk_video_evento(14, (int)(ponto * 1000.0), 0);
+  nv_tpk_video_faixa(0, 0, "ja");
+  nv_tpk_video_faixas_fim(0, -1);
+  nv_tpk_video_evento(EV_TOCANDO, 0, 0);
+  fakePosMs = (int)(ponto * 1000.0);
+  bombearPor(100);
+  (void)video_tpk_queimar_voltou();
+  zerarHost(); pedidos = 0;
 }
 
 int main(void) {
@@ -238,6 +260,48 @@ int main(void) {
   abrir("http://x/ep6.mkv", 0);
   bombearPor(40);
   ok("prefetch ended without header: the original opens at once", nAbrir == 1 && pedidos == 0);
+
+  // 7. Home during burn-in, back: the burned stream reopens at the point. It
+  //    fails -> TorBox is asked once for a fresh stream at the point; that fails
+  //    too -> the original file at the point (Nuvio draws), not a closed player.
+  { int n0;
+    queimadoTocando("http://x/ep7.mkv", 600.0);
+    sairEVoltar(700000, -1.0);
+    ok("reopen: the burned stream, at the point, paused and muted", nAbrir == 1 && strstr(ultUrl, "tb-cdn.io") &&
+       strstr(ultCab, "X-Nuvio-Resume: 700000,1") != NULL);
+    nv_tpk_video_evento(EV_ERRO, -5, 0);
+    bombearPor(40);
+    ok("reopen error: TorBox asked for a fresh stream, nothing closed", pedidos == 1 && video_tpk_retomada_evento() == 0);
+    resultado = TBB_PRONTO;
+    bombearPor(40);
+    ok("fresh stream: reopened at the point, paused and muted", nAbrir == 2 && strstr(ultUrl, "tb-cdn.io") &&
+       strstr(ultCab, "X-Nuvio-Resume: 700000,1") != NULL);
+    nv_tpk_video_evento(EV_ERRO, -5, 0);
+    n0 = nAbrir;
+    bombearPor(MF_ESPERA_MS + 600);   // the original may wait for the local fix's probe
+    ok("fresh stream fails too: the original file at the point, still paused", nAbrir == n0 + 1 &&
+       strstr(ultUrl, "http://x/ep7.mkv") && strstr(ultCab, "X-Nuvio-Resume: 700000,1") != NULL);
+    ok("fresh stream fails too: burn-in gave up (toast, ASS back in Main)", video_tpk_queimar_voltou() == 1);
+    ok("fresh stream fails too: the player is not closed", video_tpk_retomada_evento() == 0);
+    hostReabre(700000, 1);
+    bombearPor(100);
+    ok("the original resumed at the point, paused", !video_tocando() && fabs(video_pos() - 700.0) < 0.5); }
+
+  // 8. TorBox has no fresh stream: straight to the original.
+  queimadoTocando("http://x/ep8.mkv", 0);
+  sairEVoltar(300000, -1.0);
+  nv_tpk_video_evento(EV_ERRO, -5, 0);
+  bombearPor(40);
+  resultado = TBB_FALHOU;
+  bombearPor(MF_ESPERA_MS + 600);
+  ok("TorBox failed: the original file at the point", pedidos == 1 && strstr(ultUrl, "http://x/ep8.mkv") &&
+     strstr(ultCab, "X-Nuvio-Resume: 300000,1") != NULL && video_tpk_retomada_evento() == 0);
+
+  // 9. The burned stream shows no picture (no error): the same path after RET_PRAZO_MS.
+  queimadoTocando("http://x/ep9.mkv", 0);
+  sairEVoltar(400000, -1.0);
+  bombearPor(RET_PRAZO_MS + 200);
+  ok("no picture: TorBox asked for a fresh stream instead of closing", pedidos == 1 && video_tpk_retomada_evento() == 0);
 
   printf("tpk-tbprimeiro: %s\n", falhas ? "FALHOU" : "ok");
   return falhas ? 1 : 0;

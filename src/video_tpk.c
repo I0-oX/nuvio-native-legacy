@@ -196,6 +196,13 @@ static Uint32 retEm, retBuscaEm, retPousouEm, retSuspensoEm;
 // ele busca exato com o player ainda parado e so entao toca/pausa; responde com
 // EV_RETOMADA (ms onde pousou, ou -1 se nao buscou) e este lado nao busca de novo.
 static int retHost;
+// The reopen of TorBox's burned stream (owner 18/11): an error, or no picture,
+// asks TorBox once for a fresh stream at the point (its link may have expired
+// over a long sleep); that failing too -> the original file at the point, and
+// Nuvio draws the subtitles, instead of closing the player.
+// retTb: 0 nothing yet, 1 asked TorBox, 2 the fresh stream is open.
+static int retTb;
+static Uint32 retTbEm;
 static atomic_int retHostFim, retHostMs = -1, retHostPausado;
 static void retZerar(void);
 
@@ -1057,6 +1064,14 @@ static void tbReabrir(double alvo) {
   cv.reabrindo = 1; cv.posMantida = alvo; cv.reabriuEm = SDL_GetTicks(); cv.reabTocandoEm = 0;
   abrirSessao();
 }
+// The audio chosen is a DTS/TrueHD track the TV refuses: the converter again
+// (it opens the player). 0 = not needed or not possible.
+static int tbConvertidoDeNovo(double alvo) {
+  const VideoFaixa *f = audioAtual >= 0 && audioAtual < nAudio ? &faixaAudio[audioAtual] : NULL;
+  const MkvFaixa *mf = f && f->stream_id > 0 ? mkvTrack(f->stream_id) : NULL;
+  return mf && faixaRecusada(mf) && convPossivel() &&
+         convIniciar(f->stream_id, alvo, "burn-in off: the DTS/TrueHD track converts again");
+}
 static void tbDesligar(const char *porque, int desistir) {
   double alvo = video_pos(), corr;
   if (!tb.ativo) return;
@@ -1079,11 +1094,7 @@ static void tbDesligar(const char *porque, int desistir) {
   printf("[tbburn] back to the original file at %.1f s (player clock %+.0f ms to the burned picture): %s\n",
          alvo, corr * 1000.0, porque);
   fflush(stdout);
-  // The audio chosen is a DTS/TrueHD track the TV refuses: the converter again.
-  { const VideoFaixa *f = audioAtual >= 0 && audioAtual < nAudio ? &faixaAudio[audioAtual] : NULL;
-    const MkvFaixa *mf = f && f->stream_id > 0 ? mkvTrack(f->stream_id) : NULL;
-    if (mf && faixaRecusada(mf) && convPossivel() && convIniciar(f->stream_id, alvo, "burn-in off: the DTS/TrueHD track converts again"))
-      return; }
+  if (tbConvertidoDeNovo(alvo)) return;
   tbReabrir(alvo);
 }
 // Asks TorBox to burn menu entry `i` (a burnable track).
@@ -2616,6 +2627,7 @@ __attribute__((visibility("default")))
 void nv_tpk_video_voltou(void) { atomic_store(&foraDaTela, 0); atomic_store(&voltouPend, 1); }
 
 static void retZerar(void) {
+  retTb = 0;
   suspenso = retomando = retDesistiu = 0;
   retQuerTocar = retBusca = retPausaEnviada = retTentativas = retCab = 0;
   retAudio = retLeg = -1; retDurMs = 0; retDe = ""; retHost = 0;
@@ -2740,7 +2752,7 @@ static void retComecar(void) {
   printf("[fundo] back on screen after %u s: reopening at %.3f s (%s), paused, muted until there\n",
          (unsigned)((agora - retSuspensoEm) / 1000u), retAlvo, retDe);
   fflush(stdout);
-  suspenso = 0; retomando = 1; retEm = agora; retTentativas = 0; retQuerTocar = 0;
+  suspenso = 0; retomando = 1; retEm = agora; retTentativas = 0; retQuerTocar = 0; retTb = 0;
   mkvfix_adiantar_pressa();   // ainda baixando: termina sem o freio
   atomic_store(&retEvento, 1);
   retAbrir();
@@ -2763,6 +2775,70 @@ static void retPronto(Uint32 agora) {
   progressoEm = agora; progressoPos = posReal();
 }
 
+// The burned stream gave up while reopening: the original file at the point
+// (the burned picture's time), still paused and muted until it lands. A track
+// the TV refuses (DTS/TrueHD) goes to the converter instead: that one plays,
+// then pauses (it is not a reopen of the same player).
+static void retTbOriginal(const char *porque) {
+  double corr = tbr_correcao();
+  retAlvo += corr;
+  if (retDurMs > 0 && retAlvo > retDurMs / 1000.0) retAlvo = retDurMs / 1000.0;
+  if (retAlvo < 0) retAlvo = 0;
+  tbr_encerrar();
+  tb.ativo = 0; tb.desistiu = 1; tb.voltar = 1;   // toast; the ASS tracks are back in Main
+  if (tb.tba) { tba_fechar(); tb.tba = 0; }
+  retTb = 0;
+  printf("[fundo] %s: back to the original file at %.3f s (player clock %+.0f ms to the burned picture); "
+         "Nuvio draws the subtitles\n", porque, retAlvo, corr * 1000.0);
+  fflush(stdout);
+  { int pausar = !retQuerTocar;
+    double alvo = retAlvo;
+    retomando = 0; retCab = 0; cv.reabrindo = 0;
+    if (tbConvertidoDeNovo(alvo)) {
+      if (hEscolher) hEscolher(5, 0);   // the sound back (the reopen started muted)
+      reconPausa = pausar ? 1 : -1;
+      printf("[fundo] the audio track needs the converter: it opens at %.1f s and %s\n", alvo, pausar ? "pauses once playing" : "plays");
+      fflush(stdout);
+      return;
+    }
+    retomando = 1; }
+  retEm = SDL_GetTicks();   // the original gets its own 20 s
+  retTentativas = 0;
+  retAbrir();
+}
+// An error (or no picture) on the burned stream while reopening.
+static void retTbFalhou(const char *porque) {
+  if (retTb == 0 && tbburn_pode() && tb.sub >= 0) {
+    retTb = 1; retTbEm = SDL_GetTicks();
+    printf("[fundo] %s on %s while reopening: asking TorBox for a fresh burned stream (subtitle %d, audio %d) for %.3f s\n",
+           porque, tb.tba ? "Nuvio's Passthrough stream" : "TorBox's burned stream", tb.sub, tb.audio, retAlvo);
+    fflush(stdout);
+    if (hParar) hParar();   // the failed player does not keep its connection to TorBox
+    tbburn_pedir(urlAtual, tb.sub, tb.audio);
+    return;
+  }
+  retTbOriginal(retTb == 2 ? "the fresh burned stream failed too" : "burn-in is not possible now");
+}
+// Waiting for TorBox's fresh stream (retTb 1).
+static void retTbEsperar(Uint32 agora) {
+  static char m[4096];
+  char motivo[160];
+  int e = tbburn_resultado(m, sizeof m, motivo, sizeof motivo);
+  if (e == TBB_PRONTO) {
+    retTb = 2;
+    printf("[fundo] TorBox gave a fresh burned stream in %u ms: reopening it at %.3f s\n", (unsigned)(agora - retTbEm), retAlvo);
+    fflush(stdout);
+    tbUrlPlayer(m);
+    retEm = agora;   // its own 20 s
+    retAbrir();
+    return;
+  }
+  if (e == TBB_FALHOU || agora - retTbEm > 30000u) {
+    tbburn_cancelar();
+    retTbOriginal(e == TBB_FALHOU ? (motivo[0] ? motivo : "TorBox failed") : "no fresh stream from TorBox in 30 s");
+  }
+}
+
 // A maquina da reabertura, a cada quadro. 1 = este quadro e dela.
 static int retVigiar(void) {
   Uint32 agora = SDL_GetTicks();
@@ -2770,6 +2846,12 @@ static int retVigiar(void) {
   if (reconErroPend || falhou) {
     unsigned cod = (unsigned)reconErroCod;
     reconErroPend = 0; reconLinhaRede = 0;
+    if (tb.ativo && !falhou) {
+      char o[48];
+      snprintf(o, sizeof o, "player error 0x%x", cod);
+      retTbFalhou(o);
+      return 1;
+    }
     if (falhou || retTentativas >= 1) { retDesistir(falhou ? "the source failed" : "player error again"); return 1; }
     retTentativas++;
     printf("[fundo] player error 0x%x while reopening: one more try\n", cod);
@@ -2777,7 +2859,12 @@ static int retVigiar(void) {
     retAbrir();
     return 1;
   }
-  if (retBusca < 2 && agora - retEm >= RET_PRAZO_MS) { retDesistir("no picture in 20 s"); return 1; }
+  if (retTb == 1) { retTbEsperar(agora); return 1; }
+  if (retBusca < 2 && agora - retEm >= RET_PRAZO_MS) {
+    if (tb.ativo) retTbFalhou("no picture in 20 s");
+    else retDesistir("no picture in 20 s");
+    return 1;
+  }
   if (retBusca == 0 && retHost) {
     // O host abriu no ponto (seek antes do Start) e ja pausou se pedido.
     int pousou, alvo = (int)(retAlvo * 1000.0);
@@ -2941,14 +3028,14 @@ void video_bombear(void) {
   // for (Opus, 16/11: stuck at 0.3 s for minutes after the retry): after 30 s
   // it counts as a player error, so the retry / the original file follow.
   if (tb.ativo && pronto) tb.esperaDesde = 0;
-  if (tb.ativo && tb.esperaDesde && !pronto && !parado && !reconErroPend && SDL_GetTicks() - tb.esperaDesde > 30000u) {
+  if (tb.ativo && tb.esperaDesde && !pronto && !parado && !reconErroPend && !retomando && SDL_GetTicks() - tb.esperaDesde > 30000u) {
     printf("[tbburn] %s did not start in 30 s (no error from the TV player): treated as a player error\n",
            tb.tba ? "Nuvio's Passthrough stream" : "TorBox's burned stream");
     fflush(stdout);
     tb.esperaDesde = 0;
     reconErroCod = NV_RECON_TPK_CONNECTION_FAILED; reconErroPend = 1;
   }
-  if (reconErroPend && tb.ativo && !parado) {
+  if (reconErroPend && tb.ativo && !parado && !retomando) {   // reopening after Home: retVigiar decides
     char mt[160] = "";
     if (tb.tba && tba_falhou(mt, sizeof mt)) { printf("[tbaudio] Nuvio's stream could not start: %s\n", mt); }
     printf("[tbburn] player error 0x%x on %s\n", (unsigned)reconErroCod,
