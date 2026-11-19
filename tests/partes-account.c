@@ -115,6 +115,15 @@ int main(void) {
     puts("PASS a torrent hit never reads the usenet list");
     assert(!partes_achar_exato("https://addon.test/z", "", "Missing.mkv", 42ULL, &item, &arq, &un, como, sizeof como));
     assert(un == 0 && item == 0 && arq == -1);
-    puts("PASS a miss on both lists"); }
+    puts("PASS a miss on both lists");
+    // Log 10: a 40-hex string in the link that is not the file's hash does not
+    // block the exact file name + size match...
+    assert(partes_achar_exato("https://addon.test/cccccccccccccccccccccccccccccccccccccccc/play", "",
+                              "Other.S01E01.mkv", 1234567ULL, &item, &arq, &un, como, sizeof como));
+    assert(item == 5 && un == 0 && !strcmp(como, "filename"));
+    // ...but the add-on's own hash still wins: a wrong one is not overridden by the name.
+    assert(!partes_achar_exato("https://addon.test/z", "dddddddddddddddddddddddddddddddddddddddd",
+                               "Other.S01E01.mkv", 1234567ULL, &item, &arq, &un, como, sizeof como));
+    puts("PASS an untrusted link hash falls back to name/size; the add-on's hash does not"); }
   return 0;
 }
