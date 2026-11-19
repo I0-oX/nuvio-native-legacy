@@ -632,6 +632,9 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
         * defaults (always the last cell). With libass off it is the ordinary
         * column plus the libass row, Restore defaults last. */
        EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
+       /* Owner 19/11/2026: the Custom auto instruments (shown only while
+        * Render resolution is Custom auto) and Dialogue by libass. */
+       EST_TXTRES, EST_BLURRES, EST_DIALIB,
 #endif
        /* MAIN / SECOND (owner 12/11): "Edit" switches the column between the
         * main subtitle and the second one (shown only while a second subtitle
@@ -647,6 +650,7 @@ static const char *const EST_ROT[EST_TOTAL] = {
   "Negrito", "Restaurar padrão", "Cor da borda"
 #ifdef NV_TPK
   , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
+  , "Resolução do texto (teste)", "Resolução do desfoque (teste)", "Diálogo pelo libass"
 #endif
   , "Editar",
   "Tamanho", "Fonte da legenda", "Cor", "Opacidade", "Fundo", "Posição", "Posição da segunda legenda",
@@ -700,9 +704,12 @@ static void estMapa(void) {
 #ifdef NV_TPK
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
-      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
-                               EST_LIBASS, EST_RESTAURAR };
-      for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) estLinhas[estNLinhas++] = L[i];
+      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA,
+                               EST_TXTRES, EST_BLURRES, EST_SINC, EST_DIALIB, EST_LIBASS, EST_RESTAURAR };
+      for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) {
+        if ((L[i] == EST_TXTRES || L[i] == EST_BLURRES) && assperf_get(AP_ESCALA) != AP_RES_CUSTOM) continue;
+        estLinhas[estNLinhas++] = L[i];
+      }
       return;
     }
     /* Restore defaults stays the last cell (owner 27/10), after libass. */
@@ -795,8 +802,14 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       if (g) snprintf(dst, tam, "%+d", g); else snprintf(dst, tam, "%s", i18n("Desligado"));
       break; }
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
-      snprintf(dst, tam, "%s", v == 5 ? i18n("Automático") : v == 2 ? "75%" : "100%");
+      if (v == AP_RES_AUTO50) snprintf(dst, tam, "%s 50%%", i18n("Auto"));
+      else if (v == AP_RES_AUTO75) snprintf(dst, tam, "%s 75%%", i18n("Auto"));
+      else if (v == AP_RES_CUSTOM) snprintf(dst, tam, "%s", i18n("Auto personalizado"));
+      else snprintf(dst, tam, "%s", v == AP_RES_75 ? "75%" : "100%");
       break; }
+    case EST_TXTRES: snprintf(dst, tam, "%d%%", assperf_get(AP_TXTRES)); break;
+    case EST_BLURRES: snprintf(dst, tam, "%d%%", assperf_get(AP_BLURRES)); break;
+    case EST_DIALIB: snprintf(dst, tam, "%s", i18n(assperf_get(AP_DIALIB) ? "Ligado" : "Desligado")); break;
     case EST_SINC: { int lv, ps, ag;
       legimagem_valores(&lv, &ps, &ag);
       if (ctl == EST_SINC) snprintf(dst, tam, sincPesada ? "%d / [%d] ms" : "[%d] / %d ms", lv, ps);
@@ -834,20 +847,31 @@ static void ciclarEstilo(int linha) {
     case EST_RESTAURAR:
 #ifdef NV_TPK
       if (estFaixaAss() && assperf_get(AP_LIBASS)) {
+        int dialib = assperf_get(AP_DIALIB);
         assperf_restaurar();
         legimagem_restaurar();
         e->atrasoMs = 0;
         sincPesada = 0;
+        if (dialib != assperf_get(AP_DIALIB)) escolherLegenda(legendaAtiva());   // dialogue back to libass
         break;
       }
 #endif
       player_leg_estilo_restaurar();
       return;
 #ifdef NV_TPK
-    case EST_ESCALA: {   // Auto -> 100 % -> 75 %
+    case EST_ESCALA: {   // Auto 50 -> Auto 75 -> Custom auto -> 100 % -> 75 % (owner 19/11/2026)
       int v = assperf_get(AP_ESCALA);
-      assperf_definir(AP_ESCALA, v == 5 ? 0 : v == 0 ? 2 : 5);
+      assperf_definir(AP_ESCALA, v == AP_RES_AUTO50 ? AP_RES_AUTO75 : v == AP_RES_AUTO75 ? AP_RES_CUSTOM :
+                                 v == AP_RES_CUSTOM ? AP_RES_100 : v == AP_RES_100 ? AP_RES_75 : AP_RES_AUTO50);
+      foco[FX_COL_ESTILO] = estPos(EST_ESCALA);   // the test rows come and go under it
       return; }
+    case EST_DIALIB:
+      /* The same track again: the app's cue copy and libass split the lines
+       * anew (dialogue to the app's text, signs & songs to libass). */
+      assperf_definir(AP_DIALIB, !assperf_get(AP_DIALIB));
+      escolherLegenda(legendaAtiva());
+      foco[FX_COL_ESTILO] = estPos(EST_DIALIB);
+      return;
     case EST_LIBASS:
       /* The same track again, so libass takes it (or lets it go). */
       assperf_definir(AP_LIBASS, !assperf_get(AP_LIBASS));
@@ -879,6 +903,8 @@ static const EstSlider EST_SL[EST_TOTAL] = {
   [EST_ASS_OPAC] = { 20, 100, 5, 10, 1 },                         // dialogue opacity %
   [EST_CONTRASTE] = { 0, 50, 1, 5, 2 },                           // the TV's numbers, its whole range
   [EST_GAMA] = { -20, 20, 1, 5, 2 },                              // past the TV's -5..+5 (owner 16/11/2026)
+  [EST_TXTRES] = { 25, 100, 5, 5, 1 },                            // Custom auto: text %, steps of 5 (owner 19/11/2026)
+  [EST_BLURRES] = { 25, 100, 5, 5, 1 },                           // Custom auto: blur %, steps of 5
 #endif
   // The second subtitle: steps through the choices of its setting (the value
   // shown is the setting's own text); Delay in ms like the main.
@@ -914,6 +940,8 @@ static int estLer(int i) {
     case EST_ASS_OPAC: return assperf_get(AP_ASSOPAC);
     case EST_CONTRASTE: return 30 + assperf_get(AP_CONTRASTE);
     case EST_GAMA: return assperf_get(AP_GAMA);
+    case EST_TXTRES: return assperf_get(AP_TXTRES);
+    case EST_BLURRES: return assperf_get(AP_BLURRES);
 #endif
     case 0: return e->tamanho;
     case 3: return (int)lroundf(video_legenda_opacidade(e) * 100.0f);
@@ -938,6 +966,8 @@ static void estGravar(int i, int v) {
     case EST_ASS_OPAC: assperf_definir(AP_ASSOPAC, v); return;
     case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, v - 30); return;
     case EST_GAMA: assperf_definir(AP_GAMA, v); return;
+    case EST_TXTRES: assperf_definir(AP_TXTRES, v / 5 * 5); return;
+    case EST_BLURRES: assperf_definir(AP_BLURRES, v / 5 * 5); return;
 #endif
     case 0: e->tamanho = v; break;
     case 3: e->opacidade = v / 10 * 10; break;

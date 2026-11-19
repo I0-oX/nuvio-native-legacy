@@ -9,6 +9,7 @@
 #include "imgsub.h"
 #include "pgs.h"
 #include "fontefamilias.h"
+#include "asssinais.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -607,6 +608,10 @@ typedef struct {
   MkvassEscolherCom escolherCom;
   const void *contextoEscolha;
   int independente;
+  // SIGNS & SONGS (asssinais.h, owner 19/11/2026): this ASS track's name says
+  // Signs & Songs; the file's Signs & Songs ASS track to match against (0 =
+  // none); asssinais told at the first delivery.
+  int      trilhaSinais, faixaSinais, sinaisDitos;
   double   fracIni;
   // O servidor recusou o resto de um Range cortado (rede_resto_recusado): esta
   // tentativa para e vira MKVASS_NOGO_RESTO, com recuo longo em faixas.c.
@@ -1681,6 +1686,46 @@ static void prebuscaTextoSoltar(Fio *f);
 
 // Devolve: 1 achou a faixa e e ASS (ou texto simples aceito); 0 nao achou;
 // -1 achou e nao serve.
+/* SIGNS & SONGS (asssinais.h): with the chosen ASS track known, read every
+ * TrackEntry again for the track names. The partner: an ASS track named
+ * Signs & Songs, of the chosen track's language if there is one. */
+static void sinaisDoArquivo(Fio *f, const unsigned char *p, long n) {
+  Iter it = { p, n, 0 }; unsigned long id; const unsigned char *d; long t;
+  struct { int numero, ass, sinais; char lang[16]; } v[64];
+  int nv = 0, i, meu = -1, par = 0, parLang = 0;
+  while (proximo(&it, &id, &d, &t) && nv < 64) {
+    Iter j; unsigned long fid; const unsigned char *fd; long ft;
+    char nome[128] = "";
+    if (id != ID_TRACKENTRY) continue;
+    memset(&v[nv], 0, sizeof v[nv]);
+    j.p = d; j.n = t; j.o = 0;
+    while (proximo(&j, &fid, &fd, &ft)) {
+      if (fid == ID_TRACKNUMBER) v[nv].numero = (int)lerUint(fd, ft);
+      else if (fid == ID_CODECID)
+        v[nv].ass = ft >= 10 && (!strncmp((const char *)fd, "S_TEXT/ASS", 10) || !strncmp((const char *)fd, "S_TEXT/SSA", 10));
+      else if (fid == 0x536E) { size_t k = (size_t)ft < sizeof nome - 1 ? (size_t)ft : sizeof nome - 1; memcpy(nome, fd, k); nome[k] = 0; }
+      else if ((fid == 0x22B59C || fid == 0x22B59D) && !v[nv].lang[0]) {
+        size_t k = (size_t)ft < sizeof v[nv].lang - 1 ? (size_t)ft : sizeof v[nv].lang - 1;
+        memcpy(v[nv].lang, fd, k); v[nv].lang[k] = 0;
+        { char *h = strchr(v[nv].lang, '-'); if (h) *h = 0; }   // en-US -> en
+      }
+    }
+    v[nv].sinais = asssinais_nome(nome);
+    if (v[nv].numero == f->faixa) meu = nv;
+    nv++;
+  }
+  f->trilhaSinais = meu >= 0 && v[meu].sinais;
+  f->faixaSinais = 0;
+  if (meu < 0 || f->trilhaSinais) return;
+  for (i = 0; i < nv; i++) {
+    int mesma;
+    if (i == meu || !v[i].ass || !v[i].sinais) continue;
+    mesma = v[i].lang[0] && !strcasecmp(v[i].lang, v[meu].lang);
+    if (!par || (mesma && !parLang)) { par = v[i].numero; parLang = mesma; }
+  }
+  f->faixaSinais = par;
+}
+
 static int lerTracks(Fio *f, const unsigned char *p, long n) {
   Iter it = { p, n, 0 }; unsigned long id; const unsigned char *d; long t;
   int ordinalLeg = 0;
@@ -1739,6 +1784,7 @@ static int lerTracks(Fio *f, const unsigned char *p, long n) {
       return 1;
     }
     if (!ehAss || !priv) return -1;
+    sinaisDoArquivo(f, p, n);
     // O libass sobe aqui, com a faixa ASS ja achada, e nao quando o fio nasce:
     // o aquecimento le a pasta de fontes inteira para a memoria (106 MB na C9,
     // 2-12 s e +65-120 MB de RSS na webOS) e antes rodava em toda pre-busca,
@@ -3319,6 +3365,12 @@ static int entregarCorpoSeAtual(Fio *f, const char *corpo) {
              f->faixa, f->legG);
       fflush(stdout);
       f->entregas = -1000000;     // loga uma vez; nunca volta a ser a primeira
+    }
+    /* Signs & Songs (asssinais.h): the generation this track's lines live
+     * under is known now. ASS only (texto/imagem have no styled lines). */
+    if (ok && !f->sinaisDitos && !f->texto && !f->imagem) {
+      f->sinaisDitos = 1;
+      asssinais_definir(f->legG, f->trilhaSinais, f->faixaSinais, f->escala);
     }
   }
   if (travado) pthread_mutex_unlock(&estadoDoFio(f)->trava);

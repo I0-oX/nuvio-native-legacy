@@ -5768,7 +5768,7 @@ static double escalaFonteAss(void) {
 #ifdef NV_TPK
   /* Styled ASS on the .tpk: its own dialogue size (Subtitles > Style), 100 %
    * = as authored; libass scales only the dialogue (selective font scale). */
-  if (ASS_NOVO) return assperf_get(AP_ASSTAM) / 100.0;
+  if (ASS_NOVO) return assperf_get(AP_ASSTAM) / 100.0;   /* signs & songs never (libass nv_sign, asssinais.h) */
 #endif
   if (pct < TXT_LEG_PCT_MIN) pct = TXT_LEG_PCT_MIN;
   if (pct > TXT_LEG_PCT_MAX) pct = TXT_LEG_PCT_MAX;
@@ -5900,6 +5900,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
   // Escala/trechos aceitos: o instante na legenda, nao no video (o mesmo
   // para libass e para o desenho do app).
   double posLeg = legsync_posicao(posLegenda());
+  int dialogoApp = 0;   // libass drew the signs; the app draws the dialogue below
   assrender_aplicar_invalidacao();
   assrender_definir_cor(0, 0, 0, 0);
   if (overlay && assrender_ativo()) {
@@ -5964,13 +5965,23 @@ static void desenharLegendaPrincipal(float *topoPilha){
     // R4: libass nao informa onde pintou. Estima duas linhas no tamanho da
     // folha acima da base, para a segunda legenda empilhada nao cobri-las.
     *topoPilha = baseLegendaPrincipal() - (2.0f * 58.0f + 5.0f) * (float)escalaFonteAss();
-    return;
+    /* "Dialogue by libass" Off (owner 19/11/2026): libass drew the signs and
+     * songs; the dialogue is the app's own text, below, from the cue copy. */
+    if (!(legenda_dialogo_pelo_app() && !assrender_texto_simples())) return;
+    dialogoApp = 1;
   }
   LegendaCue cues[LEGENDA_SIMULTANEAS];
   int n = overlay ? legenda_cues(posLeg, atraso, cues, LEGENDA_SIMULTANEAS) : 0, i;
+  /* A line found in the Signs & Songs track after the cue copy was made:
+   * libass draws it, the app doesn't (asssinais.h). */
+  if (dialogoApp) {
+    int w = 0;
+    for (i = 0; i < n; i++) if (!legenda_cue_sinal(&cues[i])) cues[w++] = cues[i];
+    n = w;
+  }
   // Sem legenda externa, a EMBUTIDA que o player nativo nao desenha (#122):
   // o mesmo overlay, com a mesma folha de estilo da pessoa.
-  if (n <= 0 && comVideo && player_texto_legenda_nativa(cues[0].texto, sizeof cues[0].texto)) {
+  if (n <= 0 && !dialogoApp && comVideo && player_texto_legenda_nativa(cues[0].texto, sizeof cues[0].texto)) {
     cues[0].inicio = cues[0].fim = 0; cues[0].an = 0; cues[0].negrito = cues[0].italico = 0;
     cues[0].cor = -1; cues[0].posX = cues[0].posY = -1.f; cues[0].resX = cues[0].resY = 0.f;
     cues[0].ordem = 0;
@@ -5979,7 +5990,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
   // PREVIA DA BARRA DE ESTILO (faixas.c): sem fala neste instante, uma linha
   // de exemplo com o estilo da pessoa, para tamanho, cor e posicao terem o que
   // mostrar. So quando e o app que desenha (no ASS o lugar e do arquivo).
-  if (n <= 0 && faixas_estilo_topo()) {
+  if (n <= 0 && !dialogoApp && faixas_estilo_topo()) {
     memset(&cues[0], 0, sizeof cues[0]);
     snprintf(cues[0].texto, sizeof cues[0].texto, "%s", i18n("Assim a legenda vai aparecer"));
     cues[0].cor = -1; cues[0].posX = cues[0].posY = -1.f;
