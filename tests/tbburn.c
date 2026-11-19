@@ -22,8 +22,15 @@ void debrid_tb_redigir(char *t) {
   while (t && (p = strstr(t, "SECRETKEY")) != NULL) { memcpy(p, "***", 3); memmove(p + 3, p + 9, strlen(p + 9) + 1); }
 }
 static char ultRota[512];
+static int sumido500, criacoes;   // createstream: item 500 is gone (log 12)
 char *debrid_tb_api_get(const char *r, int p, int *st) {
-  (void)p; snprintf(ultRota, sizeof ultRota, "%s", r ? r : ""); if (st) *st = 0; return NULL;
+  (void)p; snprintf(ultRota, sizeof ultRota, "%s", r ? r : ""); if (st) *st = 0;
+  if (r && strstr(r, "createstream")) criacoes++;
+  if (sumido500 && r && strstr(r, "createstream?id=500&")) {
+    if (st) *st = 404;
+    return strdup("{\"success\":false,\"error\":\"ITEM_NOT_FOUND\",\"detail\":\"Item not found.\",\"data\":null}");
+  }
+  return NULL;
 }
 static char viuArquivo[512]; static uint64_t viuBytes;
 // The account lookup: misses unless partesAchar; partesAtrasoMs = how long it takes.
@@ -42,6 +49,18 @@ int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, 
   if (i) *i = 500;
   if (f) *f = 7;
   if (c && n) snprintf(c, n, "hash");
+  return 1;
+}
+// Fresh lists only (after ITEM_NOT_FOUND): what the test says.
+static int frescoItem, frescoN;
+int partes_achar_exato_fresco(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, int *un, char *c, unsigned n) {
+  (void)u; (void)h; (void)a; (void)b;
+  frescoN++;
+  if (un) *un = 0;
+  if (!frescoItem) return 0;
+  if (i) *i = frescoItem;
+  if (f) *f = 7;
+  if (c && n) snprintf(c, n, "filename");
   return 1;
 }
 static void dormir(int ms) { struct timespec t = {ms / 1000, (long)(ms % 1000) * 1000000L}; nanosleep(&t, NULL); }
@@ -140,6 +159,12 @@ int main(void) {
   // Known file ids skip the lookup (a part picked in "files of the source").
   tbburn_ids("https://a/b.mkv", 0, 77, 3);
   CHECA(tbburn_linha_visivel());
+  // Owner 19/11: the row stays after a lookup that did not find the file.
+  tbburn_fonte("https://a/nao.mkv", "", "nao.mkv", 2);
+  tbburn_arquivo_tem_ass(1);
+  tbburn_pedir("https://a/nao.mkv", 0, 0);
+  for (int k = 0; k < 300 && tbburn_resultado(NULL, 0, NULL, 0) == TBB_BUSCANDO; k++) { struct timespec t = {0, 10000000L}; nanosleep(&t, NULL); }
+  CHECA(tbburn_resultado(NULL, 0, NULL, 0) == TBB_FALHOU && tbburn_linha_visivel());
 
   // 7) Reuse last link: the player opens the saved URL with no add-on details;
   // the saved record fills them (owner's log 12/11, file=- size=0).
@@ -297,7 +322,29 @@ int main(void) {
     partesUsenet = 0; ultRota[0] = 0;
     tbburn_fonte("https://s/12o", "", "B.S01E08.mkv", 2008);
     tbburn_pedir("https://s/12o", 1, 1);
-    CHECA(fimPedido() == TBB_FALHOU && strstr(ultRota, "type=torrent") != NULL); }
+    CHECA(fimPedido() == TBB_FALHOU && strstr(ultRota, "type=torrent") != NULL);
+    // p) Log 12: createstream answers ITEM_NOT_FOUND for the listed item -> fresh
+    //    lists once; a new item is asked for; the stale hit is forgotten.
+    CHECA(tbburn_eh_item_sumido(404, "{\"success\":false,\"error\":\"ITEM_NOT_FOUND\"}") &&
+          !tbburn_eh_item_sumido(200, "{\"success\":true}") && !tbburn_eh_item_sumido(0, NULL));
+    sumido500 = 1; frescoItem = 600; frescoN = criacoes = 0; partesN = 0;
+    tbburn_procurar_cedo("https://s/12p", "", "B.S01E09.mkv", 2009, "Play");
+    CHECA(partesEsperar(1) == 1);
+    tbburn_fonte("https://s/12p", "", "B.S01E09.mkv", 2009);
+    tbburn_pedir("https://s/12p", 1, 1);
+    CHECA(fimPedido() == TBB_FALHOU && frescoN == 1 && criacoes == 2 && strstr(ultRota, "createstream?id=600&") != NULL);
+    tbburn_pedir("https://s/12p", 1, 1);   // the fresh item is used now: no list, no 404
+    CHECA(fimPedido() == TBB_FALHOU && frescoN == 1 && criacoes == 3 && strstr(ultRota, "id=600&") != NULL);
+    // q) the fresh list has the same item, or nothing: no second createstream.
+    frescoItem = 500; frescoN = criacoes = 0;
+    tbburn_fonte("https://s/12q", "", "B.S01E10.mkv", 2010);
+    tbburn_pedir("https://s/12q", 1, 1);
+    CHECA(fimPedido() == TBB_FALHOU && frescoN == 1 && criacoes == 1);
+    frescoItem = 0; frescoN = criacoes = 0;
+    tbburn_fonte("https://s/12r", "", "B.S01E11.mkv", 2011);
+    tbburn_pedir("https://s/12r", 1, 1);
+    CHECA(fimPedido() == TBB_FALHOU && frescoN == 1 && criacoes == 1);
+    sumido500 = 0; }
 
   if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
   printf("tbburn: ok\n");

@@ -1727,8 +1727,18 @@ void partes_ponto_zerar(void) {
   pthread_mutex_unlock(&pontoTrava);
 }
 
+static int acharExato(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
+                      int *item, int *arquivoId, int *usenet, char *como, unsigned n, int soFresco);
 int partes_achar_exato(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
                        int *item, int *arquivoId, int *usenet, char *como, unsigned n) {
+  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 0);
+}
+int partes_achar_exato_fresco(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
+                              int *item, int *arquivoId, int *usenet, char *como, unsigned n) {
+  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 1);
+}
+static int acharExato(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
+                      int *item, int *arquivoId, int *usenet, char *como, unsigned n, int soFresco) {
   char hashes[10][41];
   int nh = 0, confiavel = 0, pg, achou = 0, tipo = 0, itensT[2] = { 0, 0 }, paginasT[2] = { 0, 0 };
   int viuNome = 0, viuTamanho = 0;   // a miss: was the name / the size anywhere in the lists?
@@ -1753,7 +1763,7 @@ int partes_achar_exato(const char *url, const char *hash, const char *arquivo, u
   // pack that was there; a second pass asks TorBox for fresh lists. Each pass
   // reads the torrents, then the usenet downloads (owner 18/11, log 10: a
   // usenet download has no info hash and is never in the torrent list).
-  for (int fresco = 0; fresco < 2 && !achou; fresco++) {
+  for (int fresco = soFresco; fresco < 2 && !achou; fresco++) {
     for (tipo = 0; tipo < 2 && !achou; tipo++) {
       itensT[tipo] = paginasT[tipo] = 0;
       for (pg = 0; pg < 10 && !achou; pg++) {

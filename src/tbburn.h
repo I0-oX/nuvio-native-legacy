@@ -131,6 +131,9 @@ void tbburn_chave(char *out, unsigned n, const char *url, const char *hash, cons
 // 0 = the file name (else the URL's last path part) ends in a video extension
 // other than .mkv (mp4, avi, ts...): no embedded ASS to burn. 1 otherwise.
 int  tbburn_parece_mkv(const char *url, const char *arquivo);
+// createstream's answer says the item is gone from the account (ITEM_NOT_FOUND,
+// or a failed 404): the list it came from was out of date.
+int  tbburn_eh_item_sumido(int st, const char *r);
 // First http(s) URL ending a path in ".m3u8" anywhere in `corpo` (JSON string
 // values unescaped: \/ \" \\). 1 found.
 int  tbburn_achar_m3u8(const char *corpo, char *out, unsigned n);

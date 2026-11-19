@@ -99,6 +99,10 @@ int tbburn_achar_m3u8(const char *corpo, char *out, unsigned n) {
   return 0;
 }
 
+int tbburn_eh_item_sumido(int st, const char *r) {
+  return (r && strstr(r, "ITEM_NOT_FOUND")) || (st == 404 && r && strstr(r, "\"success\":false"));
+}
+
 int tbburn_eh_recusa_plano(int st, const char *corpo) {
   if (corpo && (strstr(corpo, "PLAN_RESTRICTED") || strstr(corpo, "not available on your plan") ||
                 strstr(corpo, "only available for Pro") || strstr(corpo, "Pro users") ||
@@ -288,13 +292,10 @@ void tbburn_sessao_nova(void) {
   escolha = -1;
 }
 void tbburn_arquivo_tem_ass(int sim) { temAss = sim != 0; }
+// Owner 19/11: the row stays even when the file was not found in TorBox (a
+// pick looks it up again; TorBox's lists can lag behind the account).
 int tbburn_linha_visivel(void) {
-  int ok;
-  if (!temAss || recusado || !ajustes_tb_pro() || debrid_tb_disponivel() == 0) return 0;
-  pthread_mutex_lock(&trava);
-  ok = !(ids.procurou && !ids.achou && !strcmp(ids.url, fonte.url));
-  pthread_mutex_unlock(&trava);
-  return ok;
+  return temAss && !recusado && ajustes_tb_pro() && debrid_tb_disponivel() != 0;
 }
 
 // ---- the early lookup (tbburn.h, owner 18/11) ----------------------------------
@@ -346,6 +347,11 @@ static void cedoGuardar(const char *chave, int achou, int item, int arquivo, int
   c->achou = achou; c->item = item; c->arquivo = arquivo; c->usenet = usenet;
   snprintf(c->como, sizeof c->como, "%s", como ? como : "");
   c->em = msAgora(); c->conta = debrid_tb_geracao();
+}
+// TorBox no longer has the item a hit pointed to: forget it (with `trava`).
+static void cedoEsquecer(const char *chave) {
+  for (int i = 0; i < TBB_CEDO_N; i++)
+    if (cedo[i].chave[0] && !strcmp(cedo[i].chave, chave)) cedo[i].chave[0] = 0;
 }
 static void cedoLogPedido(const CedoPedido *p, const char *o) {
   const char *b = strrchr(p->arquivo, '/');
@@ -595,6 +601,45 @@ static void *trabalhar(void *arg) {
   t = msAgora();
   r = debrid_tb_api_get(rota, 30, &st);
   logCorpo("createstream", st, msAgora() - t, r);
+  // Log 12 (owner 19/11): TorBox's own cached list still had the item, but
+  // createstream answered ITEM_NOT_FOUND (the item was gone from the account).
+  // Forget it, look the file up in fresh lists once, and ask again.
+  if (tbburn_eh_item_sumido(st, r) && !tbburn_eh_recusa_plano(st, r)) {
+    char chave[TBB_CHAVE], como2[72] = "";
+    int item2 = 0, arquivo2 = -1, usenet2 = 0, achou2;
+    unsigned t2 = msAgora();
+    tbburn_chave(chave, sizeof chave, p->url, p->hash, p->arquivo, p->bytes);
+    pthread_mutex_lock(&trava);
+    if (chave[0]) cedoEsquecer(chave);
+    if (!strcmp(ids.url, p->url)) ids.procurou = ids.achou = 0;
+    pthread_mutex_unlock(&trava);
+    printf("[tbburn] TorBox says item %d is not in your account (ITEM_NOT_FOUND): the list was out of date; "
+           "looking the file up again in fresh lists\n", item);
+    fflush(stdout);
+    achou2 = partes_achar_exato_fresco(p->url, p->hash, p->arquivo, p->bytes, &item2, &arquivo2, &usenet2, como2, sizeof como2);
+    if (!achou2 || (item2 == item && arquivo2 == arquivo && usenet2 == usenet)) {
+      printf("[tbburn] %s in %u ms: Nuvio draws the subtitle\n",
+             achou2 ? "the fresh list has the same item TorBox just refused" : "not in your TorBox's fresh lists either", msAgora() - t2);
+      fflush(stdout);
+      publicar(p->geracao, TBB_FALHOU, NULL, "file not in your TorBox");
+      free(r); free(p);
+      return NULL;
+    }
+    printf("[tbburn] TorBox file now: item %d, file %d (by %s) in %u ms; asking again\n", item2, arquivo2, como2, msAgora() - t2);
+    fflush(stdout);
+    item = item2; arquivo = arquivo2; usenet = usenet2;
+    pthread_mutex_lock(&trava);
+    snprintf(ids.url, sizeof ids.url, "%s", p->url);
+    ids.item = item; ids.arquivo = arquivo; ids.usenet = usenet; ids.achou = ids.procurou = 1;
+    snprintf(ids.como, sizeof ids.como, "%s", como2);
+    if (chave[0]) cedoGuardar(chave, 1, item, arquivo, usenet, como2);
+    pthread_mutex_unlock(&trava);
+    free(r);
+    tbburn_rota_criar(rota, sizeof rota, item, arquivo, usenet, p->sub, p->audio);
+    t = msAgora();
+    r = debrid_tb_api_get(rota, 30, &st);
+    logCorpo("createstream", st, msAgora() - t, r);
+  }
   if (tbburn_eh_recusa_plano(st, r)) {
     recusado = 1;
     printf("[tbburn] TorBox refused the plan: burn-in is off until Nuvio restarts\n");
