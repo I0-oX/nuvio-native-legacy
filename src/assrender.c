@@ -281,11 +281,20 @@ static void ass_diag(const char *s) {
   pthread_mutex_unlock(&assDiagTrava);
 }
 
+/* LATE ATTACHED FONTS (owner 18/11, log 10). libass keeps the face it picked
+ * for a (family, bold, italic) in its font cache: a family looked up before the
+ * MKV's fonts arrived stays on the fallback (Arial) even after they are added.
+ * Fallbacks since the last ass_set_fonts + an attached font added since then
+ * -> the next load rebuilds the selector (ass_aplicar_fontes_locked), once. */
+static int assFallbacks;      // "Using default font family" since the last ass_set_fonts (atomic)
+static int assFonteNovaTarde; // an attached font was added since the last ass_set_fonts (assTrava)
+
 static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) {
   char linha[768];
   (void)dados;
   vsnprintf(linha, sizeof linha, fmt, args);
   if (strstr(linha, "fontselect:")) assResolucaoFonte++;
+  if (strstr(linha, "Using default font family")) __atomic_add_fetch(&assFallbacks, 1, __ATOMIC_RELAXED);
   /* So ate MSGL_INFO (4), o mesmo corte do callback padrao do libass (que
    * para em 5). Os niveis 6-7 sao depuracao por quadro e por glifo. */
   if (nivel > 4) return;
@@ -440,6 +449,8 @@ static void ass_aplicar_fontes_locked(void) {
   if (!assRenderer) return;
   ass_set_fonts(assRenderer, assFallbackFont[0] ? assFallbackFont : NULL, "Arial",
                 ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+  __atomic_store_n(&assFallbacks, 0, __ATOMIC_RELAXED);
+  assFonteNovaTarde = 0;
 }
 
 // Explicit selection changes only. Routine packet delivery keeps the original
@@ -1928,6 +1939,15 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   ass_authored_styles_free();
   if (assTrack) ass_free_track(assTrack);
   assTrack = track;
+  { int fb = __atomic_load_n(&assFallbacks, __ATOMIC_RELAXED);
+    if (assFonteNovaTarde && fb > 0) {
+      struct timespec a, b;
+      clock_gettime(CLOCK_MONOTONIC, &a);
+      ass_aplicar_fontes_locked();
+      clock_gettime(CLOCK_MONOTONIC, &b);
+      fprintf(stderr, "[ass] attached fonts arrived after %d fallback font pick(s): font choice redone in %ld ms\n", fb,
+              (long)((b.tv_sec - a.tv_sec) * 1000L + (b.tv_nsec - a.tv_nsec) / 1000000L));
+    } }
   ass_trilha_tailandes(track);
   plainTimingValid = 0;
   /* Authored ASS retains its own margins after a converted plain track. */
@@ -2220,6 +2240,7 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
         assNFontesVistas = 0; assBytesFontesVistas = 0;
       }
       ass_add_font(assLib, nome, (const char *)dados, (int)tamanho);
+      assFonteNovaTarde = 1;
       { AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
         snprintf(v->nome, sizeof v->nome, "%s", nome);
         v->tam = tamanho; v->amostra = am; }

@@ -311,7 +311,7 @@ int tbburn_linha_visivel(void) {
 #define TBB_CEDO_N 8
 typedef struct {
   char chave[TBB_CHAVE];
-  int achou, item, arquivo;
+  int achou, item, arquivo, usenet;
   char como[72];
   unsigned em, conta;
 } Cedo;
@@ -324,6 +324,7 @@ static int cedoProx;
 static pthread_cond_t cedoSinal = PTHREAD_COND_INITIALIZER;
 static int cedoRodando, cedoTemPend;
 static char cedoAtual[TBB_CHAVE];   // the key being looked up now
+static char trabAtual[TBB_CHAVE];   // the key the burn-in request is looking up now (pegarIds)
 static CedoPedido cedoPend;         // the newest one waiting (latest wins)
 
 static unsigned msAgora(void);
@@ -337,12 +338,12 @@ static Cedo *cedoAchar(const char *chave, int erros) {
   }
   return NULL;
 }
-static void cedoGuardar(const char *chave, int achou, int item, int arquivo, const char *como) {
+static void cedoGuardar(const char *chave, int achou, int item, int arquivo, int usenet, const char *como) {
   Cedo *c = NULL;
   for (int i = 0; i < TBB_CEDO_N && !c; i++) if (!strcmp(cedo[i].chave, chave)) c = &cedo[i];
   if (!c) { c = &cedo[cedoProx]; cedoProx = (cedoProx + 1) % TBB_CEDO_N; }
   snprintf(c->chave, sizeof c->chave, "%s", chave);
-  c->achou = achou; c->item = item; c->arquivo = arquivo;
+  c->achou = achou; c->item = item; c->arquivo = arquivo; c->usenet = usenet;
   snprintf(c->como, sizeof c->como, "%s", como ? como : "");
   c->em = msAgora(); c->conta = debrid_tb_geracao();
 }
@@ -356,15 +357,15 @@ static void *fioCedo(void *arg) {
   CedoPedido *p = arg;
   for (;;) {
     char como[72] = "";
-    int item = 0, arquivo = -1, achou;
+    int item = 0, arquivo = -1, usenet = 0, achou;
     unsigned t0 = msAgora();
     cedoLogPedido(p, "looking the file up in your TorBox");
-    achou = partes_achar_exato(p->url, p->hash, p->arquivo, p->bytes, &item, &arquivo, como, sizeof como);
+    achou = partes_achar_exato(p->url, p->hash, p->arquivo, p->bytes, &item, &arquivo, &usenet, como, sizeof como);
     if (achou) printf("[tbburn] early lookup (%s): found item %d, file %d (by %s) in %u ms\n", p->porque, item, arquivo, como, msAgora() - t0);
     else printf("[tbburn] early lookup (%s): not found in %u ms (the burn-in request looks again)\n", p->porque, msAgora() - t0);
     fflush(stdout);
     pthread_mutex_lock(&trava);
-    cedoGuardar(p->chave, achou, item, arquivo, como);
+    cedoGuardar(p->chave, achou, item, arquivo, usenet, como);
     cedoAtual[0] = 0;
     if (cedoTemPend) {
       *p = cedoPend; cedoTemPend = 0;
@@ -400,6 +401,12 @@ void tbburn_procurar_cedo(const char *url, const char *hash, const char *arquivo
   if (cedoAchar(p->chave, 1) || (cedoRodando && !strcmp(cedoAtual, p->chave)) ||
       (cedoTemPend && !strcmp(cedoPend.chave, p->chave))) {
     pthread_mutex_unlock(&trava); free(p); return;   // known, just missed, or already asked for
+  }
+  if (!strcmp(trabAtual, p->chave)) {   // log 10: both fetched TorBox's 13 MB list at once
+    pthread_mutex_unlock(&trava);
+    cedoLogPedido(p, "not needed: the burn-in request is looking it up now");
+    free(p);
+    return;
   }
   if (cedoRodando) {
     if (cedoTemPend) cedoLogPedido(&cedoPend, "dropped: a newer one waits instead");
@@ -513,10 +520,10 @@ static int pegarIds(const Pedido *p, int *item, int *arquivo, int *usenet, char 
     }
     c = chave[0] ? cedoAchar(chave, 0) : NULL;
     if (c) {
-      *item = c->item; *arquivo = c->arquivo;
+      *item = c->item; *arquivo = c->arquivo; *usenet = c->usenet;
       snprintf(como, n, "%.48s (early lookup)", c->como);
       snprintf(ids.url, sizeof ids.url, "%s", p->url);
-      ids.item = c->item; ids.arquivo = c->arquivo; ids.usenet = 0; ids.achou = ids.procurou = 1;
+      ids.item = c->item; ids.arquivo = c->arquivo; ids.usenet = c->usenet; ids.achou = ids.procurou = 1;
       snprintf(ids.como, sizeof ids.como, "%s", como);
       pthread_mutex_unlock(&trava);
       printf("[tbburn] burn-in request: the early lookup had the file (waited %u ms for it)\n", esperou ? msAgora() - t0 : 0u);
@@ -529,15 +536,19 @@ static int pegarIds(const Pedido *p, int *item, int *arquivo, int *usenet, char 
       fflush(stdout);
     }
   }
-  achou = partes_achar_exato(p->url, p->hash, p->arquivo, p->bytes, item, arquivo, como, n);
   pthread_mutex_lock(&trava);
+  tbburn_chave(trabAtual, sizeof trabAtual, p->url, p->hash, p->arquivo, p->bytes);
+  pthread_mutex_unlock(&trava);
+  achou = partes_achar_exato(p->url, p->hash, p->arquivo, p->bytes, item, arquivo, usenet, como, n);
+  pthread_mutex_lock(&trava);
+  trabAtual[0] = 0;
   snprintf(ids.url, sizeof ids.url, "%s", p->url);
-  ids.item = *item; ids.arquivo = *arquivo; ids.usenet = 0; ids.achou = achou; ids.procurou = 1;
+  ids.item = *item; ids.arquivo = *arquivo; ids.usenet = *usenet; ids.achou = achou; ids.procurou = 1;
   snprintf(ids.como, sizeof ids.como, "%s", como);
   if (achou) {
     char chave[TBB_CHAVE];
     tbburn_chave(chave, sizeof chave, p->url, p->hash, p->arquivo, p->bytes);
-    if (chave[0]) cedoGuardar(chave, 1, *item, *arquivo, como);
+    if (chave[0]) cedoGuardar(chave, 1, *item, *arquivo, *usenet, como);
   }
   pthread_mutex_unlock(&trava);
   return achou;

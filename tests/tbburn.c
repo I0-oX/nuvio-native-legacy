@@ -21,19 +21,24 @@ void debrid_tb_redigir(char *t) {
   char *p;
   while (t && (p = strstr(t, "SECRETKEY")) != NULL) { memcpy(p, "***", 3); memmove(p + 3, p + 9, strlen(p + 9) + 1); }
 }
-char *debrid_tb_api_get(const char *r, int p, int *st) { (void)r; (void)p; if (st) *st = 0; return NULL; }
+static char ultRota[512];
+char *debrid_tb_api_get(const char *r, int p, int *st) {
+  (void)p; snprintf(ultRota, sizeof ultRota, "%s", r ? r : ""); if (st) *st = 0; return NULL;
+}
 static char viuArquivo[512]; static uint64_t viuBytes;
 // The account lookup: misses unless partesAchar; partesAtrasoMs = how long it takes.
-static int partesAchar, partesAtrasoMs, conta = 1;
+static int partesAchar, partesUsenet, partesAtrasoMs, conta = 1;
 static volatile int partesN;
 unsigned debrid_tb_geracao(void) { return (unsigned)conta; }
 void rede_fio_fechar(void) {}
-int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, char *c, unsigned n) {
+int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, int *un, char *c, unsigned n) {
   (void)u; (void)h;
   snprintf(viuArquivo, sizeof viuArquivo, "%s", a ? a : ""); viuBytes = b;
   if (partesAtrasoMs) { struct timespec t = {partesAtrasoMs / 1000, (long)(partesAtrasoMs % 1000) * 1000000L}; nanosleep(&t, NULL); }
   __atomic_add_fetch(&partesN, 1, __ATOMIC_SEQ_CST);
+  if (un) *un = 0;
   if (!partesAchar) return 0;
+  if (un) *un = partesUsenet;
   if (i) *i = 500;
   if (f) *f = 7;
   if (c && n) snprintf(c, n, "hash");
@@ -267,6 +272,32 @@ int main(void) {
   tbburn_procurar_cedo("https://s/1", "", "A.S01E01.mkv", 1001, "source focused 1 s");
   CHECA(partesEsperar(1) == 1);
   conta = 1;
+
+  // 12) Log 10 (owner 18/11).
+  { // l) the early lookup at Play is skipped while the request looks the same file up.
+    partesN = 0; partesAtrasoMs = 300; partesAchar = 1;
+    tbburn_fonte("https://s/12l", "", "B.S01E05.mkv", 2005);
+    tbburn_pedir("https://s/12l", 1, 1);
+    dormir(50);
+    tbburn_cedo_bombear();
+    CHECA(fimPedido() == TBB_FALHOU && partesN == 1);
+    dormir(400); CHECA(partesN == 1);
+    partesAtrasoMs = 0;
+    // m) a usenet download: createstream asks for type=usenet (early lookup and request).
+    partesN = 0; partesUsenet = 1; ultRota[0] = 0;
+    tbburn_procurar_cedo("https://s/12m", "", "B.S01E06.mkv", 2006, "Play");
+    CHECA(partesEsperar(1) == 1);
+    tbburn_fonte("https://s/12m", "", "B.S01E06.mkv", 2006);
+    tbburn_pedir("https://s/12m", 1, 1);
+    CHECA(fimPedido() == TBB_FALHOU && partesN == 1 && strstr(ultRota, "type=usenet") != NULL);
+    partesN = 0; ultRota[0] = 0;
+    tbburn_fonte("https://s/12n", "", "B.S01E07.mkv", 2007);
+    tbburn_pedir("https://s/12n", 1, 1);
+    CHECA(fimPedido() == TBB_FALHOU && partesN == 1 && strstr(ultRota, "type=usenet") != NULL);
+    partesUsenet = 0; ultRota[0] = 0;
+    tbburn_fonte("https://s/12o", "", "B.S01E08.mkv", 2008);
+    tbburn_pedir("https://s/12o", 1, 1);
+    CHECA(fimPedido() == TBB_FALHOU && strstr(ultRota, "type=torrent") != NULL); }
 
   if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
   printf("tbburn: ok\n");
