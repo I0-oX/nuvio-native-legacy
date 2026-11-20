@@ -17,7 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>   // ceilf, expf (sombraSuave)
+#include <math.h>   // ceilf, expf, floorf (sombraSuave)
 
 // Quantas linhas de texto ficam guardadas ao mesmo tempo.
 //
@@ -1716,36 +1716,57 @@ static SDL_Surface *rasterTracking(TxtEstilo estilo, const char *s, SDL_Color co
                                    TxtFamilia familia, float trk, float *larg);
 // `trk` != NULL: a linha de txt_tracking, letra a letra com *trk entre elas,
 // numa textura so (a largura volta em *larg).
-// STREMIO'S SUBTITLE OUTLINE (owner 14/11/2026). Stremio's Tizen app draws
-// embedded subtitles with `text-shadow: 1px 1px 0.1em rgb(34,34,34)`
-// (stremio-video, TizenVideo.js renderSubtitle): no stroke, one soft shadow.
-// A CSS shadow blur radius r is a Gaussian of sigma r/2, so sigma = 0.05 em.
-// Here the border line becomes that shadow: the glyph coverage blurred, in
-// the border colour, with `margem` empty pixels on each side for the blur.
-static float suaveSigmaPx(TxtEstilo estilo) {
-  float corpo = corpoAtual(estilo) * ESC_T;   // the em in pixels, as the face was opened
-  return corpo > 0.0f ? 0.05f * corpo : 0.0f;
-}
+// STREMIO'S SUBTITLE OUTLINE (owner 14/11/2026, ring 16/11/2026). Stremio
+// draws add-on subtitles (stremio-video withHTMLSubtitles.js) with EIGHT
+// shadows in a ring, each `±0.15rem ±0.15rem 0.15rem rgb(34,34,34)`; the
+// owner sees embedded ones look the same, so every subtitle uses it. Stremio's
+// rem is 15 px at 1920 wide (stremio-web App/styles.less), so 2.25 px out at
+// 1080p whatever the subtitle size, and a CSS blur radius r is a Gaussian of
+// sigma r/2. (The earlier single `1px 1px 0.1em` shadow, TizenVideo.js, was
+// too faint at a low opacity: the subtitle vanished on bright frames.)
+// Here the border line becomes that ring: the glyph coverage blurred once,
+// then the 8 offset copies laid over each other like CSS shadows
+// (a = 1 - prod(1 - a_i)), in the border colour, with `margem` empty pixels
+// on each side.
+#define SUAVE_ANEL  2.25f    // 0.15rem, layout px (1080p)
+#define SUAVE_SIGMA 1.125f   // blur 0.15rem -> sigma 0.075rem
+static float suaveSigmaPx(TxtEstilo estilo) { (void)estilo; return SUAVE_SIGMA * ESC_T; }
+static float suaveAnelPx(void) { return SUAVE_ANEL * ESC_T; }
 static int suaveMargemPx(TxtEstilo estilo) {
-  return (int)ceilf(3.0f * suaveSigmaPx(estilo)) + 1;
+  return (int)ceilf(suaveAnelPx() + 3.0f * suaveSigmaPx(estilo)) + 1;
 }
 float txt_suave_margem(TxtEstilo estilo) {
   if ((int)estilo < 0 || estilo >= TXT_NFONTES) return 0.0f;
   camadaAtualizar();
   return (float)suaveMargemPx(estilo) / ESC_T;
 }
+// Bilinear read of the blurred coverage (w x h, 0..255), 0 outside.
+static float suaveLer(const float *b, int w, int h, float fx, float fy) {
+  int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
+  float tx = fx - (float)x0, ty = fy - (float)y0, v = 0.0f;
+  int dy, dx;
+  for (dy = 0; dy < 2; dy++) for (dx = 0; dx < 2; dx++) {
+    int x = x0 + dx, y = y0 + dy;
+    if (x >= 0 && x < w && y >= 0 && y < h)
+      v += (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty) * b[(size_t)y * (size_t)w + (size_t)x];
+  }
+  return v;
+}
 static SDL_Surface *sombraSuave(SDL_Surface *src, TxtEstilo estilo) {
-  const float sigma = suaveSigmaPx(estilo);
-  const int m = suaveMargemPx(estilo), raio = m - 1;
+  const float sigma = suaveSigmaPx(estilo), d = suaveAnelPx();
+  const int m = suaveMargemPx(estilo), raio = (int)ceilf(3.0f * sigma);
   const int w = src->w + 2 * m, h = src->h + 2 * m;
-  float k[64], soma = 0.0f, *tmp = NULL;
+  static const int dir[8][2] = {{-1,-1},{0,-1},{1,-1},{-1,0},{1,0},{-1,1},{0,1},{1,1}};
+  float k[64], soma = 0.0f, *tmp = NULL, *blur = NULL;
   Uint8 cr = 0, cg = 0, cb = 0;
   SDL_Surface *out;
   int x, y, i;
   if (sigma <= 0.0f || raio < 1 || raio >= 64 ||
       !(out = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ABGR8888)))
     return src;
-  if (!(tmp = (float *)calloc((size_t)w * (size_t)h, sizeof *tmp))) { SDL_FreeSurface(out); return src; }
+  tmp = (float *)calloc((size_t)w * (size_t)h, sizeof *tmp);
+  blur = (float *)calloc((size_t)w * (size_t)h, sizeof *blur);
+  if (!tmp || !blur) { free(tmp); free(blur); SDL_FreeSurface(out); return src; }
   for (i = 0; i <= raio; i++) { k[i] = expf(-(float)(i * i) / (2.0f * sigma * sigma)); soma += i ? 2.0f * k[i] : k[i]; }
   for (i = 0; i <= raio; i++) k[i] /= soma;
   SDL_LockSurface(src); SDL_LockSurface(out);
@@ -1754,23 +1775,22 @@ static SDL_Surface *sombraSuave(SDL_Surface *src, TxtEstilo estilo) {
     const Uint8 *p = (const Uint8 *)src->pixels + y * src->pitch;
     for (x = 0; x < src->w; x++) if (p[4 * x + 3] > 128) { cr = p[4 * x]; cg = p[4 * x + 1]; cb = p[4 * x + 2]; break; }
   }
-  /* Horizontal pass: source alpha (with the margin) -> tmp. */
+  /* Horizontal pass: source alpha (placed at the margin) -> tmp. */
   for (y = 0; y < src->h; y++) {
     const Uint8 *p = (const Uint8 *)src->pixels + y * src->pitch;
     float *t = tmp + (size_t)(y + m) * (size_t)w;
     for (x = 0; x < w; x++) {
       float acc = 0.0f;
-      int sx0 = x - m - raio, j;
-      for (j = 0; j <= 2 * raio; j++) {
-        int sx = sx0 + j;
-        if (sx >= 0 && sx < src->w) acc += k[j > raio ? j - raio : raio - j] * (float)p[4 * sx + 3];
+      int j;
+      for (j = -raio; j <= raio; j++) {
+        int sx = x - m + j;
+        if (sx >= 0 && sx < src->w) acc += k[j < 0 ? -j : j] * (float)p[4 * sx + 3];
       }
       t[x] = acc;
     }
   }
-  /* Vertical pass: tmp -> out alpha; RGB is the border colour everywhere. */
-  for (y = 0; y < h; y++) {
-    Uint8 *q = (Uint8 *)out->pixels + y * out->pitch;
+  /* Vertical pass: tmp -> blur. */
+  for (y = 0; y < h; y++)
     for (x = 0; x < w; x++) {
       float acc = 0.0f;
       int j;
@@ -1778,12 +1798,24 @@ static SDL_Surface *sombraSuave(SDL_Surface *src, TxtEstilo estilo) {
         int sy = y + j;
         if (sy >= 0 && sy < h) acc += k[j < 0 ? -j : j] * tmp[(size_t)sy * (size_t)w + (size_t)x];
       }
+      blur[(size_t)y * (size_t)w + (size_t)x] = acc;
+    }
+  /* The ring: 8 copies offset by d, over each other; RGB is the border colour. */
+  for (y = 0; y < h; y++) {
+    Uint8 *q = (Uint8 *)out->pixels + y * out->pitch;
+    for (x = 0; x < w; x++) {
+      float resto = 1.0f, a;
+      for (i = 0; i < 8; i++) {
+        float v = suaveLer(blur, w, h, (float)x - d * (float)dir[i][0], (float)y - d * (float)dir[i][1]) / 255.0f;
+        resto *= 1.0f - (v > 1.0f ? 1.0f : v);
+      }
+      a = 255.0f * (1.0f - resto);
       q[4 * x] = cr; q[4 * x + 1] = cg; q[4 * x + 2] = cb;
-      q[4 * x + 3] = (Uint8)(acc > 255.0f ? 255 : acc + 0.5f);
+      q[4 * x + 3] = (Uint8)(a > 255.0f ? 255 : a + 0.5f);
     }
   }
   SDL_UnlockSurface(out); SDL_UnlockSurface(src);
-  free(tmp);
+  free(tmp); free(blur);
   SDL_FreeSurface(src);
   return out;
 }
@@ -2166,17 +2198,16 @@ void txt_desenhar_peso(TxtLinha l, float x, float y, float alpha, float peso) {
            1, 1, 1, alpha);
 }
 
-// SUBTITLE BORDER (owner 14/11/2026). Outline (1) is Stremio's soft shadow:
-// the TXT_ENF_SUAVE line, offset 1 px right and down, its blur margin around
-// the text's corner. Shadow (2) stays as it was: the glyphs 4 px down-right
-// at 82 %. The fade of the subtitle is the caller's group (gfx_grupo_*): it
-// draws this and the text at 1 and the finished picture once with the
-// opacity, so the border never shows through the letters (the old 8-stamp
-// outline was composed apart and the text drawn over it at the same alpha).
+// SUBTITLE BORDER (owner 14/11/2026). Outline (1) is Stremio's ring (see
+// sombraSuave): the TXT_ENF_SUAVE line, centred on the text, its margin
+// around the text's corner. Shadow (2) stays as it was: the glyphs 4 px
+// down-right at 82 %. The fade of the subtitle is the caller's group
+// (gfx_grupo_*): it draws this and the text at 1 and the finished picture
+// once with the opacity, so the border never shows through the letters.
 void txt_desenhar_borda(TxtLinha b, float x, float y, int borda, float margem, float alpha) {
   if (!b.tex || alpha <= 0.0f) return;
   if (borda == 2) txt_desenhar_alpha(b, x + 4.f, y + 4.f, .82f * alpha);
-  else if (borda == 1) txt_desenhar_alpha(b, x + 1.0f - margem, y + 1.0f - margem, alpha);
+  else if (borda == 1) txt_desenhar_alpha(b, x - margem, y - margem, alpha);
 }
 
 void txt_desenhar_tom(TxtLinha l, float x, float y, float cr, float cg, float cb, float alpha) {
@@ -2262,7 +2293,7 @@ static TxtLinha cortaFamilia(TxtEstilo estilo, const char *s, int r, int g,
   // e medir o portugues para desenhar o ingles poe as reticencias no lugar
   // errado — ou corta um texto que caberia inteiro.
   s = i18n(s);
-  const int medida = enfase & ~TXT_ENF_SUAVE;   // the soft shadow is cut like its text
+  const int medida = enfase & ~TXT_ENF_SUAVE;   // the outline ring is cut like its text
   // Mede sem rasterizar: so a linha FINAL vira textura (ver larguraLinha).
   if (!s || !*s || (float)larguraLinha(estilo, s, familia, medida) <= maxW)
     return linhaFamilia(estilo, s, r, g, b, a, familia, enfase);

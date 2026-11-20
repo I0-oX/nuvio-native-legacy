@@ -22,9 +22,9 @@
 
 /* The person's options start here and live in assperf.txt. */
 static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __attribute__((unused)) = {
-  [AP_ESCALA] = { "escala", 0, 5, 5 }, [AP_GAMA] = { "gama", 0, 10, 0 }, [AP_CONTRASTE] = { "contraste", 0, 30, 0 },
+  [AP_ESCALA] = { "escala", 0, 5, 5 }, [AP_GAMA] = { "gamma", -20, 20, 0 }, [AP_CONTRASTE] = { "contrast", -30, 20, 0 },
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
-  [AP_RENDIMENTO] = { "rendimento", 0, 1, 0 },
+  [AP_TXTRES] = { "txtres", 25, 100, 100 }, [AP_BLURRES] = { "blurres", 25, 100, 50 }, [AP_DIALIB] = { "dialogo", 0, 1, 1 },
 };
 
 static int val[AP_N] __attribute__((unused));   // off the .tpk and webOS: read only by the tests
@@ -34,7 +34,9 @@ static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
 
 #ifdef AP_PERSISTE
 static int valido(int id, int v) {
-  if (id == AP_ESCALA) return v == 0 || v == 2 || v == 5;   // 100 %, 75 %, Auto (file values kept)
+  if (id == AP_ESCALA)   // 100 %, 75 %, Auto 75, Auto 50 (the old "Auto" 5), Custom auto
+    return v == AP_RES_100 || v == AP_RES_75 || v == AP_RES_AUTO75 || v == AP_RES_AUTO50 || v == AP_RES_CUSTOM;
+  if ((id == AP_TXTRES || id == AP_BLURRES) && v % 5) return 0;
   return v >= PESSOA[id].min && v <= PESSOA[id].max;
 }
 
@@ -58,7 +60,7 @@ void assperf_iniciar(void) {
 #ifdef AP_PERSISTE
   {
     char *t = dados_ler(AP_ARQ);
-    int i;
+    int i, novo[AP_N] = {0}, velho[AP_N] = {0}, velhoV[AP_N] = {0};
     for (i = 0; i < AP_N; i++) val[i] = PESSOA[i].padrao;
     if (t) {
       char *l = t, *nl;
@@ -69,8 +71,15 @@ void assperf_iniciar(void) {
         if (!eq) continue;
         *eq = 0;
         for (i = 0; i < AP_N; i++)
-          if (!strcmp(l, PESSOA[i].chave) && valido(i, atoi(eq + 1))) val[i] = atoi(eq + 1);
+          if (!strcmp(l, PESSOA[i].chave) && valido(i, atoi(eq + 1))) { val[i] = atoi(eq + 1); novo[i] = 1; }
+        /* Files written before the wider ranges (16/11/2026): "gama" was 0 off,
+         * 1..5 = -1..-5, 6..10 = +5..+1; "contraste" was 30 minus the TV's
+         * number. A new key in the same file wins. */
+        { int v = atoi(eq + 1);
+          if (!strcmp(l, "gama") && v >= 0 && v <= 10) velho[AP_GAMA] = 1, velhoV[AP_GAMA] = v == 0 ? 0 : v <= 5 ? -v : 11 - v;
+          if (!strcmp(l, "contraste") && v >= 0 && v <= 30) velho[AP_CONTRASTE] = 1, velhoV[AP_CONTRASTE] = -v; }
       }
+      for (i = 0; i < AP_N; i++) if (velho[i] && !novo[i]) val[i] = velhoV[i];
       free(t);
     }
     { char *marca = dados_ler(AP_MARCA); if (marca) { free(marca); dados_apagar(AP_MARCA); } }
@@ -133,20 +142,23 @@ void assperf_restaurar(void) {
  * LUT of libave.so: out = in^(1 - 0.0426 x slider), measured on the 11 curves
  * (avoc_gamma_contrast_picture.md, 24/10). "-" = higher gamma (darker mids).
  * Only the video goes through it; the subtitles get the same sum. Black and
- * white do not move. */
+ * white do not move. The subtitle row goes on past the TV's ends with the same
+ * step (owner 16/11/2026: -20..+20; at +20 the exponent is 0.148). */
 double assperf_gama(void) {
-  int v = assperf_get(AP_GAMA);
-  int n = v <= 0 || v > 10 ? 0 : v <= 5 ? -v : 11 - v;
+  int n = assperf_get(AP_GAMA);
+  if (n < -20 || n > 20) n = 0;
   return 1.0 - 0.0426 * n;
 }
 /* The TV's Contrast is a GAIN per RGB channel before the gamma curve
  * (PontusMVideoEnhancer::m_CalculateContrast in libave.so: 944 x (c + 70) /
  * 120; avoc_contrast_application.md, 24/10). Relative to 30 (where subtitle
- * white matches video white on the S95C): (c + 70) / 100. */
+ * white matches video white on the S95C): (c + 70) / 100. The row takes the
+ * TV's whole 0..50 (owner 16/11/2026, TV at 38): above 30 the gain is over
+ * 1.0, so mid-tones brighten while full white stays clipped at 255. */
 double assperf_contraste(void) {
-  int v = assperf_get(AP_CONTRASTE);
-  int c = 30 - (v < 0 || v > 30 ? 0 : v);
-  return (c + 70) / 100.0;
+  int d = assperf_get(AP_CONTRASTE);   // the TV's number minus 30: 0 = neutral everywhere
+  if (d < -30 || d > 20) d = 0;
+  return (30 + d + 70) / 100.0;
 }
 
 static double agoraS(void) {
@@ -235,134 +247,59 @@ int assperf_pesado(void) {
 }
 
 /* ---- Render resolution Auto -----------------------------------------------
- * 100 % normally; 75 % while the subtitles are busy (owner 25/10: "only as a
- * fallback when subtitles get heavy"). At least 5 s at 75 % and 2 s at 100 %
- * between switches: each one redraws everything at the new size. */
+ * 100 % normally; lower while the subtitles are busy (owner 25/10: "only as a
+ * fallback when subtitles get heavy"). At least 5 s reduced and 2 s at 100 %
+ * between switches: each one redraws everything at the new size.
+ * Owner 19/11/2026: Auto 50 % (default) / Auto 75 % reduce the whole frame;
+ * Custom auto reduces the text to AP_TXTRES and the blur to AP_BLURRES. */
 #define AUTO_MIN75_S  5.0
 #define AUTO_MIN100_S 2.0
 static struct { int em75; double desde; } A;
-
+/* Tizen 4-6 (owner 16-17/11/2026: the 2019 Tizen 5 TV dropped to ~11 fps at
+ * 75 %, the 2021 Tizen 6 TV rendered heavy signs at 118-192 ms per frame) had
+ * 50 % forced in busy scenes. Since 19/11/2026 Auto 50 % is everyone's
+ * default and a chosen Auto 75 % is used as chosen. "em75" = reduced now. */
+static int tvLenta;   /* __atomic: set once by video_tpk.c from the Tizen version */
+void assperf_tv_lenta_definir(int sim) { __atomic_store_n(&tvLenta, sim ? 1 : 0, __ATOMIC_RELAXED); }
+int assperf_tv_lenta(void) {
+#ifdef NV_TPK40
+  return 1;
+#else
+  return __atomic_load_n(&tvLenta, __ATOMIC_RELAXED);
+#endif
+}
 static void auto_trocar_locked(int em75, double t) { A.em75 = em75; A.desde = t; }
 
-/* ---- Performance mode (experimental, "Modo rendimento") --------------------
- * AP_RENDIMENTO, off by default. The same busy detector walks one level at a
- * time and stops where the scene allows:
- *   0 normal;
- *   1 render resolution 75 % (the Auto fallback);
- *   2 the frame grid on every other video frame (assrender.c, fps/2);
- *   3 no blur (ass_nv_set_blur_scale 0, the 0003 patch of tools/tpk/libass-nv).
- * Levels are cumulative: at 3 the 1 and 2 are still in force.
- *
- * Up one level after REND_SOBE_S of busy scene; down one after REND_DESCE_S
- * of calm. Both are the Auto dwells (AUTO_MIN100_S / AUTO_MIN75_S) reused as
- * starting values: they were measured for the 100 %<->75 % switch of the
- * Auto, not for this ladder, and not on an LG. The change is logged once per
- * level with the load that caused it, so a TV log says whether the dwells
- * are too short or too long.
- *
- * "Busy" is the detector's flag plus its 0.5 s forecast (assperf_previsao),
- * the same condition the Auto uses to drop to 75 % before the scene instead
- * of in its first frames. The accumulators take the time between evaluations
- * (one per rendered frame on the worker), clamped to 0.25 s so a pause -- no
- * frame, no evaluation -- does not walk the ladder on its own.
- *
- * OFF: assperf_rendimento_nivel is 0 and the ladder changes nothing; the
- * worker still calls assperf_rendimento_passo, which only clears the state. */
-#define REND_SOBE_S  AUTO_MIN100_S
-#define REND_DESCE_S AUTO_MIN75_S
-static struct { int nivel, ligado; double ult, sobeAcum, desceAcum; int avisou; } RD;
-static pthread_mutex_t rdTrava = PTHREAD_MUTEX_INITIALIZER;
-
-int assperf_rendimento_nivel(void) {
-  int n = __atomic_load_n(&RD.nivel, __ATOMIC_RELAXED);
-  return n > 0 && assperf_get(AP_RENDIMENTO) ? n : 0;
+/* The two scales of mode v while reduced (busy). texto == blur: one pass. */
+static void escalas_reduzidas(int v, double *texto, double *blur) {
+  if (v == AP_RES_CUSTOM) {
+    *texto = assperf_get(AP_TXTRES) / 100.0; *blur = assperf_get(AP_BLURRES) / 100.0;
+    if (!(*texto >= 0.25 && *texto <= 1.0)) *texto = 1.0;
+    if (!(*blur >= 0.25 && *blur <= 1.0)) *blur = 0.5;
+  } else *texto = *blur = v == AP_RES_AUTO75 ? 0.75 : 0.5;
 }
 
-int assperf_rendimento_passo(void) {
-  int nivel, pesado, mudou = -1, avisar = 0;
-  double t, dt, carga = 0;
-  if (!assperf_get(AP_RENDIMENTO)) {
-    /* OFF is the default and must cost and change nothing: no lock, no write,
-     * once the option has never been on. If it was just turned off, the level
-     * goes back to 0 and the dwells are forgotten. */
-    if (!__atomic_load_n(&RD.ligado, __ATOMIC_RELAXED)) return 0;
-    pthread_mutex_lock(&rdTrava);
-    __atomic_store_n(&RD.ligado, 0, __ATOMIC_RELAXED);
-    RD.ult = 0; RD.sobeAcum = RD.desceAcum = 0;
-    __atomic_store_n(&RD.nivel, 0, __ATOMIC_RELAXED);
-    pthread_mutex_unlock(&rdTrava);
-    return 0;
-  }
-  t = agoraS();
-  /* The detector's flag and the forecast, with the same lock the Auto uses.
-   * The load reading is 20 additions and only reaches the log on a change. */
-  pthread_mutex_lock(&autoTrava);
-  pesado = pesado_locked(t) || CG.prevCedo;
-  carga = carga_locked(t);
-  pthread_mutex_unlock(&autoTrava);
-  pthread_mutex_lock(&rdTrava);
-  if (!RD.ligado) {   /* turned on: the dwells start now, never from before */
-    __atomic_store_n(&RD.ligado, 1, __ATOMIC_RELAXED);
-    RD.ult = 0; RD.sobeAcum = RD.desceAcum = 0;
-    avisar = !RD.avisou; RD.avisou = 1;
-  }
-  dt = RD.ult > 0 ? t - RD.ult : 0;
-  if (dt < 0 || dt > 0.25) dt = 0;
-  RD.ult = t;
-  if (pesado) { RD.sobeAcum += dt; RD.desceAcum = 0; }
-  else        { RD.desceAcum += dt; RD.sobeAcum = 0; }
-  nivel = __atomic_load_n(&RD.nivel, __ATOMIC_RELAXED);
-  if (nivel < ASSPERF_REND_NIVEIS - 1 && RD.sobeAcum >= REND_SOBE_S) {
-    nivel++; RD.sobeAcum = RD.desceAcum = 0; mudou = nivel;
-  } else if (nivel > 0 && RD.desceAcum >= REND_DESCE_S) {
-    nivel--; RD.sobeAcum = RD.desceAcum = 0; mudou = nivel;
-  }
-  __atomic_store_n(&RD.nivel, nivel, __ATOMIC_RELAXED);
-  pthread_mutex_unlock(&rdTrava);
-  if (avisar)
-    printf("[ass] modo rendimento: ligado (sobe a cada %.1f s de cena pesada, desce a cada %.1f s de cena leve)\n",
-           REND_SOBE_S, REND_DESCE_S);
-  if (mudou >= 0) printf("[ass] modo rendimento: nivel %d (carga %.0f ms/s)\n", mudou, carga);
-  if (avisar || mudou >= 0) fflush(stdout);
-  return nivel;
-}
-
-double assperf_rendimento_blur(void) {
-  return assperf_rendimento_nivel() >= ASSPERF_REND_BLUR ? 0.0 : 1.0;
-}
-
-void assperf_rendimento_reset(void) {
-  pthread_mutex_lock(&rdTrava);
-  RD.ult = 0; RD.sobeAcum = RD.desceAcum = 0;
-  __atomic_store_n(&RD.nivel, 0, __ATOMIC_RELAXED);
-  pthread_mutex_unlock(&rdTrava);
-}
-
-double assperf_escala_quadro(void) {
-  int v = assperf_get(AP_ESCALA), niv = assperf_rendimento_nivel();
-  double t, r;
-  if (v != 5) {
+int assperf_resolucao_quadro(double *texto, double *blur) {
+  int v = assperf_get(AP_ESCALA);
+  double t;
+  *blur = 0.0;
+  if (!AP_RES_AUTO(v)) {
     pthread_mutex_lock(&autoTrava);
     A.em75 = 0;
     pthread_mutex_unlock(&autoTrava);
-    return v == 2 ? 0.75 : 1.0;
+    *texto = v == AP_RES_75 ? 0.75 : 1.0;
+    return 0;
   }
   t = agoraS();
   pthread_mutex_lock(&autoTrava);
-  if (niv >= 1) {
-    /* Level 1: Auto stays at 75 % while the ladder is degraded. The person's
-     * explicit 100 % or 75 % (v != 5) is not overridden: AP_ESCALA keeps its
-     * meaning, as before this option existed. */
-    if (!A.em75) auto_trocar_locked(1, t);
-    r = 0.75;
-  } else {
-    int pesado = pesado_locked(t) || CG.prevCedo;
+  { int pesado = pesado_locked(t) || CG.prevCedo;
     if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t);
-    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t);
-    r = A.em75 ? 0.75 : 1.0;
-  }
+    else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t); }
+  if (A.em75) escalas_reduzidas(v, texto, blur);
+  else *texto = *blur = 1.0;
   pthread_mutex_unlock(&autoTrava);
-  return r;
+  if (*blur == *texto) { *blur = 0.0; return 0; }
+  return 1;
 }
 
 void assperf_escala_reset(void) {
@@ -370,17 +307,29 @@ void assperf_escala_reset(void) {
   A.em75 = 0; A.desde = agoraS();
   memset(&CG, 0, sizeof CG);   /* new track: the load starts from zero */
   pthread_mutex_unlock(&autoTrava);
-  /* A new track also starts the performance mode at level 0: the scene
-   * before it says nothing about the next one. */
-  assperf_rendimento_reset();
 }
 
 double assperf_escala(void) {
   int v = assperf_get(AP_ESCALA), em75;
-  if (v != 5) return v == 2 ? 0.75 : 1.0;
-  /* Same answer the worker is using: the ladder's level 1 pins Auto at 75 %
-   * even before the worker rendered with it (telalag.c's picture sync). */
-  if (assperf_rendimento_nivel() >= 1) return 0.75;
+  double tx, bl;
+  if (!AP_RES_AUTO(v)) return v == AP_RES_75 ? 0.75 : 1.0;
   pthread_mutex_lock(&autoTrava); em75 = A.em75; pthread_mutex_unlock(&autoTrava);
-  return em75 ? 0.75 : 1.0;
+  if (!em75) return 1.0;
+  escalas_reduzidas(v, &tx, &bl);
+  return tx;
+}
+
+double assperf_escala_blur(void) {
+  int v = assperf_get(AP_ESCALA), em75;
+  double tx, bl;
+  if (v != AP_RES_CUSTOM) return 0.0;
+  pthread_mutex_lock(&autoTrava); em75 = A.em75; pthread_mutex_unlock(&autoTrava);
+  if (!em75) return 0.0;
+  escalas_reduzidas(v, &tx, &bl);
+  return bl != tx ? bl : 0.0;
+}
+
+int assperf_reduzido(void) {
+  int v = assperf_get(AP_ESCALA);
+  return AP_RES_AUTO(v) && (assperf_escala() < 1.0 || assperf_escala_blur() > 0.0);
 }

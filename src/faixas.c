@@ -6,6 +6,7 @@
 #include "idioma.h"
 #include "player.h"
 #include "video.h"
+#include "passo.h"
 #include "xtream.h"
 #include "addons.h"
 #include "gfx.h"
@@ -633,13 +634,15 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
 #ifdef FX_ASSUI
        /* ASS/SSA tracks (.tpk and webOS, owner 26-27/10): with libass on, the
         * column is size and opacity of the dialogue, delay, contrast, gamma,
-        * render resolution, performance mode (experimental), picture sync,
-        * libass itself and Restore defaults (always the last cell). With
-        * libass off it is the ordinary column plus the libass row, Restore
-        * defaults last. Contrast and gamma stay .tpk only (calibrated on the
-        * Samsung picture); picture sync is on both, from the file's own frame
-        * rate and HDR (legimagem.h). */
-       EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_REND, EST_SINC,
+        * render resolution, picture sync, libass itself and Restore defaults
+        * (always the last cell). With libass off it is the ordinary column
+        * plus the libass row, Restore defaults last. Contrast and gamma stay
+        * .tpk only (calibrated on the Samsung picture); picture sync is on
+        * both, from the file's own frame rate and HDR (legimagem.h). */
+       EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
+       /* Owner 19/11/2026: the Custom auto instruments (shown only while
+        * Render resolution is Custom auto) and Dialogue by libass. */
+       EST_TXTRES, EST_BLURRES, EST_DIALIB,
 #endif
        /* MAIN / SECOND (owner 12/11): "Edit" switches the column between the
         * main subtitle and the second one (shown only while a second subtitle
@@ -654,8 +657,8 @@ static const char *const EST_ROT[EST_TOTAL] = {
   "Tamanho", "Fonte OpenSubtitles", "Cor", "Opacidade", "Fundo", "Posição", "Borda", "Atraso",
   "Negrito", "Restaurar padrão", "Cor da borda"
 #ifdef FX_ASSUI
-  , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas",
-  "Modo rendimento (experimental)", "Sincronia com a imagem"
+  , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
+  , "Resolução do texto (teste)", "Resolução do desfoque (teste)", "Diálogo pelo libass"
 #endif
   , "Editar",
   "Tamanho", "Fonte da legenda", "Cor", "Opacidade", "Fundo", "Posição", "Posição da segunda legenda",
@@ -723,9 +726,12 @@ static void estMapa(void) {
 #ifdef FX_ASSUI
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
-      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CALIB_LINHAS EST_ESCALA, EST_REND,
-                               EST_SINC_LINHA EST_LIBASS, EST_RESTAURAR };
-      for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) estLinhas[estNLinhas++] = L[i];
+      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CALIB_LINHAS EST_ESCALA,
+                               EST_TXTRES, EST_BLURRES, EST_SINC_LINHA EST_DIALIB, EST_LIBASS, EST_RESTAURAR };
+      for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) {
+        if ((L[i] == EST_TXTRES || L[i] == EST_BLURRES) && assperf_get(AP_ESCALA) != AP_RES_CUSTOM) continue;
+        estLinhas[estNLinhas++] = L[i];
+      }
       return;
     }
     /* Restore defaults stays the last cell (owner 27/10), after libass. */
@@ -813,16 +819,19 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
     case EST_LIBASS: snprintf(dst, tam, "%s", i18n(assperf_get(AP_LIBASS) ? "Ligado" : "Desligado")); break;
     case EST_ASS_TAM: snprintf(dst, tam, "%d%%", assperf_get(AP_ASSTAM)); break;
     case EST_ASS_OPAC: snprintf(dst, tam, "%d%%", assperf_get(AP_ASSOPAC)); break;
-    case EST_CONTRASTE: snprintf(dst, tam, "%d", 30 - assperf_get(AP_CONTRASTE)); break;
-    case EST_GAMA: { int g = assperf_get(AP_GAMA); g = g <= 5 ? -g : 11 - g;
+    case EST_CONTRASTE: snprintf(dst, tam, "%d", 30 + assperf_get(AP_CONTRASTE)); break;
+    case EST_GAMA: { int g = assperf_get(AP_GAMA);
       if (g) snprintf(dst, tam, "%+d", g); else snprintf(dst, tam, "%s", i18n("Desligado"));
       break; }
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
-      snprintf(dst, tam, "%s", v == 5 ? i18n("Automático") : v == 2 ? "75%" : "100%");
+      if (v == AP_RES_AUTO50) snprintf(dst, tam, "%s 50%%", i18n("Auto"));
+      else if (v == AP_RES_AUTO75) snprintf(dst, tam, "%s 75%%", i18n("Auto"));
+      else if (v == AP_RES_CUSTOM) snprintf(dst, tam, "%s", i18n("Auto personalizado"));
+      else snprintf(dst, tam, "%s", v == AP_RES_75 ? "75%" : "100%");
       break; }
-    case EST_REND: snprintf(dst, tam, "%s", i18n(assperf_get(AP_RENDIMENTO) ? "Ligado" : "Desligado")); break;
-#endif
-#if defined(NV_TPK) || defined(NV_WEBOS)
+    case EST_TXTRES: snprintf(dst, tam, "%d%%", assperf_get(AP_TXTRES)); break;
+    case EST_BLURRES: snprintf(dst, tam, "%d%%", assperf_get(AP_BLURRES)); break;
+    case EST_DIALIB: snprintf(dst, tam, "%s", i18n(assperf_get(AP_DIALIB) ? "Ligado" : "Desligado")); break;
     case EST_SINC: { int lv, ps, ag;
       legimagem_valores(&lv, &ps, &ag);
       if (ctl == EST_SINC) snprintf(dst, tam, sincPesada ? "%d / [%d] ms" : "[%d] / %d ms", lv, ps);
@@ -860,6 +869,7 @@ static void ciclarEstilo(int linha) {
     case EST_RESTAURAR:
 #ifdef FX_ASSUI
       if (estFaixaAss() && assperf_get(AP_LIBASS)) {
+        int dialib = assperf_get(AP_DIALIB);
         assperf_restaurar();
 #if defined(NV_TPK) || defined(NV_WEBOS)
         legimagem_restaurar();
@@ -868,18 +878,25 @@ static void ciclarEstilo(int linha) {
 #if defined(NV_TPK) || defined(NV_WEBOS)
         sincPesada = 0;
 #endif
+        if (dialib != assperf_get(AP_DIALIB)) escolherLegenda(legendaAtiva());   // dialogue back to libass
         break;
       }
 #endif
       player_leg_estilo_restaurar();
       return;
 #ifdef FX_ASSUI
-    case EST_ESCALA: {   // Auto -> 100 % -> 75 %
+    case EST_ESCALA: {   // Auto 50 -> Auto 75 -> Custom auto -> 100 % -> 75 % (owner 19/11/2026)
       int v = assperf_get(AP_ESCALA);
-      assperf_definir(AP_ESCALA, v == 5 ? 0 : v == 0 ? 2 : 5);
+      assperf_definir(AP_ESCALA, v == AP_RES_AUTO50 ? AP_RES_AUTO75 : v == AP_RES_AUTO75 ? AP_RES_CUSTOM :
+                                 v == AP_RES_CUSTOM ? AP_RES_100 : v == AP_RES_100 ? AP_RES_75 : AP_RES_AUTO50);
+      foco[FX_COL_ESTILO] = estPos(EST_ESCALA);   // the test rows come and go under it
       return; }
-    case EST_REND:   // performance mode: off <-> on; the worker starts at level 0
-      assperf_definir(AP_RENDIMENTO, !assperf_get(AP_RENDIMENTO));
+    case EST_DIALIB:
+      /* The same track again: the app's cue copy and libass split the lines
+       * anew (dialogue to the app's text, signs & songs to libass). */
+      assperf_definir(AP_DIALIB, !assperf_get(AP_DIALIB));
+      escolherLegenda(legendaAtiva());
+      foco[FX_COL_ESTILO] = estPos(EST_DIALIB);
       return;
     case EST_LIBASS:
       /* The same track again, so libass takes it (or lets it go). */
@@ -910,8 +927,10 @@ static const EstSlider EST_SL[EST_TOTAL] = {
 #ifdef FX_ASSUI
   [EST_ASS_TAM] = { 50, 200, 5, 10, 2 },                          // dialogue size %
   [EST_ASS_OPAC] = { 20, 100, 5, 10, 1 },                         // dialogue opacity %
-  [EST_CONTRASTE] = { 0, 30, 1, 1, 1 },                           // the TV's numbers
-  [EST_GAMA] = { -5, 5, 1, 1, 1 },
+  [EST_CONTRASTE] = { 0, 50, 1, 5, 2 },                           // the TV's numbers, its whole range
+  [EST_GAMA] = { -20, 20, 1, 5, 2 },                              // past the TV's -5..+5 (owner 16/11/2026)
+  [EST_TXTRES] = { 25, 100, 5, 5, 1 },                            // Custom auto: text %, steps of 5 (owner 19/11/2026)
+  [EST_BLURRES] = { 25, 100, 5, 5, 1 },                           // Custom auto: blur %, steps of 5
 #endif
   // The second subtitle: steps through the choices of its setting (the value
   // shown is the setting's own text); Delay in ms like the main.
@@ -945,8 +964,10 @@ static int estLer(int i) {
 #ifdef FX_ASSUI
     case EST_ASS_TAM: return assperf_get(AP_ASSTAM);
     case EST_ASS_OPAC: return assperf_get(AP_ASSOPAC);
-    case EST_CONTRASTE: return 30 - assperf_get(AP_CONTRASTE);
-    case EST_GAMA: { int g = assperf_get(AP_GAMA); return g <= 5 ? -g : 11 - g; }
+    case EST_CONTRASTE: return 30 + assperf_get(AP_CONTRASTE);
+    case EST_GAMA: return assperf_get(AP_GAMA);
+    case EST_TXTRES: return assperf_get(AP_TXTRES);
+    case EST_BLURRES: return assperf_get(AP_BLURRES);
 #endif
     case 0: return e->tamanho;
     case 3: return (int)lroundf(video_legenda_opacidade(e) * 100.0f);
@@ -969,8 +990,10 @@ static void estGravar(int i, int v) {
 #ifdef FX_ASSUI
     case EST_ASS_TAM: assperf_definir(AP_ASSTAM, v); return;
     case EST_ASS_OPAC: assperf_definir(AP_ASSOPAC, v); return;
-    case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, 30 - v); return;
-    case EST_GAMA: assperf_definir(AP_GAMA, v == 0 ? 0 : v < 0 ? -v : 11 - v); return;
+    case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, v - 30); return;
+    case EST_GAMA: assperf_definir(AP_GAMA, v); return;
+    case EST_TXTRES: assperf_definir(AP_TXTRES, v / 5 * 5); return;
+    case EST_BLURRES: assperf_definir(AP_BLURRES, v / 5 * 5); return;
 #endif
     case 0: e->tamanho = v; break;
     case 3: e->opacidade = v / 10 * 10; break;
@@ -1583,7 +1606,9 @@ void faixas_legenda_reaplicar(void) {
 
 
 void faixas_atualizar(float dt, Uint32 agora) {
+  NV_PASSO("faixas: legendasui_atualizar");
   if (aberta && modo && coluna == 1) legendasui_atualizar(dt);
+  NV_PASSO("faixas: queimada/velocidade");
 #if defined(NV_TPK) || defined(NV_WEBOS)
   // Burned in stopped (TorBox failed: toast; or Burn in Off): the ASS tracks
   // are back in Main's list, so with Main off the automatic pick runs again
@@ -1615,10 +1640,14 @@ void faixas_atualizar(float dt, Uint32 agora) {
   // Fechando a partir da barra, ela sai como barra: sem isto a folha inteira
   // piscaria no caminho de volta.
   if (aberta || anim < .01f) animTopo = anim_mola(animTopo, faixas_estilo_topo() ? 1.0f : 0.0f, dt, NV_MOLA_TELA);
+  NV_PASSO("faixas: legendaPreDownload");
   legendaPreDownload();
+  NV_PASSO("faixas: legendaAutomatica");
   legendaAutomatica(agora);
   if (!legAuto) legenda_pre_descartar("automatica encerrada");
+  NV_PASSO("faixas: pilAtualizar");
   pilAtualizar(agora);
+  NV_PASSO("faixas: resto");
   // Recuo vencido: a MESMA faixa de novo. O overlay nao foi desligado — o que
   // ja estava colhido continua na tela, e o fio novo retoma do sidecar parcial.
   if (legOverlay >= 0 && legOverlayRetomar && (Sint32)(agora - legOverlayRetomar) >= 0) {
@@ -2276,8 +2305,8 @@ static void sliderCtl(int i, GfxRect r, float a, int ativo) {
     char lo[24], hi[24];
     if (i == 7) { snprintf(lo, sizeof lo, "-%d s", LEGUI_ATRASO_MAX / 1000); snprintf(hi, sizeof hi, "+%d s", LEGUI_ATRASO_MAX / 1000); }
 #ifdef FX_ASSUI
-    else if (i == EST_CONTRASTE) { snprintf(lo, sizeof lo, "0"); snprintf(hi, sizeof hi, "30"); }
-    else if (i == EST_GAMA) { snprintf(lo, sizeof lo, "-5"); snprintf(hi, sizeof hi, "+5"); }
+    else if (i == EST_CONTRASTE) { snprintf(lo, sizeof lo, "0"); snprintf(hi, sizeof hi, "50"); }
+    else if (i == EST_GAMA) { snprintf(lo, sizeof lo, "-20"); snprintf(hi, sizeof hi, "+20"); }
 #endif
     else { snprintf(lo, sizeof lo, "%d%%", i == 3 ? 25 : EST_SL[i].min); snprintf(hi, sizeof hi, "%d%%", i == 3 ? 100 : EST_SL[i].max); }
     { TxtLinha tl = txt_linha(TXT_G16B, lo, 243, 242, 239, 150), th = txt_linha(TXT_G16B, hi, 243, 242, 239, 150);
@@ -2300,7 +2329,7 @@ static void sliderCtl(int i, GfxRect r, float a, int ativo) {
       || i == EST_GAMA
 #endif
       ) {   // niveis discretos: um ponto por parada
-    int n = i == 3 ? 4 : i == 5 ? 8 : 11, k;
+    int n = i == 3 ? 4 : i == 5 ? 8 : 9, k;   // gamma: a dot every 5
     for (k = 0; k < n; k++) {
       float tx = x1 + (x2 - x1) * (float)k / (float)(n - 1);
       if (fabsf(tx - px) > 18.0f) gfx_cor((GfxRect){ tx - 3.0f, cy - 3.0f, 6.0f, 6.0f }, 0.5f, 1, 1, 1, 0.45f * a);

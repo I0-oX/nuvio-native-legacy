@@ -44,6 +44,14 @@ int  video_tocar_posicao(const char *url, double segundos);
 // sobre a duracao do container ANTES do primeiro quadro; mesmo ack/estado.
 int  video_tocar_retomada(const char *url, double segundos, double pct);
 int  video_retomada_inicial_estado(void);
+#endif
+#ifdef NV_TPK
+// .tpk (owner 18/11): the point goes with the open; the host seeks in Ready,
+// before Start. Same estado (0 waiting, 1 applied, -1 the seek after ready).
+int  video_tocar_retomada(const char *url, double segundos, double pct);
+int  video_retomada_inicial_estado(void);
+#endif
+#ifdef NV_ANDROID
 // Fonte preparada na pagina do titulo: player pausado, sem imagem, audio ou
 // eventos da sessao de reproducao. Token identifica o dono; zero cancela todos.
 int  video_precarregar(const char *url, const char *cabecalhos, double segundos,
@@ -203,6 +211,13 @@ int      video_pos_incerta(void);
 // the .tpk host's MKV header; on webOS the MKV probe (DefaultDuration,
 // transfer/DV) plus the pipeline's hdrType. 0 = unknown.
 int      video_tpk_quadro(double *fps, int *hdr);
+// Colour of the playing MKV's video (Colour element): MatrixCoefficients and
+// Range as in the file (0 = not stated), and HDR. 0 = no MKV video track.
+int      video_tpk_cor(int *matriz, int *faixa, int *hdr);
+// Measurements for the libass log (assrender.c): position readings since the
+// last call. n = arrived, fora = dropped (query older than the last seek),
+// somaMs / maxMs = time the query took. Resets the counters.
+void     video_tpk_leituras(int *n, int *fora, long *somaMs, int *maxMs);
 #endif
 int    video_tocando(void);
 // Pausa comprovada pelo backend da sessao atual, nao a intencao local de
@@ -357,7 +372,8 @@ void video_simular_estatisticas(const VideoStats *s);   // capturas; NULL zera
 // total do arquivo nunca casa pelo ordinal (mkv_casar_legendas exige contagem
 // igual) — nenhuma faixa ASS ia ao overlay do app, todas ficavam com a TV. O
 // lado do arquivo (MKV_MAX_FAIXAS) ja era 64.
-#define NV_FAIXA_MAX 64
+// 192 (17/11): remux com 145 faixas, 137 legendas (ver mkv.h).
+#define NV_FAIXA_MAX 192
 
 typedef struct {
   char rotulo[48];   // "Ingles · Atmos 5.1" ou "Legenda 3"

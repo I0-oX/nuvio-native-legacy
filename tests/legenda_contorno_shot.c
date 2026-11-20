@@ -1,7 +1,7 @@
-// Subtitle Outline (borda 1) = Stremio's look (owner 14/11/2026): CSS
-// `text-shadow: 1px 1px 0.1em rgb(34,34,34)`, a soft shadow down-right, no
-// ring; and the subtitle fades as ONE picture (gfx_grupo_*), so at a low
-// opacity the shadow never shows through the letters.
+// Subtitle Outline (borda 1) = Stremio's look (owner 14/11/2026, ring
+// 16/11/2026): 8 CSS shadows `±0.15rem ±0.15rem 0.15rem rgb(34,34,34)`, a
+// dark ring on every side; and the subtitle fades as ONE picture
+// (gfx_grupo_*), so at a low opacity the ring never shows through the letters.
 //   bash tests/legenda_contorno_shot.sh <dir> [antigo]
 // "antigo" fades border and text separately (the old way): the letter check
 // must fail.
@@ -76,8 +76,8 @@ int main(int argc, char **argv) {
   assert(x1 > x0 && y1 > y0);
   int xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
 
-  // 1. A soft shadow down-right, not a ring: right of the stem darker than
-  //    left of it, and the left side nowhere near black.
+  // 1. Stremio's ring: dark on every side of the stem, and even (no
+  //    down-right lean like the old single shadow).
   glClearColor(.82f, .82f, .82f, 1); glClear(GL_COLOR_BUFFER_BIT);   // bright frame
   txt_desenhar_borda(bor, X, Y, 1, m, 1.0f);
   txt_desenhar_alpha(cor, X, Y, 1.0f);
@@ -85,8 +85,22 @@ int main(int argc, char **argv) {
   salvar(dir, "contorno-stremio", (int)X - 30, (int)Y - 20, 100, cor.h + 40);
   { int esq = px(x0 - 2, ym), dir2 = px(x1 + 2, ym), baixo = px(xm, y1 + 2), cima = px(xm, y0 - 2);
     fprintf(stderr, "bbox %d..%d x %d..%d; esq %d dir %d cima %d baixo %d (fundo 209)\n", x0, x1, y0, y1, esq, dir2, cima, baixo);
-    if (!(dir2 < esq - 15 && baixo < cima - 15 && esq > 120 && dir2 < 200)) {
-      printf("legenda_contorno_shot: FAIL (not a soft down-right shadow)\n"); return 1; } }
+    if (!(esq < 110 && dir2 < 110 && cima < 110 && baixo < 110 && abs(esq - dir2) < 20 && abs(cima - baixo) < 20)) {
+      printf("legenda_contorno_shot: FAIL (not Stremio's ring)\n"); return 1; } }
+
+  // 1b. At 40 % the ring still darkens a bright frame next to the letter
+  //     (the old shadow vanished there: the owner's 16/11 clip).
+  glClearColor(.82f, .82f, .82f, 1); glClear(GL_COLOR_BUFFER_BIT);
+  { static GfxGrupo g;
+    float a = .40f, d = gfx_grupo_comecar(&g, (GfxRect){ X - m, Y - m, cor.w + 2 * m + 6, cor.h + 2 * m + 6 }, a) ? 1.0f : a;
+    txt_desenhar_borda(bor, X, Y, 1, m, d);
+    txt_desenhar_alpha(cor, X, Y, d);
+    gfx_grupo_terminar(&g, a); }
+  ler();
+  salvar(dir, "contorno-40", (int)X - 30, (int)Y - 20, 100, cor.h + 40);
+  { int esq = px(x0 - 2, ym), meio = px(xm, ym);
+    fprintf(stderr, "alfa .40: borda esq %d, haste %d (fundo 209)\n", esq, meio);
+    if (!(esq < 170 && meio > 215)) { printf("legenda_contorno_shot: FAIL (ring gone at 40 %%)\n"); return 1; } }
 
   // 2. Faded as one: at 25 % the stem's middle reads 25 % white over the
   //    frame (~221), the shadow under the letter doesn't darken it.

@@ -79,6 +79,21 @@ static int puros(const char *ts, const char *init, const char *seg, const char *
     if (o && (f = fopen(semAudio, "wb"))) { fwrite(o, 1, k, f); fclose(f); }
     ok("TS strip: nothing to strip in non-TS bytes", !tba_ts_sem_audio((const unsigned char *)"not a transport stream at all", 30, o, &k, &rem));
     free(o);
+    { // A PMT whose program_info_length (0xFFF) runs past its section: refused,
+      // nothing copied past the section buffer (ASan: SANITIZE=1).
+      size_t tn = 188 * 30, q;
+      unsigned char *ti = malloc(tn), *to = malloc(tn);
+      static const unsigned char pat[] = { 0x47, 0x40, 0x00, 0x10, 0x00, 0x00, 0xB0, 0x0D, 0x00, 0x01, 0xC1, 0x00, 0x00, 0x00, 0x01, 0xF0, 0x00, 0, 0, 0, 0 };
+      static const unsigned char pmt[] = { 0x47, 0x50, 0x00, 0x10, 0x00, 0x02, 0xB0, 0x17, 0x00, 0x01, 0xC1, 0x00, 0x00, 0xE1, 0x00,
+                                           0xFF, 0xFF, 0x1B, 0xE1, 0x00, 0xF0, 0x00, 0x0F, 0xE1, 0x01, 0xF0, 0x00, 0, 0, 0, 0 };
+      if (ti && to) {
+        memset(ti, 0xFF, tn);
+        for (q = 0; q < tn; q += 188) { ti[q] = 0x47; ti[q + 1] = 0x1F; ti[q + 2] = 0xFF; ti[q + 3] = 0x10; }
+        memcpy(ti, pat, sizeof pat); memcpy(ti + 188, pmt, sizeof pmt);
+        ok("TS strip: program info longer than the PMT section is refused", !tba_ts_sem_audio(ti, tn, to, &k, &rem));
+      }
+      free(ti); free(to);
+    }
   }
   free(b);
   b = ler(init, &n);
@@ -94,14 +109,14 @@ static int puros(const char *ts, const char *init, const char *seg, const char *
 
 int main(int argc, char **argv) {
   if (argc == 6 && !strcmp(argv[1], "puros")) return puros(argv[2], argv[3], argv[4], argv[5]);
-  if (argc == 9 && !strcmp(argv[1], "sessao")) {
+  if (argc == 8 && !strcmp(argv[1], "sessao")) {
     char url[256];
     FILE *f;
-    if (!tba_abrir(argv[2], argv[3], "", atoi(argv[5]), atoi(argv[4]), atoi(argv[6]), atoi(argv[8]), url, sizeof url)) {
+    if (!tba_abrir(argv[2], argv[3], "", atoi(argv[5]), atoi(argv[4]), atoi(argv[7]), url, sizeof url)) {
       fprintf(stderr, "tba_abrir failed (disponivel=%d)\n", tba_disponivel());
       return 1;
     }
-    f = fopen(argv[7], "w");
+    f = fopen(argv[6], "w");
     if (!f) return 1;
     fprintf(f, "%s\n", url);
     fclose(f);

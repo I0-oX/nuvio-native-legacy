@@ -18,7 +18,10 @@
 #ifndef NV_MKV_H
 #define NV_MKV_H
 
-#define MKV_MAX_FAIXAS 64
+// 64 ate 17/11: o remux de Fight Club 4K do dono tem 145 faixas (137
+// legendas) e a legenda sueca de texto era a 93 — nunca entrava no menu.
+// So o que o arquivo tem e preenchido: o resto dos vetores nao e tocado.
+#define MKV_MAX_FAIXAS 192
 
 typedef struct {
   int  numero;        // TrackNumber (NAO e o `trackNum` da LG: ver mkv_casar_legendas)
@@ -46,6 +49,10 @@ typedef struct {
   // 18 HLG; 0 = not stated).
   unsigned long long quadroNs;
   int  transferencia;
+  // Colour > MatrixCoefficients (1 BT.709, 5/6 BT.601, 9 BT.2020; 0 = not in
+  // the file, as 2 = unspecified) and Colour > Range (1 TV, 2 PC; 0 = not
+  // stated): the colour matrix of ASS subtitles (assrender.c, 16/11/2026).
+  int  matriz, faixaCor;
 } MkvFaixa;
 
 // O que a ultima sonda (mkv_faixas_e_caps / mkv_faixas_do_trecho) viu. Estado

@@ -111,6 +111,8 @@ static void lerTexto(const unsigned char *p, long n, char *dst, size_t tam) {
 #define ID_VIDEO       0xE0UL        // TrackEntry > Video
 #define ID_COLOUR      0x55B0UL      // Video > Colour
 #define ID_TRANSFER    0x55BAUL      // Colour > TransferCharacteristics
+#define ID_MATRIZ      0x55B1UL      // Colour > MatrixCoefficients
+#define ID_FAIXACOR    0x55B9UL      // Colour > Range
 #define ID_BLOCKADDMAP 0x41E4UL      // BlockAdditionMapping (Dolby Vision config)
 #define ID_BLOCKADDTYPE 0x41E7UL     // BlockAddIDType: 'dvcC' / 'dvvC'
 #define ID_BLOCKADDDATA 0x41EDUL     // BlockAddIDExtraData: the DOVI record
@@ -197,6 +199,8 @@ static int lerTracks(const unsigned char *p, long n, MkvFaixa *saida, int max) {
                   if (ctam < 0 || c + ci + ct + ctam > atam) break;
                   c += ci + ct;
                   if (cid == ID_TRANSFER) f.transferencia = (int)lerUint(v + r + c, ctam);
+                  else if (cid == ID_MATRIZ) f.matriz = (int)lerUint(v + r + c, ctam);
+                  else if (cid == ID_FAIXACOR) f.faixaCor = (int)lerUint(v + r + c, ctam);
                   c += ctam;
                 }
               }
@@ -523,7 +527,7 @@ static void lerDuracao(const unsigned char *p, long n) {
         int a = dVint(p + q, fim - q, 0, &fid), c;
         if (!a) break;
         c = dVint(p + q + a, fim - q - a, 1, &ft);
-        if (!c || (unsigned long long)(q + a + c) + ft > (unsigned long long)fim) break;
+        if (!c || ft == ~0ULL || (unsigned long long)(q + a + c) + ft > (unsigned long long)fim) break;
         q += a + c;
         for (unsigned long long k = 0; k < ft && k < 8; k++) b = (b << 8) | p[q + (long)k];
         if (fid == 0x2AD7B1ULL) escala = b;

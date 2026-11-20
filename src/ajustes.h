@@ -607,8 +607,8 @@ int   ajustes_legenda_sync_audio_movel(void); // 1 = it may sample the film on m
 // embedded ASS in with TorBox is On AND the plan is Pro (.tpk and webOS; else 0).
 int   ajustes_tb_pro(void);
 int   ajustes_leg_queimar(void);
-// Original audio with TorBox burn-in (dts/tbaudio_tpk.h): TBA_TORBOX (0, default),
-// TBA_REMUX, TBA_PARALELO (codecs hint), TBA_PARALELO_SEM (strip TorBox audio).
+// Original audio with TorBox burn-in (dts/tbaudio_tpk.h): TBA_PASSTHROUGH (0,
+// default) or TBA_TORBOX (TorBox's own transcoded audio).
 int   ajustes_tb_audio_modo(void);
 void  ajustes_definir_tb_audio_modo(int modo);
 // The second subtitle's style fields, for the player's Style column (Main /

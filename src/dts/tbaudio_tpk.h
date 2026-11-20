@@ -10,13 +10,11 @@
  *     whenever it was still in the video (14/11), so it has to go.
  *   TORBOX AUDIO: no session; TorBox's stream (its transcoded audio) as is.
  *
- * Audio by codec: AAC / AC3 / E-AC3 / Opus / MP3 copied into MPEG-TS; DTS,
- * TrueHD/MLP converted to AC3 (5.1 640 kb/s, 2.0 192 kb/s); FLAC copied as is
- * into fragmented-MP4 segments (MPEG-TS has no FLAC; the S95C plays it) when
- * the build has the mp4 muxer (tba_flac_direto), else converted to AC3/AAC.
- * webOS starts FLAC as is too; when the LG uMS refuses it, video.c reopens the
- * stream converted once (tba_definir_flac) and remembers it for the run. The
- * FLAC conversion has no menu row.
+ * Audio by codec: AAC / AC3 / E-AC3 / MP3 copied into MPEG-TS; DTS,
+ * TrueHD/MLP converted to AC3 (5.1 640 kb/s, 2.0 192 kb/s); FLAC and Opus
+ * copied as is into fragmented-MP4 segments (MPEG-TS has no FLAC; Opus in
+ * MPEG-TS never started on the S95C, owner 16/11). Both play as is on the
+ * S95C; their conversion to AAC/AC3 was never needed and is gone (16/11).
  *
  * Connections: the original file 1 + one TorBox segment download at a time.
  * Audio generation is serialized; a segment the player hung up on, or left
@@ -38,10 +36,6 @@
 enum { TBA_PASSTHROUGH = 0, TBA_TORBOX = 1, TBA_MODOS };
 
 int  tba_disponivel(void);
-/* 1 = this build can also serve FLAC untouched (the mp4 muxer for the fMP4
- * audio rendition). Without it FLAC is converted; video.c asks before opening
- * a session as is and falls back to the conversion when the TV refuses it. */
-int  tba_flac_direto(void);
 /* New session (replaces any previous one). tb_m3u8: TorBox's playlist URL (a
  * secret). orig/cab: the original file and the add-on's raw header lines.
  * audio_ordinal: the file's audio track (0-based among audio tracks, container
@@ -50,7 +44,7 @@ int  tba_flac_direto(void);
  * (.tpk). Writes the URL the TV player opens. 0 = cannot (no FFmpeg, no
  * server); the caller then plays TorBox's URL as before. */
 int  tba_abrir(const char *tb_m3u8, const char *orig, const char *cab, int audio_ordinal,
-               int modo, int flac_converter, int so_uma, char *out, size_t n);
+               int modo, int so_uma, char *out, size_t n);
 void tba_fechar(void);
 int  tba_ativo(void);
 int  tba_modo(void);
@@ -67,15 +61,6 @@ int  tba_rendicao_de(int audio_ordinal);
 /* The track the next playlist/segments use (the DEFAULT=YES rendition). */
 void tba_definir_audio(int audio_ordinal);
 int  tba_audio(void);
-/* FLAC conversion (session-wide): 1 = convert to AC3/AAC, 0 = copy (fMP4).
- * The .tpk uses the device setting; webOS sets 1 when its TV refused the fMP4
- * rendition (video.c) and keeps it for the run. No menu row. */
-void tba_definir_flac(int converter);
-int  tba_flac_converter(void);
-/* 1 = the file has a FLAC audio track. */
-int  tba_tem_flac(void);
-/* 1 = the track the session plays is FLAC. */
-int  tba_audio_e_flac(void);
 /* A summary line for the 10 s log (counts, timings). */
 void tba_log(void);
 
@@ -85,6 +70,10 @@ void tba_log(void);
  * process's own (by inode in /proc/self/fd). -1 = unreadable / not resolved. */
 void tba_sockets_vigiar(const char *u1, const char *u2, const char *u3, const char *u4);
 int  tba_sockets_contar(int *nuvio);
+/* The same, with this process's sockets split by watched URL (por[0..3], the
+ * order given to tba_sockets_vigiar; an address shared by two hosts counts for
+ * the first). */
+int  tba_sockets_contar_por(int *nuvio, int por[4]);
 
 /* ---- pure (tests/tbaudio.sh) ---------------------------------------------- */
 /* `rel` against `base` (http(s) URL): absolute, root-relative, relative. */

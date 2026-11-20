@@ -35,6 +35,10 @@ ffmpeg -v error -f lavfi -i testsrc2=s=320x180:r=24 -f lavfi -i "sine=f=440:r=48
   -c:a:0 aac -ac:a:0 2 -c:a:1 ac3 -c:a:2 flac -c:a:3 libopus -ac:a:3 2 -c:a:4 dca -strict -2 -b:a:4 768k \
   -metadata:s:a:0 language=eng -metadata:s:a:1 language=jpn -metadata:s:a:2 language=eng -metadata:s:a:3 language=fre \
   "$work/src/orig.mkv"
+# mkvmerge-style Opus (TV, 16/11): Xiph-laced blocks of 7 frames, no DefaultDuration.
+# Without an Opus parser (the TV's FFmpeg) only each block's first frame has a timestamp.
+ffmpeg -v error -i "$work/src/orig.mkv" -map 0:v -map 0:a:3 -c copy -write_crc32 0 "$work/src/opus_plain.mkv"
+python3 tests/mkv_lacear.py "$work/src/opus_plain.mkv" "$work/src/opus_laced.mkv" A_OPUS 7
 for t in ts fmp4; do
   d=tb; [ $t = fmp4 ] && d=tb4
   ffmpeg -v error -i "$work/src/orig.mkv" -map 0:v -map 0:a:0 -c:v libx264 -preset ultrafast \
@@ -49,7 +53,7 @@ python3 tests/tbaudio_origem.py "$work/src" "$work/port" "$work/origem.log" & pi
 for _ in $(seq 50); do [ -s "$work/port" ] && break; sleep 0.1; done
 port=$(cat "$work/port")
 ${CC:-gcc} -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-misleading-indentation -Wno-format-truncation \
-  -DNV_TBAUDIO_TEST -DNV_DTS_FFMPEG -Isrc tests/tbaudio.c src/dts/tbaudio_tpk.c src/dts/dts_engine.c src/rede.c src/redeurl.c \
+  -DNV_TBAUDIO_TEST -DNV_DTS_FFMPEG -Isrc tests/tbaudio.c src/dts/tbaudio_tpk.c src/tbrelogio.c src/dts/dts_engine.c src/rede.c src/redeurl.c \
   $(pkg-config --cflags --libs libavformat libavcodec libswresample libavutil) -lz -lm -lpthread -ldl -o "$work/t"
 fail=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -60,9 +64,9 @@ codec() { ffprobe -v error -select_streams a -show_entries stream=codec_name,cha
 "$work/t" puros "$work/src/tb/s0.ts" "$work/src/tb4/init.mp4" "$work/src/tb4/s0.m4s" "$work/out/strip.ts" || fail=1
 check "TS strip: ffprobe sees the video only" "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/strip.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ]"
 
-sessao() {   # <playlist path> <modo> <ordinal> <flac> [so_uma]
+sessao() {   # <playlist path> <modo> <ordinal> [original file, default orig.mkv] [so_uma]
   rm -f "$work/url"
-  "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/orig.mkv" "$2" "$3" "$4" "$work/url" "${5:-0}" > "$work/s.log" 2>&1 &
+  "$work/t" sessao "http://127.0.0.1:$port/$1?token=secret" "http://127.0.0.1:$port/${4:-orig.mkv}" "$2" "$3" "$work/url" "${5:-0}" > "$work/s.log" 2>&1 &
   sp=$!; pids+=($sp)
   for _ in $(seq 50); do [ -s "$work/url" ] && break; sleep 0.1; done
   U=$(cat "$work/url"); B=${U%/*}
@@ -72,10 +76,10 @@ fim() { kill "$sp" 2>/dev/null || true; wait "$sp" 2>/dev/null || true; }
 # Modes: 0 Passthrough (TorBox's video without its audio + the original audio),
 # 1 TorBox audio (no session: tba_abrir refuses).
 # 0. TorBox audio: no session.
-"$work/t" sessao "http://127.0.0.1:$port/tb/playlist.m3u8?token=secret" "http://127.0.0.1:$port/orig.mkv" 1 0 0 "$work/url1" 0 > "$work/s1.log" 2>&1 || true
+"$work/t" sessao "http://127.0.0.1:$port/tb/playlist.m3u8?token=secret" "http://127.0.0.1:$port/orig.mkv" 1 0 "$work/url1" 0 > "$work/s1.log" 2>&1 || true
 check "TorBox audio: no Nuvio stream" "[ ! -s '$work/url1' ]"
 # 1. Passthrough over MPEG-TS: every codec, on TorBox's timeline, 2 s segments.
-sessao tb/playlist.m3u8 0 0 0
+sessao tb/playlist.m3u8 0 0
 curl -s "$U" > "$work/out/master.m3u8"
 # The very first request: segment 0, right after the index read moved the reader to mid-file.
 curl -s -o "$work/out/a0_0.ts" "$B/a0_0.ts"
@@ -91,13 +95,17 @@ check "master: points at Nuvio's video playlist, no CODECS" "grep -q '^vs.m3u8' 
 curl -s "$B/a0.m3u8" > "$work/out/a0.m3u8"
 check "audio playlist: 2 s segments (16 for 32 s)" "grep -q '^#EXT-X-TARGETDURATION:2' '$work/out/a0.m3u8' && [ \$(grep -c '^a0_' '$work/out/a0.m3u8') = 16 ]"
 check "seek index read at preparation, seeks through the video (stream 0)" "grep -qE 'seek index read in [0-9]+ ms: seeks go through stream 0 \\([1-9][0-9]* entries\\)' '$work/s.log'"
-for k in 0 1 3 4; do curl -s -o "$work/out/a${k}_2.ts" "$B/a${k}_5.ts"; done
+for k in 0 1 4; do curl -s -o "$work/out/a${k}_2.ts" "$B/a${k}_5.ts"; done
+curl -s -o "$work/out/a3i.mp4" "$B/a3_init.mp4"; curl -s -o "$work/out/a3_2.m4s" "$B/a3_5.m4s"
+cat "$work/out/a3i.mp4" "$work/out/a3_2.m4s" > "$work/out/opus.mp4"
 curl -s -o "$work/out/a2i.mp4" "$B/a2_init.mp4"; curl -s -o "$work/out/a2_2.m4s" "$B/a2_5.m4s"
 cat "$work/out/a2i.mp4" "$work/out/a2_2.m4s" > "$work/out/flac.mp4"
 v2=$(inicio "$work/src/tb/s2.ts" v)
 check "AAC copied, starts with TorBox's video segment ($(inicio "$work/out/a0_2.ts" a) vs $v2)" "[ '$(codec "$work/out/a0_2.ts")' = 'aac,2' ] && perto $(inicio "$work/out/a0_2.ts" a) $v2 0.05"
 check "AC3 5.1 copied ($(codec "$work/out/a1_2.ts"))" "[ '$(codec "$work/out/a1_2.ts")' = 'ac3,6' ] && perto $(inicio "$work/out/a1_2.ts" a) $v2 0.05"
-check "Opus copied ($(codec "$work/out/a3_2.ts"))" "[ '$(codec "$work/out/a3_2.ts")' = 'opus,2' ] && perto $(inicio "$work/out/a3_2.ts" a) $v2 0.05"
+check "Opus as is in fMP4 (init + segment: $(codec "$work/out/opus.mp4"))" "[ '$(codec "$work/out/opus.mp4")' = 'opus,2' ] && perto $(inicio "$work/out/opus.mp4" a) $v2 0.1"
+check "Opus rendition is fMP4 in its playlist" "curl -s '$B/a3.m3u8' | grep -q '^#EXT-X-MAP:URI=\"a3_init.mp4\"' && curl -s '$B/a3.m3u8' | grep -q '^a3_0.m4s'"
+check "Opus packet diagnostic logged" "grep -q 'Opus audio 3 seg 5: [0-9]* packets, durations 20.0-20.0 ms' '$work/s.log'"
 check "DTS converted to AC3 5.1 ($(codec "$work/out/a4_2.ts"))" "[ '$(codec "$work/out/a4_2.ts")' = 'ac3,6' ] && perto $(inicio "$work/out/a4_2.ts" a) $v2 0.05"
 check "FLAC as is in fMP4 (init + segment: $(codec "$work/out/flac.mp4"))" "[ '$(codec "$work/out/flac.mp4")' = 'flac,2' ] && perto $(inicio "$work/out/flac.mp4" a) $v2 0.1"
 curl -s -o "$work/out/back.ts" "$B/a0_1.ts"
@@ -116,7 +124,7 @@ fim
 # 1a. The webOS layout (so_uma): ONE rendition, the chosen track. The LG uMS
 #     demuxes HLS with GStreamer, merges renditions that share a LANGUAGE and
 #     loads only the DEFAULT; a track change reopens the stream instead.
-sessao tb/playlist.m3u8 0 1 0 1
+sessao tb/playlist.m3u8 0 1 orig.mkv 1
 curl -s "$U" > "$work/out/master1.m3u8"
 check "webOS: a single rendition, the chosen track, DEFAULT" \
   "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master1.m3u8') = 1 ] && grep -q 'DEFAULT=YES.*URI=\"a1.m3u8\"' '$work/out/master1.m3u8'"
@@ -125,10 +133,9 @@ check "webOS: the one rendition's segments are that track ($(codec "$work/out/a1
   "[ '$(codec "$work/out/a1u_0.ts")' = 'ac3,6' ]"
 fim
 
-# 1a2. What webOS asks for (video.c): ONE rendition and FLAC AS IS (an fMP4
-#      audio rendition, like the .tpk) -- the first attempt. A player must be
-#      able to read it; the app converts only if this TV refuses it.
-sessao tb/playlist.m3u8 0 2 0 1
+# 1a2. ONE rendition with FLAC as is (an fMP4 audio rendition, like the .tpk).
+#      A player must be able to read it.
+sessao tb/playlist.m3u8 0 2 orig.mkv 1
 curl -s "$U" > "$work/out/master2.m3u8"
 check "webOS: FLAC as is, one rendition (a2), DEFAULT" \
   "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master2.m3u8') = 1 ] && grep -q 'DEFAULT=YES.*URI=\"a2.m3u8\"' '$work/out/master2.m3u8'"
@@ -143,24 +150,9 @@ aflac=$(timeout 60 ffprobe -v error -select_streams a:0 -show_entries stream=cod
 check "webOS: a player reads the as-is master ($aflac)" "[ '$aflac' = 'flac' ]"
 fim
 
-# 1a3. The fallback (video.c, tba_definir_flac(1) + reopen): the same session
-#      with FLAC converted, still one rendition -- MPEG-TS now, so a player
-#      reads video + AAC together.
-sessao tb/playlist.m3u8 0 2 1 1
-curl -s "$U" > "$work/out/master3.m3u8"
-check "webOS: FLAC converted, one rendition (a2), DEFAULT" \
-  "[ \$(grep -c '^#EXT-X-MEDIA:TYPE=AUDIO' '$work/out/master3.m3u8') = 1 ] && grep -q 'DEFAULT=YES.*URI=\"a2.m3u8\"' '$work/out/master3.m3u8'"
-curl -s "$B/a2.m3u8" > "$work/out/a2u2.m3u8"
-check "webOS: the converted rendition is MPEG-TS (no EXT-X-MAP)" \
-  "! grep -q EXT-X-MAP '$work/out/a2u2.m3u8' && grep -q '^a2_0.ts' '$work/out/a2u2.m3u8'"
-timeout 120 ffmpeg -v error -i "$U" -map 0:v:0 -map 0:a:0 -t 8 -c copy "$work/out/webos.ts" || true
-check "webOS: a player reads the converted master (video + AAC from FLAC: $(codec "$work/out/webos.ts"))" \
-  "[ '$(codec "$work/out/webos.ts")' = 'aac,2' ] && perto $(inicio "$work/out/webos.ts" v 2>/dev/null || echo 9) $(inicio "$work/out/webos.ts" a 2>/dev/null || echo 0) 0.05"
-fim
-
 
 # 1b. The same session, the video side: TorBox's segments without their audio.
-sessao tb/playlist.m3u8 0 0 0
+sessao tb/playlist.m3u8 0 0
 curl -s "$B/vs.m3u8" | grep -q '^v_0.ts' && curl -s -o "$work/out/v2.ts" "$B/v_2.ts"
 check "strip: video segment without audio, same start as TorBox's" \
   "[ \"\$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 '$work/out/v2.ts' | grep -v '^\$' | sort -u | tr '\n' ' ')\" = 'video ' ] && perto $(inicio "$work/out/v2.ts" v 2>/dev/null || echo 0) $(inicio "$work/src/tb/s2.ts" v) 0.001"
@@ -169,15 +161,20 @@ check "strip: a player reads it, video + Nuvio's audio together" \
   "[ -s '$work/out/plays.ts' ] && perto $(inicio "$work/out/plays.ts" v 2>/dev/null || echo 9) $(inicio "$work/out/plays.ts" a 2>/dev/null || echo 0) 0.05"
 fim
 
-# 2. FLAC converted (no menu row; the code stays), Passthrough.
-sessao tb/playlist.m3u8 0 2 1
-curl -s -o "$work/out/f.ts" "$B/a2_3.ts"
-check "FLAC converted: AAC 2.0 in MPEG-TS ($(codec "$work/out/f.ts"))" "[ '$(codec "$work/out/f.ts")' = 'aac,2' ]"
+# 3b. Laced Opus without timestamps on every frame: all frames reach the segment.
+sessao tb/playlist.m3u8 0 0 opus_laced.mkv
+curl -s -o "$work/out/li.mp4" "$B/a0_init.mp4"; curl -s -o "$work/out/l5.m4s" "$B/a0_5.m4s"
+cat "$work/out/li.mp4" "$work/out/l5.m4s" > "$work/out/laced.mp4"
+lp=$(ffprobe -v error -select_streams a -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$work/out/laced.mp4" 2>/dev/null || echo 0)
+ld=$(ffprobe -v error -select_streams a -show_entries packet=pts_time -of csv=p=0 "$work/out/laced.mp4" 2>/dev/null | awk 'NR==1{a=$1} {z=$1} END{printf "%.3f", z-a+0.02}')
+check "laced Opus: 100 packets in a 2 s segment ($lp), 2.0 s of audio ($ld)" "[ '$lp' -ge 99 ] && [ '$lp' -le 101 ] && perto '$ld' 2.0 0.03"
+check "laced Opus: the segment starts with TorBox's video ($(inicio "$work/out/laced.mp4" a))" "perto $(inicio "$work/out/laced.mp4" a) $v2 0.1"
+check "laced Opus: every packet 20 ms in the log" "grep -q 'Opus audio 0 seg 5: 100 packets, durations 20.0-20.0 ms, ' '$work/s.log'"
 fim
 
 
 # 4. fMP4 TorBox behind a master playlist.
-sessao tb4/master.m3u8 0 1 0
+sessao tb4/master.m3u8 0 1
 curl -s -o "$work/out/m1.ts" "$B/a1_2.ts"
 check "fMP4 source: first PTS from tfdt, audio placed" "grep -q \"TorBox's first video PTS: 0.000 s\" '$work/s.log' && [ '$(codec "$work/out/m1.ts")' = 'ac3,6' ]"
 fim

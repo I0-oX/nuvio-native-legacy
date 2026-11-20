@@ -1,3 +1,6 @@
+#if defined(NV_TPK) && defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE   // pthread_getattr_np (the worker's stack in the crash log)
+#endif
 #include "assrender.h"
 #include "legfontes.h"
 
@@ -115,13 +118,28 @@ char *assrender_marcar_tailandes(const char *txt) {
 #ifdef NV_ASS_LIBASS
 #include <SDL2/SDL.h>
 #include <ass/ass.h>
+#include "asssinais.h"
+/* Custom auto (split passes) and the signs & songs flag: the patched libass
+ * of the .tpk and webOS only (tools/tpk/libass-nv, 0004). Elsewhere one pass,
+ * as before. */
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_SPLIT)
+#define ASS_DIVIDIR 1
+#else
+#define ASS_DIVIDIR 0
+#endif
 #include "gfx.h"
 #include "bidi.h"
 #include "assperf.h"
 #include "assfios.h"
+#ifdef NV_TPK
+#include "video.h"    // video_tpk_leituras ("[ass] 10s tv")
+#include "memlog.h"
+#include "mkvfix.h"   // mkvfix_medidas ("[mkvfix] 10s")
+#endif
 #if !defined(__EMSCRIPTEN__)
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <signal.h>
 #endif
 
 #define ASS_TEX_INICIAL 64
@@ -137,6 +155,7 @@ typedef struct {
   unsigned color;
   unsigned char *bitmap;
   unsigned long long chave;   // assperf: conteudo (bitmap + w + h); 0 = nao calculada
+  float esc;                  // Custom auto's soft pass: its own pixels per layout unit; 0 = the frame's
 } AssCpuImage;
 
 typedef struct {
@@ -213,13 +232,20 @@ static long long assAgoraUiMs = LLONG_MIN;     // o quadro em tela agora (desenh
 static unsigned assAgoraUiGeracao;
 static int assPedidoForcado;                   // documento/tela mudou: nada de pular pela validade
 static double assRenderPico;                   // ms: pico recente do render (cai 5 % por render), __atomic
+static int assAdianteMax;                      // ms: largest render-ahead asked in the 10 s window ("[ass] 10s tv"), __atomic
 static int assEventos, assFontes, assResolucaoFonte;
 static long long assCoberturaIni, assCoberturaFim;
 static ASS_Library *assLib;
 static ASS_Renderer *assRenderer;
-#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
-static double assBlurAplicado = 1.0;   // worker: last ass_nv_set_blur_scale() (1.0 = libass default)
-#endif
+/* CUSTOM AUTO (owner 19/11/2026): the soft pass (blurred borders, glows,
+ * drawings) at the blur resolution, on the same track; created at the first
+ * busy frame that needs it, never on the other modes. assRenderer then draws
+ * the sharp pass at the text resolution. Under assTrava. */
+static ASS_Renderer *assRendererB;
+static int layBW, layBH;
+/* Split stats for the "[ass] 10s tv" line (worker only): frames split, the
+ * two passes' time, images each pass gave. */
+static struct { long quadros; double msA, msB, maxA, maxB; long imgsA, imgsB; } assDiv;
 static ASS_Track *assTrack;
 static unsigned assTrackGeracao;
 static AssTex *assTex;
@@ -274,11 +300,20 @@ static void ass_diag(const char *s) {
   pthread_mutex_unlock(&assDiagTrava);
 }
 
+/* LATE ATTACHED FONTS (owner 18/11, log 10). libass keeps the face it picked
+ * for a (family, bold, italic) in its font cache: a family looked up before the
+ * MKV's fonts arrived stays on the fallback (Arial) even after they are added.
+ * Fallbacks since the last ass_set_fonts + an attached font added since then
+ * -> the next load rebuilds the selector (ass_aplicar_fontes_locked), once. */
+static int assFallbacks;      // "Using default font family" since the last ass_set_fonts (atomic)
+static int assFonteNovaTarde; // an attached font was added since the last ass_set_fonts (assTrava)
+
 static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) {
   char linha[768];
   (void)dados;
   vsnprintf(linha, sizeof linha, fmt, args);
   if (strstr(linha, "fontselect:")) assResolucaoFonte++;
+  if (strstr(linha, "Using default font family")) __atomic_add_fetch(&assFallbacks, 1, __ATOMIC_RELAXED);
   /* So ate MSGL_INFO (4), o mesmo corte do callback padrao do libass (que
    * para em 5). Os niveis 6-7 sao depuracao por quadro e por glifo. */
   if (nivel > 4) return;
@@ -454,23 +489,15 @@ static void ass_carregar_pasta_locked(void) {
           assPastaFontes, lidas, ignorados);
 }
 
-#ifdef NV_WEBOS
-/* Attached fonts added since the last ass_set_fonts. libass keeps the face it
- * resolved for each family name in its font cache and ass_add_font alone never
- * replaces it: if a sign family was first used before the attachments arrived
- * (mkvass defers the Attachments Range until the subtitle window is collected),
- * the fallback face sticks for the whole session. ass_set_fonts is the only
- * call that empties that cache, so it runs once before the next full document
- * load. Cleared by every ass_set_fonts. webOS only: the .tpk is unchanged. */
-static int assFontesNovas;
-#endif
 static void ass_aplicar_fontes_locked(void) {
   if (!assRenderer) return;
   ass_set_fonts(assRenderer, assFallbackFont[0] ? assFallbackFont : NULL, "Arial",
                 ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-#ifdef NV_WEBOS
-  assFontesNovas = 0;
-#endif
+  if (assRendererB)
+    ass_set_fonts(assRendererB, assFallbackFont[0] ? assFallbackFont : NULL, "Arial",
+                  ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+  __atomic_store_n(&assFallbacks, 0, __ATOMIC_RELAXED);
+  assFonteNovaTarde = 0;
 }
 
 // Explicit selection changes only. Routine packet delivery keeps the original
@@ -516,9 +543,6 @@ static void ass_iniciar_locked(int sistema) {
     ass_library_done(assLib); assLib = NULL;
     ass_diag("libass: falha ao iniciar renderer"); return;
   }
-#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
-  assBlurAplicado = 1.0;   // a new renderer starts with the author's blur
-#endif
   ass_set_shaper(assRenderer, ASS_SHAPING_COMPLEX);
   /* Fontes anexadas continuam tendo prioridade. A pasta da plataforma ajuda
    * o libass a resolver familias instaladas; Inter, distribuida com o app,
@@ -685,12 +709,20 @@ static unsigned long long ass_chave_bitmap(const unsigned char *b, int w, int h,
 }
 
 
-static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out, int hashear) {
-  ASS_Image *p;
+/* Custom auto (owner 19/11/2026): the sharp pass `a` and the soft pass `b`
+ * merged in libass's stacking order (ass_nv_image_key, libass-nv 0004: both
+ * lists are already in key order; ties keep `a` first). b's images carry
+ * their own scale (escB pixels per layout unit). b NULL = one pass. */
+static int ass_frame_copiar2(ASS_Image *a, ASS_Image *b, float escB, AssCpuFrame *out, int hashear) {
+  ASS_Image *p, *q;
   int n = 0, i = 0;
   size_t total = 0;
   memset(out, 0, sizeof *out);
-  for (p = im; p; p = p->next) {
+  for (p = a; p; p = p->next) {
+    if (p->bitmap && p->w > 0 && p->h > 0 && p->stride >= p->w) n++;
+    if (n > 4096) return 0;
+  }
+  for (p = b; p; p = p->next) {
     if (p->bitmap && p->w > 0 && p->h > 0 && p->stride >= p->w) n++;
     if (n > 4096) return 0;
   }
@@ -699,12 +731,22 @@ static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out, int hashear) {
     if (!out->images) return 0;
     out->count = n;
   }
-  for (p = im; p; p = p->next) {
+  p = a; q = b;
+  while (p || q) {
     AssCpuImage *dst;
+    ASS_Image *im;
     size_t bytes;
-    int y;
-    if (!p->bitmap || p->w <= 0 || p->h <= 0 || p->stride < p->w) continue;
-    bytes = (size_t)p->w * (size_t)p->h;
+    int y, doB;
+#if ASS_DIVIDIR
+    doB = q && (!p || ass_nv_image_key(q) < ass_nv_image_key(p));
+#else
+    doB = !p;
+#endif
+    im = doB ? q : p;
+    if (doB) q = q->next; else p = p->next;
+    if (!im->bitmap || im->w <= 0 || im->h <= 0 || im->stride < im->w) continue;
+    if (i >= n) break;
+    bytes = (size_t)im->w * (size_t)im->h;
     /* Mantem o snapshot CPU de cada frame abaixo de 16 MiB. O quadro atual e
      * o pronto podem coexistir por um instante, portanto o teto total e 32 MiB. */
     if (bytes > 16u * 1024u * 1024u - total) {
@@ -713,19 +755,24 @@ static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out, int hashear) {
     dst = &out->images[i];
     dst->bitmap = malloc(bytes);
     if (!dst->bitmap) { ass_frame_liberar(out); return 0; }
-    dst->x = p->dst_x; dst->y = p->dst_y;
-    dst->w = p->w; dst->h = p->h; dst->stride = p->w;
-    dst->type = p->type; dst->color = p->color;
-    for (y = 0; y < p->h; y++)
-      memcpy(dst->bitmap + (size_t)y * (size_t)p->w,
-             p->bitmap + (size_t)y * (size_t)p->stride, (size_t)p->w);
+    dst->x = im->dst_x; dst->y = im->dst_y;
+    dst->w = im->w; dst->h = im->h; dst->stride = im->w;
+    dst->type = im->type; dst->color = im->color;
+    dst->esc = doB ? escB : 0.0f;
+    for (y = 0; y < im->h; y++)
+      memcpy(dst->bitmap + (size_t)y * (size_t)im->w,
+             im->bitmap + (size_t)y * (size_t)im->stride, (size_t)im->w);
     /* Texture cache key (new engine). Alpha 8-bit is tinted at draw time:
      * the same bitmap serves any colour. */
-    dst->chave = hashear ? ass_chave_bitmap(dst->bitmap, p->w, p->h, 0u) : 0;
+    dst->chave = hashear ? ass_chave_bitmap(dst->bitmap, im->w, im->h, 0u) : 0;
     total += bytes; i++;
   }
   out->count = i; out->bytes = total;
   return 1;
+}
+
+static int ass_frame_copiar(ASS_Image *im, AssCpuFrame *out, int hashear) {
+  return ass_frame_copiar2(im, NULL, 0.0f, out, hashear);
 }
 
 static void ass_trilha_tailandes(ASS_Track *t) {
@@ -738,26 +785,27 @@ static void ass_trilha_tailandes(ASS_Track *t) {
   }
 }
 
-/* The user's Border on a libass Style (owner 14/11/2026).
- * Outline (1) is Stremio's look: its Tizen app draws subtitles with CSS
- * `text-shadow: 1px 1px 0.1em rgb(34,34,34)` and no stroke. That is a shadow
- * 1 px (1080p) down-right, blurred by a Gaussian of sigma 0.05 em (a CSS blur
- * radius r is sigma r/2). libass blurs only the BORDER when there is one and
- * makes the shadow from that blurred border, so a hair border (0.1 px) carries
- * the blur and the fill stays sharp; the border itself is invisible
- * (OutlineColour alpha FF, an image libass drops). libass sigma =
- * \blur x 2/sqrt(ln 256). With an opaque fill libass fills the shadow in under
- * the glyph, so the subtitle must fade as one (ass_desenhar_grupo).
- * Shadow (2) and None (0) are as they were. `rgb` = the shadow colour. */
+/* The user's Border on a libass Style (owner 14/11/2026, ring 16/11/2026).
+ * Outline (1) is Stremio's look: add-on subtitles drawn with 8 CSS shadows
+ * in a ring, `±0.15rem ±0.15rem 0.15rem rgb(34,34,34)` (text.c sombraSuave):
+ * 2.25 px out at 1080p, blurred by a Gaussian of sigma 1.125 px (a CSS blur
+ * radius r is sigma r/2), whatever the subtitle size. libass's nearest is an
+ * opaque 2.25 px border in the border colour; libass blurs only the BORDER
+ * when there is one, so the fill stays sharp. libass sigma =
+ * \blur x 2/sqrt(ln 256). The subtitle fades as one (ass_desenhar_grupo).
+ * Shadow (2) and None (0) are as they were. `rgb` = the border colour. */
 static void ass_borda_estilo(ASS_Style *s, const PlainAssStyle *p, int resY, double fontSize, uint32_t rgb) {
   s->Blur = 0.0;
   if (p->border == 1) {
-    double k = resY > 0 ? resY / 1080.0 : 1.0, em = fontSize * (p->emMil > 0 ? p->emMil : 800) / 1000.0;
-    s->Outline = 0.1 * k;
-    s->Shadow = 1.0 * k;
-    s->Blur = 0.05 * em / (2.0 / sqrt(log(256.0)));
-    s->OutlineColour = (rgb << 8) | 0xFFu;
-    if (s->BorderStyle == 1) s->BackColour = rgb << 8;   // opaque; BorderStyle 4 keeps its box
+    /* Stremio's ring (text.c sombraSuave, owner 16/11/2026): 8 shadows
+     * 2.25 px out at 1080p, Gaussian sigma 1.125 px, whatever the size.
+     * libass's nearest is a 2.25 px border blurred by that sigma. */
+    double k = resY > 0 ? resY / 1080.0 : 1.0;
+    (void)fontSize;
+    s->Outline = 2.25 * k;
+    s->Shadow = 0.0;
+    s->Blur = 1.125 * k / (2.0 / sqrt(log(256.0)));
+    s->OutlineColour = rgb << 8;   // opaque border = the ring
     return;
   }
   s->Outline = 0;
@@ -795,8 +843,8 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
       // BackColour carries shadow RGB unless it is a background box.
       if ((p->overrides & PLAIN_ASS_OUTLINE) && s->BorderStyle == 1)
         s->BackColour = ((uint32_t)p->outlineRgb << 8) | (s->BackColour & 255u);
-      /* Last: Outline's shadow takes the border colour (the chosen one, or
-       * the author's OutlineColour) and hides the hair border. */
+      /* Last: Outline's ring takes the border colour (the chosen one, or
+       * the author's OutlineColour). */
       if (p->overrides & PLAIN_ASS_BORDER)
         ass_borda_estilo(s, p, assTrack->PlayResY, s->FontSize, s->OutlineColour >> 8);
       if (p->overrides & PLAIN_ASS_POS) s->MarginV = p->marginV * assTrack->PlayResY / 1080;
@@ -881,13 +929,6 @@ static int ass_escala_dialogo_locked(void) {
   return ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
 }
 
-#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
-/* Fios de blur do libass de tools/tpk/libass-nv: 3 no .tpk (medido na S95C) e
- * no webOS (mesmo valor; sem medida na LG ainda). Os fios dormem fora dos blurs
- * grandes e a saida nao muda com o numero. */
-static int ass_fios_blur(void) { return 3; }
-#endif
-
 /* The libass of tools/tpk/libass-nv (the .tpk and webOS): NEON engine, 3 blur
  * threads (webOS too) and the dialogue opacity. Under assTrava,
  * on the worker, when the options change (assperf_versao). Elsewhere nothing. */
@@ -907,19 +948,80 @@ static void ass_aplicar_assperf_locked(void) {
       feito = 1;
       ass_nv_set_engine(assRenderer, 1);
       assfios_nome_trocar("nv-assblur", nomeAnt);
-      ass_nv_set_threads(ass_fios_blur());
-#ifdef NV_WEBOS
-      printf("[ass] motor NEON: fios de blur %d (nucleos online %ld)\n", ass_fios_blur(), sysconf(_SC_NPROCESSORS_ONLN));
-      fflush(stdout);
+#ifdef NV_TPK40
+      ass_nv_set_threads(2);   /* Tizen 4/5: 2 blur threads, one core left to the TV (owner, 16/11) */
+#else
+      ass_nv_set_threads(ASSPERF_FIOS);
 #endif
       assfios_nome_voltar(nomeAnt);
+      /* WHAT THIS TV IS, once per session (libass on the Tizen 4/5 .tpk, 09/11):
+       * the engine's values are the S95C's on every .tpk, so a 2018-2020 TV's
+       * "[ass] 10s" lines are read against its cores and memory. */
+      printf("[ass] tv: cores=%ld online of %ld | RAM=%ldMB total, %ldMB free | "
+             "bitmap engine=%s, blur threads=%d | render ahead=%dms, lines dropped after=%lds, "
+             "attached fonts up to=%luMB, relay park=%ldMB\n",
+             sysconf(_SC_NPROCESSORS_ONLN), sysconf(_SC_NPROCESSORS_CONF),
+             memlog_total_mb(), memlog_livre_mb(),
+             ass_nv_get_engine(assRenderer) ? "NEON" : "C", ass_nv_get_threads(),
+             (int)ASSPERF_ADIANTE_MS, (long)(ASSPERF_PODA_MS / 1000L),
+             (unsigned long)(ASSPERF_FONTES_TETO >> 20), (long)(ASSPERF_PARQUE >> 20));
+      fflush(stdout);
     } }
   /* Dialogue opacity (Subtitles > Style): only lines without \pos, \move,
    * \clip, \org or a drawing; the signs keep the author's alpha. On webOS
    * nothing sets it: assperf_get gives the default (100 %, 255 = untouched). */
   ass_nv_set_dialogue_alpha(assRenderer, simples ? 255 : (assperf_get(AP_ASSOPAC) * 255 + 50) / 100);
+#if ASS_DIVIDIR
+  if (assRendererB) ass_nv_set_dialogue_alpha(assRendererB, simples ? 255 : (assperf_get(AP_ASSOPAC) * 255 + 50) / 100);
+#endif
 #endif
 }
+
+#if ASS_DIVIDIR
+/* Custom auto: the soft-pass renderer, set up like assRenderer (fonts,
+ * shaper, hinting, engine, dialogue opacity); a smaller bitmap cache, it
+ * holds only blurred parts at the blur resolution. Under assTrava. */
+static void ass_b_criar_locked(void) {
+  if (assRendererB || !assLib) return;
+  assRendererB = ass_renderer_init(assLib);
+  if (!assRendererB) { fprintf(stderr, "[ass] custom auto: second renderer failed, one pass\n"); return; }
+  ass_set_shaper(assRendererB, ASS_SHAPING_COMPLEX);
+  ass_set_fonts(assRendererB, assFallbackFont[0] ? assFallbackFont : NULL, "Arial",
+                ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+  ass_set_cache_limits(assRendererB, 0, 24);
+  ass_set_hinting(assRendererB, ASS_HINTING_LIGHT);
+  ass_set_font_scale(assRendererB, 1.0);
+#ifdef ASS_NV_API
+  ass_nv_set_engine(assRendererB, 1);
+  ass_nv_set_dialogue_alpha(assRendererB, __atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE) ? 255 :
+                            (assperf_get(AP_ASSOPAC) * 255 + 50) / 100);
+#endif
+  ass_nv_set_split(assRendererB, 2, 1);
+  layBW = layBH = 0;
+  printf("[ass] custom auto: second renderer (soft pass) created\n");
+  fflush(stdout);
+}
+
+/* SIGNS & SONGS (asssinais.h): the lines on screen at t that the app knows
+ * are signs or songs get nv_sign = 1 (libass then gives them no dialogue
+ * size, opacity or skipping). A line checked and not found keeps
+ * -(version + 1): looked at again only after more partner lines arrived. */
+static void ass_marcar_sinais_locked(unsigned g, long long t) {
+  int i, todos = asssinais_trilha_sinais(g), par;
+  int marca;
+  if (!assTrack) return;
+  par = !todos && asssinais_ativo(g);
+  if (!todos && !par) return;
+  marca = -(int)(asssinais_versao() & 0x3FFFFFFFu) - 1;
+  for (i = 0; i < assTrack->n_events; i++) {
+    ASS_Event *ev = &assTrack->events[i];
+    if (ev->nv_sign > 0 || ev->Start > t + 1000 || ev->Start + ev->Duration <= t) continue;
+    if (todos) { ev->nv_sign = 1; continue; }
+    if (ev->nv_sign == marca) continue;
+    ev->nv_sign = asssinais_casa(g, ev->Start, asssinais_hash(ev->Text)) ? 1 : marca;
+  }
+}
+#endif
 
 
 /* Evento que muda SOZINHO entre Start e End: \t, \move, \fad/\fade,
@@ -942,13 +1044,60 @@ static void ass_pod_devolver_assTrava(void);
 static double ass_fps(void);
 static long long ass_grade_seguinte(long long t);
 static long long ass_grade_desde(long long ms);
+#if defined(NV_TPK) && defined(__linux__)
+// glibc declares this only under _GNU_SOURCE, and the define at the top of
+// this file comes too late in the .tpk build: its -include src/tpk.h has
+// already pulled in the system headers. Without a declaration the call was
+// an implicit one (a warning on the SDK's compiler, an error on gcc 14).
+extern int pthread_getattr_np(pthread_t fio, pthread_attr_t *attr);
+#endif
 static void *ass_worker_loop(void *unused) {
   (void)unused;
   assfios_nomear("nv-assrender");
+#if defined(NV_TPK) && defined(__linux__)
+  /* Crash capture (owner 14/11: a Persian subtitle kills this thread on its
+   * first frame and the reporter wrote nothing). glibc gives a thread no
+   * alternate signal stack, so a fault on a full stack could not run
+   * queda.c's handler (SA_ONSTACK). This one can. The stack's bounds go to
+   * the log: the crash line's sp says whether the stack ran out. */
+  { static char *alt;
+    pthread_attr_t at;
+    if (!alt) alt = malloc(64 * 1024);
+    if (alt) {
+      stack_t ss;
+      ss.ss_sp = alt; ss.ss_size = 64 * 1024; ss.ss_flags = 0;
+      if (sigaltstack(&ss, NULL) != 0) printf("[ass] worker: sigaltstack failed\n");
+    }
+    if (pthread_getattr_np(pthread_self(), &at) == 0) {
+      void *base = NULL; size_t tam = 0, guarda = 0;
+      pthread_attr_getstack(&at, &base, &tam);
+      pthread_attr_getguardsize(&at, &guarda);
+      printf("[ass] worker stack: %zu KB at %p-%p (guard %zu KB), signal stack 64 KB %s\n",
+             tam / 1024, base, (void *)((char *)base + tam), guarda / 1024, alt ? "on" : "off");
+      pthread_attr_destroy(&at);
+    }
+    fflush(stdout); }
+#endif
+#ifdef NV_TPK40
+  /* TIZEN 4/5 (owner, 16/11/2026, after the UE55RU7170 log of 10/11: frames
+   * of 65-107 ms in a sign-heavy scene): the TV's player comes first. This
+   * worker and the blur helpers it starts (they inherit it) run at nice 10. */
+  if (setpriority(PRIO_PROCESS, 0, 10) == 0)
+    printf("[ass] tizen 4/5: subtitle worker and blur threads at low priority (nice 10)\n");
+  else
+    printf("[ass] tizen 4/5: could not lower the subtitle threads' priority\n");
+  fflush(stdout);
+#endif
   for (;;) {
     AssCpuFrame frame;
     unsigned generation, serial, epoch;
-    double ms, esc, resol;
+    double ms, esc, resol, resolB = 0.0;
+    int dividir = 0, lwB = 0, lhB = 0, pularDialogo = 0;
+    ASS_Image *imagesB = NULL;
+    double msPassA = 0.0, msPassB = 0.0;
+    int divOk = 0;
+    long divImgsA = 0, divImgsB = 0;
+    (void)pularDialogo;
     float ox, oy;
     int lw, lh, vw, vh, plainValid, k;
     PlainAssStyle plain;
@@ -961,10 +1110,6 @@ static void *ass_worker_loop(void *unused) {
     while (!assWorkerParar && !assPedidoPendente)
       pthread_cond_wait(&assFilaCond, &assFilaTrava);
     if (assWorkerParar) { pthread_mutex_unlock(&assFilaTrava); break; }
-    /* Modo rendimento (assperf.c): one ladder step per rendered frame. It runs
-     * here, before the grid below reads ass_fps(), so level 2 applies to this
-     * very frame. Off, it only clears the state. */
-    if (ASS_NOVO) assperf_rendimento_passo();
     generation = assPedidoGeracao; serial = assPedidoSerial; epoch = assEpoch; ms = assPedidoMs;
     /* Quadro a quadro (ver assSeqUltMs): o proximo da grade depois do ultimo
      * feito, nunca um que ja saiu da tela, ate o pedido. */
@@ -994,7 +1139,18 @@ static void *ass_worker_loop(void *unused) {
     ox = layPedX; oy = layPedY; lw = layPedW; lh = layPedH; k = layPedK;
     /* assperf: resolucao do render. O quadro sai `resol` do tamanho do alvo e
      * o desenho amplia (esc = k x resol pixels por unidade). 1 = como antes. */
-    resol = assperf_escala_quadro();   // Auto: 75 % while heavy (assperf.c)
+    /* Auto 50 / Auto 75: the whole frame lower while busy. Custom auto (owner
+     * 19/11/2026): busy frames in two passes, text at AP_TXTRES and the blur
+     * at AP_BLURRES (libass-nv 0004); quiet ones at 100 %, one pass. */
+    dividir = assperf_resolucao_quadro(&resol, &resolB);
+#if !ASS_DIVIDIR
+    dividir = 0; resolB = 0.0;
+#endif
+    if (dividir) {
+      lwB = (int)lround((double)lw * k * resolB); lhB = (int)lround((double)lh * k * resolB);
+      if (lwB < 16) lwB = 16;
+      if (lhB < 16) lhB = 16;
+    }
     lw = (int)lround((double)lw * k * resol); lh = (int)lround((double)lh * k * resol);   /* libass renderiza em pixels do alvo, nao em unidades de layout */
     if (lw < 16) lw = 16;
     if (lh < 16) lh = 16;
@@ -1011,14 +1167,6 @@ static void *ass_worker_loop(void *unused) {
         assTrack && assRenderer) {
       long long t = (long long)llround(ms);
       ass_aplicar_assperf_locked();
-#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(ASS_NV_API)
-      /* Modo rendimento level 3: no blur. libass keys its composite cache on
-       * the effective blur/\be, so no cache has to be emptied; 1.0 is the
-       * default and leaves every pass of a person without the option as it
-       * was. */
-      { double b = assperf_rendimento_blur();
-        if (b != assBlurAplicado) { ass_nv_set_blur_scale(assRenderer, b); assBlurAplicado = b; } }
-#endif
       if (lw != layAplW || lh != layAplH) {
         ass_set_frame_size(assRenderer, lw, lh);
         assFrameW = layAplW = lw; assFrameH = layAplH = lh;
@@ -1040,7 +1188,63 @@ static void *ass_worker_loop(void *unused) {
         ass_set_selective_style_override_enabled(assRenderer, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
       ass_plain_reflow_locked(t);
       ass_pod_devolver_assTrava();   // seek para tras alem da poda: as falas voltam antes do render
-      images = ass_render_frame(assRenderer, assTrack, t, &changed);
+#if ASS_DIVIDIR
+      /* Plain text (SRT drawn by libass) is never split, never has signs. */
+      if (!ass_estilo_autor_locked()) dividir = 0;
+      if (dividir && !assRendererB) ass_b_criar_locked();
+      if (!assRendererB) dividir = 0;
+      /* "Dialogue by libass" Off (owner 19/11/2026): the app draws it. */
+      pularDialogo = ASS_NOVO && ass_estilo_autor_locked() && assperf_get(AP_LIBASS) && !assperf_get(AP_DIALIB);
+      ass_nv_set_split(assRenderer, dividir ? 1 : 0, 0);
+      ass_nv_set_skip_dialogue(assRenderer, pularDialogo);
+      if (dividir) {
+        if (lwB != layBW || lhB != layBH) { ass_set_frame_size(assRendererB, lwB, lhB); layBW = lwB; layBH = lhB; }
+        ass_set_storage_size(assRendererB, vw, vh);
+        ass_set_font_scale(assRendererB, esc);
+        ass_set_selective_style_override_enabled(assRendererB, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
+        ass_nv_set_skip_dialogue(assRendererB, pularDialogo);
+      }
+      if (ass_estilo_autor_locked()) ass_marcar_sinais_locked(generation, t);
+#endif
+#ifdef NV_TPK
+      /* Crash capture (owner 14/11): what libass is asked to draw, once per
+       * track and per style change, flushed BEFORE the render. A crash right
+       * after this line is inside libass on that frame. */
+      { static unsigned gerLog = ~0u; static PlainAssStyle psLog; static int psLogOk;
+        int novo = generation != gerLog || (plainValid && (!psLogOk || memcmp(&plain, &psLog, sizeof plain)));
+        if (novo && assTrack->n_styles > 0) {
+          const ASS_Style *st = &assTrack->styles[assTrack->default_style];
+          gerLog = generation;
+          if (plainValid) { psLog = plain; psLogOk = 1; }
+          printf("[ass] render first frame: t=%lld ms, %s, events %d, frame %dx%d storage %dx%d scale %.3f | "
+                 "style %s %.1f bold %d BorderStyle %d Outline %.2f Shadow %.2f Blur %.3f ScaleX %.0f | engine %d, %d blur thread(s)\n",
+                 t, __atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE) ? "plain RTL text" : "authored ASS", assTrack->n_events,
+                 lw, lh, vw, vh, esc, st->FontName ? st->FontName : "-", st->FontSize, st->Bold, st->BorderStyle,
+                 st->Outline, st->Shadow, st->Blur, st->ScaleX * 100.0,
+#ifdef ASS_NV_API
+                 ass_nv_get_engine(assRenderer), ass_nv_get_threads()
+#else
+                 -1, -1
+#endif
+                 );
+          fflush(stdout);
+        } }
+#endif
+      { struct timespec pa, pb;
+        clock_gettime(CLOCK_MONOTONIC, &pa);
+        images = ass_render_frame(assRenderer, assTrack, t, &changed);
+        clock_gettime(CLOCK_MONOTONIC, &pb);
+        msPassA = ass_ms_entre(&pa, &pb);
+#if ASS_DIVIDIR
+        if (dividir) {
+          int changedB = 0;
+          imagesB = ass_render_frame(assRendererB, assTrack, t, &changedB);
+          clock_gettime(CLOCK_MONOTONIC, &pa);
+          msPassB = ass_ms_entre(&pb, &pa);
+          if (changedB > changed) changed = changedB;
+        }
+#endif
+      }
 #ifdef NV_TPK
       /* Borda das legendas (tpkborda.c): o proximo inicio de fala depois de t,
        * para o premult ligar ~200 ms antes de a linha aparecer. */
@@ -1068,6 +1272,7 @@ static void *ass_worker_loop(void *unused) {
           if (ev->Start >= t + 500) { nIniC++; charsC += n; }
         }
         for (im = images; im; im = im->next) nImg++;
+        for (im = imagesB; im; im = im->next) nImg++;
         assperf_previsao(nIni, chars, nImg, nIniC, charsC); }
       /* assperf: ate quando este quadro continua certo (ver assValidoAte). */
       if (ASS_NOVO) {
@@ -1087,7 +1292,15 @@ static void *ass_worker_loop(void *unused) {
               assProduzidoGeracao == generation && epoch == assEpoch;
       pthread_mutex_unlock(&assFilaTrava);
       if (!igual) {
-        pronto = ass_frame_copiar(images, &frame, ASS_NOVO);
+        pronto = dividir ? ass_frame_copiar2(images, imagesB, (float)((double)k * resolB), &frame, ASS_NOVO)
+                         : ass_frame_copiar(images, &frame, ASS_NOVO);
+        if (dividir && pronto) {
+          const ASS_Image *im;
+          divImgsA = divImgsB = 0;
+          for (im = images; im; im = im->next) divImgsA++;
+          for (im = imagesB; im; im = im->next) divImgsB++;
+          divOk = 1;
+        }
         frame.ms = t; frame.inicioMax = -1;
         frame.ox = ox; frame.oy = oy; frame.k = k;
         frame.esc = (float)((double)k * resol);
@@ -1111,6 +1324,12 @@ static void *ass_worker_loop(void *unused) {
         pico = puro > pico ? puro : pico * 0.95;
         __atomic_store(&assRenderPico, &pico, __ATOMIC_RELAXED); }
       assMed.renders++; assMed.renderSomaUs += us;
+      if (divOk) {   /* Custom auto split frame: under assFilaTrava, like the log that reads it */
+        assDiv.quadros++; assDiv.msA += msPassA; assDiv.msB += msPassB;
+        if (msPassA > assDiv.maxA) assDiv.maxA = msPassA;
+        if (msPassB > assDiv.maxB) assDiv.maxB = msPassB;
+        assDiv.imgsA += divImgsA; assDiv.imgsB += divImgsB;
+      }
       if (us > assMed.renderMaxUs) assMed.renderMaxUs = us;
       if (igual) assMed.iguais++;
       assUltimoRenderUs = us; }
@@ -1234,7 +1453,93 @@ static GLuint ass_textura_locked(int slot, const AssCpuImage *im) {
   return assTex[slot].tex;
 }
 
-#if ASS_NOVO   /* only built where it runs (.tpk, webOS): off it, nothing of this is used */
+/* ===== MATRIZ YCbCr DAS CORES DO ASS (16/11/2026) =============================
+ * Uma cor do script foi escolhida olhando o video decodificado com a matriz do
+ * "YCbCr Matrix:" do script (o VSFilter decodificava tudo em BT.601). A TV
+ * decodifica o video com a matriz DELE (BT.709 num 1080p). Sem conversao, um
+ * letreiro que casava com a parede do video sai com outro tom em cima dela.
+ * Como o mpv (sd_ass.c, mangle_colors) e o JASSUB: a cor do script volta ao
+ * YCbCr com a matriz e a faixa do script e sai em RGB com as do video.
+ *   - script sem cabecalho (YCBCR_DEFAULT): BT.601 TV, a regra do VSFilter;
+ *   - "None" ou desconhecida: nada muda;
+ *   - video RGB, BT.2020 ou HDR: nada muda (a TV mapeia o HDR por conta dela);
+ *   - matriz do video nao declarada: BT.709 de 720 linhas para cima, senao
+ *     BT.601 (a regra do mpv). Faixa nao declarada: TV.
+ * A cor que a pessoa escolheu para o dialogo e o texto simples nao convertem. */
+static int assTrackMatriz = -1;   // ASS_YCbCrMatrix da faixa; -1 = sem faixa / texto simples
+static int assVidMatriz, assVidFaixa, assVidHdr, assVidAlt;
+
+void assrender_definir_cor_video(int matriz, int faixa, int hdr, int altura) {
+  __atomic_store_n(&assVidMatriz, matriz, __ATOMIC_RELAXED);
+  __atomic_store_n(&assVidFaixa, faixa, __ATOMIC_RELAXED);
+  __atomic_store_n(&assVidHdr, hdr, __ATOMIC_RELAXED);
+  __atomic_store_n(&assVidAlt, altura, __ATOMIC_RELAXED);
+}
+
+typedef struct { double kr, kb; int pc; } AssCsp;
+
+static int ass_csp_script(int m, AssCsp *c) {
+  c->pc = 0;
+  switch (m) {
+    case YCBCR_DEFAULT: case YCBCR_BT601_TV: c->kr = 0.299; c->kb = 0.114; return 1;
+    case YCBCR_BT601_PC: c->kr = 0.299; c->kb = 0.114; c->pc = 1; return 1;
+    case YCBCR_BT709_TV: c->kr = 0.2126; c->kb = 0.0722; return 1;
+    case YCBCR_BT709_PC: c->kr = 0.2126; c->kb = 0.0722; c->pc = 1; return 1;
+    case YCBCR_SMPTE240M_TV: c->kr = 0.212; c->kb = 0.087; return 1;
+    case YCBCR_SMPTE240M_PC: c->kr = 0.212; c->kb = 0.087; c->pc = 1; return 1;
+    case YCBCR_FCC_TV: c->kr = 0.30; c->kb = 0.11; return 1;
+    case YCBCR_FCC_PC: c->kr = 0.30; c->kb = 0.11; c->pc = 1; return 1;
+    default: return 0;   // UNKNOWN, NONE
+  }
+}
+
+/* Matriz do video (ISO/IEC 23001-8, a mesma numeracao do MKV). */
+static int ass_csp_video(int m, int faixa, int hdr, int altura, AssCsp *c) {
+  if (hdr) return 0;
+  if (m == 0 || m == 2 || m == 3) m = altura >= 720 || altura <= 0 ? 1 : 6;   // nao declarada
+  c->pc = faixa == 2;
+  switch (m) {
+    case 1: c->kr = 0.2126; c->kb = 0.0722; return 1;
+    case 4: c->kr = 0.30; c->kb = 0.11; return 1;
+    case 5: case 6: c->kr = 0.299; c->kb = 0.114; return 1;
+    case 7: c->kr = 0.212; c->kb = 0.087; return 1;
+    default: return 0;   // BT.2020 e o resto
+  }
+}
+
+/* RGB 0..1 do script -> RGB 0..1 como a TV mostraria o mesmo YCbCr. */
+static void ass_csp_converter(const AssCsp *s, const AssCsp *v, double rgb[3]) {
+  double y = s->kr * rgb[0] + (1.0 - s->kr - s->kb) * rgb[1] + s->kb * rgb[2];
+  double pb = (rgb[2] - y) / (2.0 * (1.0 - s->kb)), pr = (rgb[0] - y) / (2.0 * (1.0 - s->kr));
+  double yd, cb, cr, g;
+  int k;
+  /* Codigos de 8 bits divididos por 255, como no arquivo. */
+  if (s->pc) { yd = y; cb = 128.0 / 255.0 + pb; cr = 128.0 / 255.0 + pr; }
+  else { yd = (16.0 + 219.0 * y) / 255.0; cb = (128.0 + 224.0 * pb) / 255.0; cr = (128.0 + 224.0 * pr) / 255.0; }
+  if (v->pc) { y = yd; pb = cb - 128.0 / 255.0; pr = cr - 128.0 / 255.0; }
+  else { y = (yd * 255.0 - 16.0) / 219.0; pb = (cb * 255.0 - 128.0) / 224.0; pr = (cr * 255.0 - 128.0) / 224.0; }
+  rgb[0] = y + 2.0 * (1.0 - v->kr) * pr;
+  rgb[2] = y + 2.0 * (1.0 - v->kb) * pb;
+  g = (y - v->kr * rgb[0] - v->kb * rgb[2]) / (1.0 - v->kr - v->kb);
+  rgb[1] = g;
+  for (k = 0; k < 3; k++) rgb[k] = rgb[k] < 0.0 ? 0.0 : rgb[k] > 1.0 ? 1.0 : rgb[k];
+}
+
+/* Converte `v` (RGB 0..1 de uma imagem do libass) quando o script e o video
+ * diferem. Fio GL; le so atomicos. */
+static __attribute__((unused)) void ass_cor_matriz(double v[3]) {
+  AssCsp s, d;
+  int tm = __atomic_load_n(&assTrackMatriz, __ATOMIC_ACQUIRE);
+  if (tm < 0 || !ass_csp_script(tm, &s)) return;
+  if (!ass_csp_video(__atomic_load_n(&assVidMatriz, __ATOMIC_RELAXED),
+                     __atomic_load_n(&assVidFaixa, __ATOMIC_RELAXED),
+                     __atomic_load_n(&assVidHdr, __ATOMIC_RELAXED),
+                     __atomic_load_n(&assVidAlt, __ATOMIC_RELAXED), &d)) return;
+  if (s.kr == d.kr && s.kb == d.kb && s.pc == d.pc) return;
+  ass_csp_converter(&s, &d, v);
+}
+
+#if ASS_NOVO   /* only built where it runs (.tpk): off it, nothing of this is used */
 /* ===== O CAMINHO NOVO DO DESENHO (fio GL, ASS_NOVO) =========================
  *
  * O caminho antigo (acima, assAtual + assTex) e o de fora do .tpk e do webOS. Este:
@@ -1361,9 +1666,51 @@ static GLuint ass_tc_obter(const AssCpuImage *im, unsigned long long chave, int 
   return 0;   // tudo em uso agora (raro): a imagem fica de fora deste quadro
 }
 
+/* A cor de uma imagem como sai na tela: cor da legenda (ou a da pessoa no
+ * dialogo), ganho do contraste e curva de gama da TV (AP_CONTRASTE, AP_GAMA),
+ * na mesma ordem da TV. O ganho satura em 1 antes da curva, como o video. */
+static void ass_cor_final(const AssCpuImage *im, int corAtiva, int cr, int cg, int cb,
+                          double gama, double contraste, float *r, float *g, float *b, float *op) {
+  unsigned c = im->color;
+  double v[3];
+  int k;
+  v[0] = (double)((c >> 24) & 255u) / 255.0; v[1] = (double)((c >> 16) & 255u) / 255.0;
+  v[2] = (double)((c >> 8) & 255u) / 255.0; *op = (float)(255u - (c & 255u)) / 255.0f;
+  if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) { v[0] = cr / 255.0; v[1] = cg / 255.0; v[2] = cb / 255.0; }
+  else ass_cor_matriz(v);   // a cor da pessoa nao veio do script: fica como ela escolheu
+  if (gama != 1.0 || contraste != 1.0)
+    for (k = 0; k < 3; k++) {
+      double t = v[k] * contraste;
+      v[k] = pow(t < 0.0 ? 0.0 : t > 1.0 ? 1.0 : t, gama);
+    }
+  *r = (float)v[0]; *g = (float)v[1]; *b = (float)v[2];
+}
+
 /* Sobe (se o quadro e novo) e desenha assMain. Fio GL. */
+/* "[ass] 10s tv" (Tizen 4-6 playback damage, 16/11): what drawing the subtitles
+ * costs the GL thread per frame (uploads of new frames + the draw calls). */
+static long long glDesUs, glDesMaxUs;   // __atomic: the GL thread adds, the 10 s report takes
+static long glDesN, glDesNovos;
+static int ass_main_desenhar_corpo(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
+                                   int quadroNovo);
 static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
                              int quadroNovo) {
+  struct timespec t0, t1;
+  long long us, mx;
+  int r;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  r = ass_main_desenhar_corpo(x, y, alpha, corAtiva, cr, cg, cb, quadroNovo);
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  us = (long long)(t1.tv_sec - t0.tv_sec) * 1000000LL + (t1.tv_nsec - t0.tv_nsec) / 1000;
+  __atomic_add_fetch(&glDesUs, us, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&glDesN, 1, __ATOMIC_RELAXED);
+  if (quadroNovo) __atomic_add_fetch(&glDesNovos, 1, __ATOMIC_RELAXED);
+  mx = __atomic_load_n(&glDesMaxUs, __ATOMIC_RELAXED);
+  while (us > mx && !__atomic_compare_exchange_n(&glDesMaxUs, &mx, us, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+  return r;
+}
+static int ass_main_desenhar_corpo(float x, float y, float alpha, int corAtiva, int cr, int cg, int cb,
+                                   int quadroNovo) {
   int i;
   float kk = assMain.k > 1 ? (float)assMain.k : 1.0f, esc = assMain.esc > 0.01f ? assMain.esc : kk;
 #if defined(NV_WEBOS)
@@ -1438,29 +1785,25 @@ static int ass_main_desenhar(float x, float y, float alpha, int corAtiva, int cr
   for (i = 0; i < assMain.count; i++) {
     const AssCpuImage *im = &assMain.images[i];
     GLuint tex = assMainTex[i];
-    unsigned c = im->color;
     float dx, dy, r, g, b, op;
     if (!tex) continue;
     gfx_tex_aspect_atual = 0.0f;
     /* Origem arredondada ao pixel do ALVO (kk); a imagem em pixels do
-     * quadro do libass (esc = kk x resolucao), ampliada quando esc < kk. */
-    dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / esc;
-    dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / esc;
-    r = (float)((c >> 24) & 255u) / 255.0f; g = (float)((c >> 16) & 255u) / 255.0f;
-    b = (float)((c >> 8) & 255u) / 255.0f; op = (float)(255u - (c & 255u)) / 255.0f;
+     * quadro do libass (esc = kk x resolucao), ampliada quando esc < kk.
+     * Custom auto: the soft pass's images have their own scale. */
+    { float e = im->esc > 0.01f ? im->esc : esc;
+      dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / e;
+      dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / e;
+      ass_cor_final(im, corAtiva, cr, cg, cb, gama, contraste, &r, &g, &b, &op);
 #if defined(NV_WEBOS)
-    /* Alfa 0 (evento com \alpha&HFF&, recorte vazio, camada ja opaca): o
-     * fragmento sai com alfa 0 e a mistura devolve o destino intacto, inclusive
-     * no canal alfa (ONE, ONE_MINUS_SRC_ALPHA). Nao desenhar e o MESMO pixel,
-     * sem bind, sem draw e sem preenchimento. */
-    if (op <= 0.0f) continue;
+      /* Alfa 0 (evento com \alpha&HFF&, recorte vazio, camada ja opaca): o
+       * fragmento sai com alfa 0 e a mistura devolve o destino intacto, inclusive
+       * no canal alfa (ONE, ONE_MINUS_SRC_ALPHA). Nao desenhar e o MESMO pixel,
+       * sem bind, sem draw e sem preenchimento. */
+      if (op <= 0.0f) continue;
 #endif
-    if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) { r = cr / 255.0f; g = cg / 255.0f; b = cb / 255.0f; }
-    if (gama != 1.0 || contraste != 1.0) {
-      r = (float)pow(r * contraste, gama); g = (float)pow(g * contraste, gama); b = (float)pow(b * contraste, gama);
-    }
-    gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, tex, GFX_MARCA,
-             0, 0, 0, 0, r, g, b, alpha * op);
+      gfx_rect((GfxRect){ dx, dy, (float)im->w / e, (float)im->h / e }, tex, GFX_MARCA,
+               0, 0, 0, 0, r, g, b, alpha * op); }
 #if defined(NV_WEBOS)
     desenhos++;
 #endif
@@ -1821,13 +2164,6 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   }
   ass_iniciar_locked(!simples);
   if (!assLib || !assRenderer) { pthread_mutex_unlock(&assTrava); return 0; }
-#ifdef NV_WEBOS
-  if (assFontesNovas) {
-    ass_aplicar_fontes_locked();
-    printf("[ass] fontes anexadas novas: seletor de fontes refeito antes de carregar o documento\n");
-    fflush(stdout);
-  }
-#endif
   copia = (char *)malloc(tamanho + 1u);
   if (!copia) { ass_diag("libass: memoria insuficiente para documento"); pthread_mutex_unlock(&assTrava); return 0; }
   memcpy(copia, corpo, tamanho); copia[tamanho] = 0;
@@ -1851,11 +2187,21 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   ass_authored_styles_free();
   if (assTrack) ass_free_track(assTrack);
   assTrack = track;
+  { int fb = __atomic_load_n(&assFallbacks, __ATOMIC_RELAXED);
+    if (assFonteNovaTarde && fb > 0) {
+      struct timespec a, b;
+      clock_gettime(CLOCK_MONOTONIC, &a);
+      ass_aplicar_fontes_locked();
+      clock_gettime(CLOCK_MONOTONIC, &b);
+      fprintf(stderr, "[ass] attached fonts arrived after %d fallback font pick(s): font choice redone in %ld ms\n", fb,
+              (long)((b.tv_sec - a.tv_sec) * 1000L + (b.tv_nsec - a.tv_nsec) / 1000000L));
+    } }
   ass_trilha_tailandes(track);
   plainTimingValid = 0;
   /* Authored ASS retains its own margins after a converted plain track. */
   ass_set_selective_style_override_enabled(assRenderer, 0);
   __atomic_store_n(&assTextoSimples, simples, __ATOMIC_RELEASE);
+  __atomic_store_n(&assTrackMatriz, simples ? -1 : (int)track->YCbCrMatrix, __ATOMIC_RELEASE);
   plainAplValido = 0;
   assEventos = track->n_events;
   assResolucaoFonte = 0;
@@ -2058,6 +2404,7 @@ void assrender_limpar(void) {
   pthread_mutex_lock(&assTrava);
   ass_authored_styles_free();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
+  __atomic_store_n(&assTrackMatriz, -1, __ATOMIC_RELEASE);
   assEventos = 0;
   assCoberturaIni = assCoberturaFim = 0;
   __atomic_store_n(&assTrackGeracao, 0, __ATOMIC_RELEASE);
@@ -2079,6 +2426,7 @@ void assrender_limpar_fontes(void) {
   ass_atuais_limpar_locked();
   ass_authored_styles_free();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
+  __atomic_store_n(&assTrackMatriz, -1, __ATOMIC_RELEASE);
   assEventos = 0; assFontes = 0; assResolucaoFonte = 0;
   assCoberturaIni = assCoberturaFim = 0;
   __atomic_store_n(&assTrackGeracao, 0, __ATOMIC_RELEASE);
@@ -2163,9 +2511,7 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
         }
       }
       ass_add_font(assLib, nome, (const char *)dados, (int)tamanho);
-#ifdef NV_WEBOS
-      assFontesNovas = 1;
-#endif
+      assFonteNovaTarde = 1;
       if (assNFontesVistas < ASS_VISTAS_CAP) {   /* never write past the array */
         AssFonteVista *v = &assFontesVistas[assNFontesVistas++];
         snprintf(v->nome, sizeof v->nome, "%s", nome);
@@ -2237,6 +2583,90 @@ static double ass_mono(void) {
 
 /* Medidas por quadro desenhado, sob assFilaTrava. `agora` e o relogio do
  * video em ms (o mesmo que foi pedido ao libass). */
+#if defined(NV_TPK) && ASS_NOVO && defined(__linux__)
+/* CPU EVERY 10 s (Tizen 4-6 playback damage, 16/11/2026): the whole TV (from
+ * /proc/stat) and this app's threads (/proc/self/task/<tid>/stat), as % of one
+ * core over the window. The TV's own player runs in other processes: what the
+ * TV is busy with beyond this app shows as "TV" minus "app". */
+#define CPU_FIOS 160
+static struct { int tid; unsigned long long t; } cpuAnt[CPU_FIOS];
+static int cpuAntN;
+static unsigned long long cpuTvOcupado, cpuTvTotal;
+static double cpuEm;
+
+static int cpu_ler(const char *arq, char *b, size_t n) {
+  FILE *f = fopen(arq, "r");
+  size_t k;
+  if (!f) return 0;
+  k = fread(b, 1, n - 1, f);
+  fclose(f);
+  b[k] = 0;
+  return (int)k;
+}
+
+static void cpu_10s(double agora) {
+  typedef struct { int tid; unsigned long long t; char nome[20]; double pct; } Fio;
+  static Fio f[CPU_FIOS];
+  int n = 0, i, j;
+  char b[512], linha[700];
+  size_t o = 0;
+  double dt = cpuEm > 0 ? agora - cpuEm : 0.0, tck = (double)sysconf(_SC_CLK_TCK), app = 0, tv = -1;
+  unsigned long long u = 0, ni = 0, sy = 0, id = 0, io = 0, irq = 0, sirq = 0, st = 0;
+  DIR *d;
+  struct dirent *e;
+  if (tck <= 0) tck = 100;
+  if (cpu_ler("/proc/stat", b, sizeof b) &&
+      sscanf(b, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &u, &ni, &sy, &id, &io, &irq, &sirq, &st) >= 4) {
+    unsigned long long ocup = u + ni + sy + irq + sirq + st, tot = ocup + id + io;
+    if (cpuTvTotal && tot > cpuTvTotal)
+      tv = 100.0 * (double)(ocup - cpuTvOcupado) / (double)(tot - cpuTvTotal) * (double)sysconf(_SC_NPROCESSORS_ONLN);
+    cpuTvOcupado = ocup; cpuTvTotal = tot;
+  }
+  d = opendir("/proc/self/task");
+  while (d && (e = readdir(d)) != NULL && n < CPU_FIOS) {
+    char arq[64], *p, *q;
+    unsigned long long ut = 0, stt = 0;
+    int tid = atoi(e->d_name);
+    if (tid <= 0) continue;
+    snprintf(arq, sizeof arq, "/proc/self/task/%d/stat", tid);
+    if (!cpu_ler(arq, b, sizeof b) || !(p = strchr(b, '(')) || !(q = strrchr(b, ')'))) continue;
+    f[n].tid = tid;
+    snprintf(f[n].nome, sizeof f[n].nome, "%.*s", (int)(q - p - 1 < 15 ? q - p - 1 : 15), p + 1);
+    /* after ")": state(3) ppid ... utime is field 14, stime 15 */
+    if (sscanf(q + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &stt) != 2) continue;
+    f[n].t = ut + stt;
+    f[n].pct = -1;
+    for (j = 0; j < cpuAntN; j++)
+      if (cpuAnt[j].tid == tid) {
+        if (dt > 0 && f[n].t >= cpuAnt[j].t) f[n].pct = 100.0 * (double)(f[n].t - cpuAnt[j].t) / tck / dt;
+        break;
+      }
+    if (f[n].pct < 0) f[n].pct = 0;   /* new thread: counted from the next window */
+    app += f[n].pct;
+    n++;
+  }
+  if (d) closedir(d);
+  for (i = 0; i < n; i++) { cpuAnt[i].tid = f[i].tid; cpuAnt[i].t = f[i].t; }
+  cpuAntN = n;
+  cpuEm = agora;
+  if (dt <= 0) return;
+  /* busiest first, same names summed ("nv-assblur" x3) */
+  for (i = 0; i < n; i++)
+    for (j = i + 1; j < n; j++)
+      if (!strcmp(f[i].nome, f[j].nome)) { f[i].pct += f[j].pct; f[j].pct = -1; }
+  for (i = 0; i < 8; i++) {
+    int m = -1;
+    for (j = 0; j < n; j++) if (f[j].pct >= 0.5 && (m < 0 || f[j].pct > f[m].pct)) m = j;
+    if (m < 0) break;
+    o += (size_t)snprintf(linha + o, sizeof linha - o, "%s%s %.0f%%", i ? ", " : "", f[m].nome, f[m].pct);
+    f[m].pct = -1;
+    if (o >= sizeof linha - 40) break;
+  }
+  printf("[ass] 10s cpu: TV busy=%.0f%% of %ld cores | app=%.0f%% (%d threads) | %s\n",
+         tv, sysconf(_SC_NPROCESSORS_ONLN) * 100L, app, n, o ? linha : "-");
+}
+#endif
+
 static void ass_medir_locked(long long agora, int temTexto, long long inicioMax) {
   double m = ass_mono();
   assMed.quadros++;
@@ -2272,6 +2702,64 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
              assMed.renders ? assMed.renderSomaUs / 1000.0 / assMed.renders : 0.0,
              assMed.renderMaxUs / 1000.0, assMed.piscas, assMed.vaziosPisca, assMed.falas,
              assMed.falas ? assMed.atrasoSoma / assMed.falas : 0, assMed.atrasoMax, assEventos);
+#if defined(NV_TPK) && ASS_NOVO
+    /* The TV's side of the same window (libass on the Tizen 4/5 .tpk, 09/11):
+     * how often the position arrives and what a query costs (the 40 ms clock
+     * thread gives ~25/s; without it, 4/s), free memory, and what the engine
+     * holds. The counters are taken every window so the next one starts clean. */
+    { int n, fora, maxMs;
+      long somaMs;
+      double dt = assMed.ultimoRelatorio > 0 ? m - assMed.ultimoRelatorio : 0.0;
+      video_tpk_leituras(&n, &fora, &somaMs, &maxMs);
+      if (dt > 0.0)
+        printf("[ass] 10s tv: position readings=%d (%.1f/s, %d dropped) query avg=%.1fms max=%dms | "
+               "free RAM=%ldMB | queue=%d frames %.1fMB | textures=%d %.1fMB | scale=%d%% busy=%d | "
+               "ahead up to %dms (Tizen 4-6 %s)\n",
+               n, n / dt, fora, n ? (double)somaMs / n : 0.0, maxMs, memlog_livre_mb(),
+               assFilaN, ass_fila_bytes_locked() / 1048576.0, assTcN, assTcBytes / 1048576.0,
+               (int)(assperf_escala() * 100.0 + 0.5), assperf_pesado(),
+               __atomic_exchange_n(&assAdianteMax, 0, __ATOMIC_RELAXED), assperf_tv_lenta() ? "yes" : "no");
+      /* Render resolution (owner 19/11/2026): the mode, the scales in use
+       * now, and in Custom auto what each pass cost on the split frames. */
+      { static const char *const NOMES[] = { "100%", "?", "75%", "Auto 75%", "?", "Auto 50%", "Custom auto" };
+        int v = assperf_get(AP_ESCALA);
+        double bl = assperf_escala_blur();
+        printf("[ass] 10s res: mode=%s | now text %d%% blur %s%d%% | custom rows text %d%% blur %d%% | "
+               "split frames=%ld sharp avg=%.1fms max=%.1fms (%ld imgs) soft avg=%.1fms max=%.1fms (%ld imgs) | "
+               "dialogue by %s\n",
+               v >= 0 && v <= 6 ? NOMES[v] : "?", (int)(assperf_escala() * 100.0 + 0.5),
+               bl > 0.0 ? "" : "=", (int)((bl > 0.0 ? bl : assperf_escala()) * 100.0 + 0.5),
+               assperf_get(AP_TXTRES), assperf_get(AP_BLURRES),
+               assDiv.quadros, assDiv.quadros ? assDiv.msA / assDiv.quadros : 0.0, assDiv.maxA, assDiv.imgsA,
+               assDiv.quadros ? assDiv.msB / assDiv.quadros : 0.0, assDiv.maxB, assDiv.imgsB,
+               assperf_get(AP_DIALIB) ? "libass" : "the app (signs & songs by libass)");
+        memset(&assDiv, 0, sizeof assDiv); }
+      /* Signs & Songs matching (asssinais.h). */
+      { int ln; long cq, cs;
+        asssinais_estatisticas(&ln, &cq, &cs);
+        if (ln || cq)
+          printf("[ass] 10s signs: partner lines read=%d | lookups=%ld matched=%ld\n", ln, cq, cs); }
+      /* Drawing the subtitles on the GL thread, and the local server feeding
+       * the TV (Tizen 4-6 playback damage, 16/11): every window, also paused. */
+      { long long us = __atomic_exchange_n(&glDesUs, 0, __ATOMIC_RELAXED),
+                  mx = __atomic_exchange_n(&glDesMaxUs, 0, __ATOMIC_RELAXED);
+        long gn = __atomic_exchange_n(&glDesN, 0, __ATOMIC_RELAXED), gnov = __atomic_exchange_n(&glDesNovos, 0, __ATOMIC_RELAXED);
+        MkvfixMedidas md;
+        mkvfix_medidas(&md);
+        if (dt > 0.0) {
+          printf("[ass] 10s draw: GL frames with subtitles=%ld (new %ld) avg=%.2fms max=%.1fms\n",
+                 gn, gnov, gn ? us / 1000.0 / gn : 0.0, mx / 1000.0);
+          printf("[mkvfix] 10s: mode=%s | to the TV %.2f MB/s (%.1f Mbit/s), blocked sending %lldms, waiting on the CDN %lldms, "
+                 "connections=%d | Void: %ld block(s) %.1fKB, resync %ld, lost %ld, undecided %ld\n",
+                 mkvfix_modo_ass_atual() == MKVFIX_ASS_ANULAR ? "Void" : "Hidden",
+                 md.bytes / 1048576.0 / dt, md.bytes * 8.0 / 1e6 / dt, md.envioMs, md.cdnMs, md.conexoes,
+                 md.anulados, md.bytesAnulados / 1024.0, md.sincronias, md.perdas, md.indecisos);
+        } }
+#if defined(__linux__)
+      cpu_10s(m);
+#endif
+    }
+#endif
     fflush(stdout);
     assMed.quadros = assMed.trocas = assMed.renders = assMed.iguais = 0;
     assMed.piscas = assMed.vaziosPisca = assMed.falas = 0;
@@ -2300,13 +2788,6 @@ void assrender_definir_fps(double fps) {
 static double ass_fps(void) {
   double v;
   __atomic_load(&assFps, &v, __ATOMIC_RELAXED);
-#if ASS_NOVO
-  /* Modo rendimento level 2: the grid runs on every other video frame
-   * (fps/2), for the snap and for the render ahead. fps/2 lands on odd video
-   * frames, so a cue starts at most one video frame from its time; the video
-   * itself is untouched. Outside the engine (.wgt, Android) this is 0. */
-  if (v > 0 && assperf_rendimento_nivel() >= ASSPERF_REND_GRADE) v *= 0.5;
-#endif
   return v;
 }
 static long long ass_na_grade(long long ms) {
@@ -2354,6 +2835,22 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
      * tique de trabalho 0 — uma cena parada que toca conta como leve; pausado, nao. */
     assperf_carga_gl(0.0);
     adiante = ASSPERF_ADIANTE_MS;
+    /* BUSY SCENE (owner 17/11/2026 on Tizen 4-6; 19/11/2026 every .tpk): a
+     * heavy frame on Tizen 6 takes 118-192 ms (Kaguya inbox), so a frame asked
+     * 100 ms ahead came out late and the signs trailed by up to 0.5 s. Ask far
+     * enough ahead for the recent render peak to finish in time (+ one frame),
+     * 100..600 ms: the busy worker renders only the newest request, so signs
+     * update less often but each one is on time. Hold-until-due keeps it off
+     * the screen early. On a fast TV (peak ~40 ms) this stays at 100 ms. */
+    if (assperf_pesado()) {
+      double pico, fps = ass_fps();
+      __atomic_load(&assRenderPico, &pico, __ATOMIC_RELAXED);
+      adiante = (int)lround(pico * 1.25 + (fps > 0 ? 1000.0 / fps : 42.0));
+      if (adiante < ASSPERF_ADIANTE_MS) adiante = ASSPERF_ADIANTE_MS;
+      if (adiante > 600) adiante = 600;
+    }
+    { int mx = __atomic_load_n(&assAdianteMax, __ATOMIC_RELAXED);
+      if (adiante > mx) __atomic_store_n(&assAdianteMax, adiante, __ATOMIC_RELAXED); }
   }
   /* Hold until due: com render ahead o quadro feito para daqui a 100 ms
    * espera a sua vez na fila. */
@@ -2394,11 +2891,6 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     ass_frame_liberar(&assAtual); assAtualValido = 0;
     ++assEpoch;
     ++assSerial;
-    /* Modo rendimento: a seek starts the ladder at level 0 (the scene before
-     * the jump says nothing about the one after). Only the ladder, and only
-     * while the option is on: the Auto keeps its state, so with the option
-     * off nothing changes. */
-    if (ASS_NOVO && assperf_get(AP_RENDIMENTO)) assperf_rendimento_reset();
     saltou = 1;
   }
   /* Seek para tras alem da poda: as falas de la voltam pelo mkvass. */
@@ -2576,7 +3068,11 @@ int assrender_quadro_cpu(double posSeg) {
   int n = -1, mudou = 0;
   pthread_mutex_lock(&assTrava);
   if (assTrack && assRenderer) {
-    ASS_Image *im = ass_render_frame(assRenderer, assTrack, (long long)llround(posSeg * 1000.0), &mudou);
+    ASS_Image *im;
+#if ASS_DIVIDIR
+    ass_nv_set_split(assRenderer, 0, 0);   /* the whole frame here; the worker sets its own each frame */
+#endif
+    im = ass_render_frame(assRenderer, assTrack, (long long)llround(posSeg * 1000.0), &mudou);
     for (n = 0; im; im = im->next) n++;
   }
   pthread_mutex_unlock(&assTrava);
@@ -2668,6 +3164,7 @@ int assrender_carregar(const char *corpo, size_t tamanho, unsigned geracao) { (v
 int assrender_atualizar(const char *corpo, size_t tamanho, unsigned geracao) { (void)corpo; (void)tamanho; (void)geracao; return 0; }
 void assrender_limpar(void) { assGeracao++; }
 void assrender_definir_fps(double fps) { (void)fps; }
+void assrender_definir_cor_video(int matriz, int faixa, int hdr, int altura) { (void)matriz; (void)faixa; (void)hdr; (void)altura; }
 void assrender_limpar_fontes(void) {}
 void assrender_aliviar(void) {}
 int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanho) {

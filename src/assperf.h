@@ -9,8 +9,8 @@
 // What the person can still change lives in Subtitles > Style on an ASS/SSA
 // track (faixas.c, .tpk and webOS): size and opacity of the dialogue, contrast
 // and gamma to match the TV (Samsung only), render resolution, picture sync
-// (.tpk and webOS; the S95C's values as the starting point on webOS), libass
-// itself (on/off) and the performance mode (experimental, off by default).
+// (.tpk and webOS; the S95C's values as the starting point on webOS) and
+// libass itself (on/off).
 // They are kept in assperf.txt (data), on this TV only.
 //
 // THE .wgt AND ANDROID DO NOT CHANGE. assrender.c is shared: there ASS_NOVO is
@@ -66,15 +66,31 @@
 
 // The person's options (Subtitles > Style on an ASS/SSA track, .tpk and webOS):
 enum {
-  AP_ESCALA,       // render resolution: 0 100%, 2 75%, 5 Auto (100%, 75% while busy)
-  AP_GAMA,         // gamma like the TV's slider: 0 off, 1..5 = -1..-5, 6..10 = +5..+1
-  AP_CONTRASTE,    // contrast like the TV's: 0 = 30 (TV default) .. 30 = 0
+  AP_ESCALA,       // render resolution (AP_RES_*): Auto 50 % (default), Auto 75 %, Custom auto, 100 %, 75 %
+  AP_GAMA,         // gamma like the TV's slider, signed: -20..+20 (0 off; the TV stops at 5)
+  AP_CONTRASTE,    // contrast as the TV's number minus 30: -30..+20 (0 = TV default 30, gain 1.0)
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
-  AP_RENDIMENTO,   // "Modo rendimento (experimental)": 0 off (default), 1 on
+  /* Owner 19/11/2026: test instruments for Custom auto (busy scenes only;
+   * quiet scenes stay at 100 %), 25..100 in steps of 5. */
+  AP_TXTRES,       // text resolution, %: the sharp pass (100)
+  AP_BLURRES,      // blur resolution, %: the soft pass, blurred borders/glows/drawings (50)
+  AP_DIALIB,       // 1 = libass draws the dialogue; 0 = the app draws it, libass the signs & songs (1)
   AP_N
 };
+
+/* AP_ESCALA values (owner 19/11/2026). 5 was "Auto" (100 %, 75 % busy, 50 %
+ * on Tizen 4-6) before: a saved 5 is now Auto 50 %, the new default.
+ *   Auto 50 / Auto 75: 100 % normally, the whole frame at 50 / 75 % while busy.
+ *   Custom auto: 100 % normally; while busy the text at AP_TXTRES and the
+ *   blur at AP_BLURRES (libass split passes, 0004). */
+#define AP_RES_100     0
+#define AP_RES_75      2
+#define AP_RES_AUTO75  3
+#define AP_RES_AUTO50  5
+#define AP_RES_CUSTOM  6
+#define AP_RES_AUTO(v) ((v) == AP_RES_AUTO50 || (v) == AP_RES_AUTO75 || (v) == AP_RES_CUSTOM)
 
 // Current value (cheap): the person's option or its default (assperf.c). On
 // the .wgt and Android: always 0.
@@ -108,14 +124,19 @@ static inline size_t assperf_fontes_teto_webos(void) {
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead
 #define ASSPERF_PODA_MS     (ASS_NOVO ? 120000L : 0L)   // drop events that ended this long ago
 #define ASSPERF_PARQUE      (ASS_NOVO_TPK ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes
-double assperf_escala(void);                 // render resolution now (Auto: the one in use)
+double assperf_escala(void);                 // render resolution now (Auto: the one in use; Custom: the text's)
+double assperf_escala_blur(void);            // Custom auto, busy: the blur's; 0 = one pass
 // Subtitle colour like the video's (AP_GAMA, AP_CONTRASTE): the TV's picture
 // processing only touches the video plane.
 double assperf_gama(void);                   // exponent: 1.0 = off
-double assperf_contraste(void);              // gain: 1.0 (30) .. 0.70 (0)
+double assperf_contraste(void);              // gain: 0.70 (0) .. 1.0 (30) .. 1.20 (50)
 
 // Render resolution Auto and the busy-scene flag (picture sync in legimagem.c).
-double assperf_escala_quadro(void);          // worker: the scale for the next render
+// Worker, the next render: *texto = the scale of the (sharp) pass; returns 1
+// with *blur = the soft pass's scale when this frame is split (Custom auto,
+// busy, text and blur different), else 0 and *blur = 0.
+int    assperf_resolucao_quadro(double *texto, double *blur);
+int    assperf_reduzido(void);               // an Auto mode is below 100 % now (telalag.c)
 void   assperf_escala_reset(void);           // track change: back to 100 %
 void   assperf_escala_custo(double libassMs);   // worker: a render that changed the picture
 void   assperf_carga_gl(double ms);          // GL thread: cost of a new frame (0 = playing tick)
@@ -124,27 +145,12 @@ void   assperf_carga_gl(double ms);          // GL thread: cost of a new frame (
 // 0.5 s ahead (render resolution Auto only, so it drops to 75 % just before).
 void   assperf_previsao(int inicios, long chars, int imagens, int iniciosCedo, long charsCedo);
 int    assperf_pesado(void);                 // 1 = busy scene now
-
-/* ---- Performance mode (experimental, "Modo rendimento") -------------------
- * AP_RENDIMENTO, off by default. The busy detector above drives a ladder of
- * one level at a time, on the worker:
- *   0 normal; 1 render resolution 75 % (Auto only, as AP_ESCALA allows);
- *   2 the frame grid on every other video frame; 3 no blur.
- * Up one level after REND_SOBE_S of busy scene, down one after REND_DESCE_S
- * of calm, both restarted on every change; a new track or a seek is back
- * to 0. Off: the level is always 0 and nothing of this changes a pass.
- * Levels 1 and 2 are read by the worker and the GL thread; level 3 is pushed
- * to libass by the worker (ass_nv_set_blur_scale). */
-int    assperf_rendimento_nivel(void);       // current level; 0 when off
-int    assperf_rendimento_passo(void);       // worker: advance the ladder, returns the level
-double assperf_rendimento_blur(void);        // libass blur scale for the level: 1.0 or 0.0
-/* New track or seek: back to level 0, dwells forgotten. assperf_escala_reset
- * calls it (a new track), and the seek path calls it alone so a seek does not
- * touch the Auto -- with the option OFF nothing changes. */
-void   assperf_rendimento_reset(void);
-#define ASSPERF_REND_NIVEIS 4                // 0..3
-#define ASSPERF_REND_BLUR   3                // level that turns the blur off
-#define ASSPERF_REND_GRADE  2                // level of the every-other-frame grid
+// Tizen 4-6 TVs (owner, 17/11/2026). Set by video_tpk.c from the Tizen
+// version; always 1 in the Tizen 4/5 library; 0 elsewhere. Since 19/11/2026
+// only the log reads it: busy scenes render further ahead on every .tpk, and
+// the busy resolution is the person's choice (Auto 50 % is the default).
+void   assperf_tv_lenta_definir(int sim);
+int    assperf_tv_lenta(void);
 
 #ifdef NV_ASSPERF_TESTE
 void assperf_teste_definir(int id, int v);   // tests on the computer
