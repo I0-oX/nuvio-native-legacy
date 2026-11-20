@@ -121,6 +121,7 @@ static inline size_t assperf_fontes_teto_webos(void) {
 #else
 #define ASSPERF_FONTES_TETO ((size_t)16 * 1024u * 1024u)
 #endif
+#define ASSPERF_FIOS        (ASS_NOVO ? 3 : 1)          // NEON blur threads (Tizen 4/5: 2, assrender.c)
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead
 #define ASSPERF_PODA_MS     (ASS_NOVO ? 120000L : 0L)   // drop events that ended this long ago
 #define ASSPERF_PARQUE      (ASS_NOVO_TPK ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes

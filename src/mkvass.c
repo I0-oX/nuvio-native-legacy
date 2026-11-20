@@ -612,6 +612,12 @@ typedef struct {
   // Signs & Songs; the file's Signs & Songs ASS track to match against (0 =
   // none); asssinais told at the first delivery.
   int      trilhaSinais, faixaSinais, sinaisDitos;
+#ifdef NV_WEBOS
+  // webOS has no relay: the partner's blocks found in the windows this
+  // collector reads anyway (sinaisBloco), kept until asssinais_definir.
+  unsigned char *sinaisPend;
+  long     sinaisPendN, sinaisPendCap;
+#endif
   double   fracIni;
   // O servidor recusou o resto de um Range cortado (rede_resto_recusado): esta
   // tentativa para e vira MKVASS_NOGO_RESTO, com recuo longo em faixas.c.
@@ -2519,6 +2525,48 @@ static int tamanhosLace(const unsigned char *p, long n, unsigned flags,
   return 1;
 }
 
+#ifdef NV_WEBOS
+/* SIGNS & SONGS ON webOS (asssinais.h rule 2). The .tpk reads the partner
+ * track from its local relay; webOS has none, so the partner's lines come from
+ * the bytes this collector downloads anyway: a group Range covers every block
+ * between its first and last point of the Cluster (+MKVASS_BLOCO), and a line
+ * in both tracks has the same start, so its partner block sits right next to
+ * the dialogue block. No extra request; a partner line outside those windows
+ * is just not known (libass's own rule then, as before). Blocks seen before
+ * the first delivery (asssinais_definir) wait here, up to 1 MB. */
+#define SINAIS_PEND_MAX (1L << 20)
+static void sinaisBloco(Fio *f, unsigned long clTs, const unsigned char *b, long n) {
+  uint64_t ts = clTs;
+  int32_t tam = (int32_t)n;
+  if (f->sinaisDitos) { asssinais_bloco(clTs, b, n); return; }
+  if (n <= 0 || n > 65536 || f->sinaisPendN + n + 12 > SINAIS_PEND_MAX) return;
+  if (f->sinaisPendN + n + 12 > f->sinaisPendCap) {
+    long cap = f->sinaisPendCap ? f->sinaisPendCap * 2 : 65536;
+    unsigned char *nv;
+    while (cap < f->sinaisPendN + n + 12) cap *= 2;
+    if (cap > SINAIS_PEND_MAX) cap = SINAIS_PEND_MAX;
+    nv = realloc(f->sinaisPend, (size_t)cap);
+    if (!nv) return;
+    f->sinaisPend = nv; f->sinaisPendCap = cap;
+  }
+  memcpy(f->sinaisPend + f->sinaisPendN, &ts, 8);
+  memcpy(f->sinaisPend + f->sinaisPendN + 8, &tam, 4);
+  memcpy(f->sinaisPend + f->sinaisPendN + 12, b, (size_t)n);
+  f->sinaisPendN += n + 12;
+}
+static void sinaisDescarregar(Fio *f) {
+  long o = 0;
+  while (o + 12 <= f->sinaisPendN) {
+    uint64_t ts; int32_t tam;
+    memcpy(&ts, f->sinaisPend + o, 8); memcpy(&tam, f->sinaisPend + o + 8, 4);
+    if (tam <= 0 || o + 12 + tam > f->sinaisPendN) break;
+    asssinais_bloco((unsigned long)ts, f->sinaisPend + o + 12, tam);
+    o += 12 + tam;
+  }
+  free(f->sinaisPend); f->sinaisPend = NULL; f->sinaisPendN = f->sinaisPendCap = 0;
+}
+#endif
+
 // Interpreta UM bloco (BlockGroup ou SimpleBlock) em p[0..n). Devolve os bytes
 // que ele ocupa (para andar ate o proximo), 0 quando nao e da faixa ou nao
 // fecha, e -k quando faltam k bytes para o bloco caber na janela.
@@ -2543,7 +2591,12 @@ static long lerBloco(Fio *f, const unsigned char *p, long n, const ClCache *cl,
   if (!bl || blN < 4) return total;
   { int vt = 0; long trk = lerVint(bl, blN, &vt); int rel; unsigned flags;
     double ini, fim;
-    if (trk != f->faixa || vt + 3 > blN) return total;
+    if (trk != f->faixa || vt + 3 > blN) {
+#ifdef NV_WEBOS
+      if (trk > 0 && trk == f->faixaSinais && cl->temTs) sinaisBloco(f, cl->ts, p, total);
+#endif
+      return total;
+    }
     rel = (int)(short)((bl[vt] << 8) | bl[vt + 1]);
     flags = bl[vt + 2];
     // Start = Timestamp do Cluster + relativo do bloco. Sem Timestamp no
@@ -3444,6 +3497,9 @@ static int entregarCorpoSeAtual(Fio *f, const char *corpo) {
     if (ok && !f->sinaisDitos && !f->texto && !f->imagem) {
       f->sinaisDitos = 1;
       asssinais_definir(f->legG, f->trilhaSinais, f->faixaSinais, f->escala);
+#ifdef NV_WEBOS
+      sinaisDescarregar(f);   // the partner blocks read before this delivery
+#endif
     }
   }
   if (travado) pthread_mutex_unlock(&estadoDoFio(f)->trava);
@@ -4372,6 +4428,9 @@ fim:
   pthread_cond_broadcast(&estadoDoFio(f)->sinal);
   pthread_mutex_unlock(&estadoDoFio(f)->trava);
   soltarPendentes(f); free(f->pend); pgs_liberar(f->pgs);
+#ifdef NV_WEBOS
+  free(f->sinaisPend);
+#endif
   free(f->pontos); free(f->corpo); liberarFontes(f); fontefam_liberar(&f->familias); fontefam_liberar(&f->anexadas); soltarEstado(f->dono); free(f);
   return NULL;
 }

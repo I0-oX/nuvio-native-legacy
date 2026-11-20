@@ -1,4 +1,4 @@
-#if defined(NV_TPK) && defined(__linux__) && !defined(_GNU_SOURCE)
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE   // pthread_getattr_np (the worker's stack in the crash log)
 #endif
 #include "assrender.h"
@@ -1044,7 +1044,7 @@ static void ass_pod_devolver_assTrava(void);
 static double ass_fps(void);
 static long long ass_grade_seguinte(long long t);
 static long long ass_grade_desde(long long ms);
-#if defined(NV_TPK) && defined(__linux__)
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(__linux__)
 // glibc declares this only under _GNU_SOURCE, and the define at the top of
 // this file comes too late in the .tpk build: its -include src/tpk.h has
 // already pulled in the system headers. Without a declaration the call was
@@ -1054,12 +1054,13 @@ extern int pthread_getattr_np(pthread_t fio, pthread_attr_t *attr);
 static void *ass_worker_loop(void *unused) {
   (void)unused;
   assfios_nomear("nv-assrender");
-#if defined(NV_TPK) && defined(__linux__)
+#if (defined(NV_TPK) || defined(NV_WEBOS)) && defined(__linux__)
   /* Crash capture (owner 14/11: a Persian subtitle kills this thread on its
    * first frame and the reporter wrote nothing). glibc gives a thread no
    * alternate signal stack, so a fault on a full stack could not run
-   * queda.c's handler (SA_ONSTACK). This one can. The stack's bounds go to
-   * the log: the crash line's sp says whether the stack ran out. */
+   * queda.c's handler (SA_ONSTACK; webOS's queda_armar only gives the main
+   * thread one). This one can. The stack's bounds go to the log: the crash
+   * line's sp says whether the stack ran out. */
   { static char *alt;
     pthread_attr_t at;
     if (!alt) alt = malloc(64 * 1024);
@@ -1206,7 +1207,7 @@ static void *ass_worker_loop(void *unused) {
       }
       if (ass_estilo_autor_locked()) ass_marcar_sinais_locked(generation, t);
 #endif
-#ifdef NV_TPK
+#if defined(NV_TPK) || defined(NV_WEBOS)
       /* Crash capture (owner 14/11): what libass is asked to draw, once per
        * track and per style change, flushed BEFORE the render. A crash right
        * after this line is inside libass on that frame. */
