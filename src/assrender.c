@@ -131,9 +131,9 @@ char *assrender_marcar_tailandes(const char *txt) {
 #include "bidi.h"
 #include "assperf.h"
 #include "assfios.h"
+#include "memlog.h"   // memlog_total_mb / memlog_livre_mb ("[ass] tv", .tpk and webOS)
 #ifdef NV_TPK
 #include "video.h"    // video_tpk_leituras ("[ass] 10s tv")
-#include "memlog.h"
 #include "mkvfix.h"   // mkvfix_medidas ("[mkvfix] 10s")
 #endif
 #if !defined(__EMSCRIPTEN__)
