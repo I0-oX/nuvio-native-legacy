@@ -1006,21 +1006,26 @@ static void ass_b_criar_locked(void) {
 
 /* SIGNS & SONGS (asssinais.h): the lines on screen at t that the app knows
  * are signs or songs get nv_sign = 1 (libass then gives them no dialogue
- * size, opacity or skipping). A line checked and not found keeps
- * -(version + 1): looked at again only after more partner lines arrived. */
+ * size, opacity or skipping). Typesetting without \pos (asssinais_tipografia:
+ * rotated, own font, sign style) too, partner or not: the app's dialogue copy
+ * drops the same lines (legenda.c), so libass has to draw them. A line
+ * checked and not found keeps -(version + 1): looked at again only after more
+ * partner lines arrived. */
 static void ass_marcar_sinais_locked(unsigned g, long long t) {
   int i, todos = asssinais_trilha_sinais(g), par;
   int marca;
   if (!assTrack) return;
   par = !todos && asssinais_ativo(g);
-  if (!todos && !par) return;
   marca = -(int)(asssinais_versao() & 0x3FFFFFFFu) - 1;
   for (i = 0; i < assTrack->n_events; i++) {
     ASS_Event *ev = &assTrack->events[i];
+    const ASS_Style *st;
     if (ev->nv_sign > 0 || ev->Start > t + 1000 || ev->Start + ev->Duration <= t) continue;
     if (todos) { ev->nv_sign = 1; continue; }
     if (ev->nv_sign == marca) continue;
-    ev->nv_sign = asssinais_casa(g, ev->Start, asssinais_hash(ev->Text)) ? 1 : marca;
+    st = ev->Style >= 0 && ev->Style < assTrack->n_styles ? &assTrack->styles[ev->Style] : NULL;
+    if (asssinais_tipografia(ev->Text, st ? st->Name : NULL, st ? st->Angle : 0.0)) { ev->nv_sign = 1; continue; }
+    ev->nv_sign = par && asssinais_casa(g, ev->Start, asssinais_hash(ev->Text)) ? 1 : marca;
   }
 }
 #endif

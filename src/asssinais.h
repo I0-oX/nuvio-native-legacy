@@ -50,6 +50,13 @@ int  asssinais_tags(const char *assText);
 // The track name rule (lowercase or not): Signs/Songs/S&S/Typesetting/Forced
 // and not Full/Dialogue.
 int  asssinais_nome(const char *nome);
+// Typesetting the split must leave to libass even without \pos: rotation
+// (\frx \fry \frz \fr), shear (\fax \fay) or a font change (\fn) in the Text,
+// a style named like a sign (asssinais_nome) or a rotated style (Angle).
+// Both sides use it: the app drops the line from its dialogue copy
+// (legenda.c) and marks the libass event nv_sign (assrender.c), so the line
+// is drawn once, by libass, with its font, angle and place.
+int  asssinais_tipografia(const char *assText, const char *estilo, double anguloEstilo);
 
 // Log: lines read from the partner, lookups, matches (since the last call).
 void asssinais_estatisticas(int *linhas, long *consultas, long *casadas);

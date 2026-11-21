@@ -239,3 +239,24 @@ int asssinais_nome(const char *nome) {
   return strstr(b, "sign") || strstr(b, "song") || strstr(b, "s&s") || strstr(b, "typeset") ||
          strstr(b, "forced") || strstr(b, "letreiro");
 }
+
+int asssinais_tipografia(const char *s, const char *estilo, double angulo) {
+  if (angulo > 0.001 || angulo < -0.001) return 1;
+  if (estilo && asssinais_nome(estilo)) return 1;
+  for (; s && *s; s++) {
+    if (*s != '{') continue;
+    for (s++; *s && *s != '}'; s++) {
+      char a, b;
+      if (*s != '\\') continue;
+      a = s[1]; b = a ? s[2] : 0;
+      if (a == 'f' && b == 'r') {            // \frx \fry \frz, and \fr<angle>
+        char c = s[3];
+        if (c == 'x' || c == 'y' || c == 'z' || c == '-' || c == '.' || (c >= '0' && c <= '9')) return 1;
+      }
+      if (a == 'f' && b == 'a' && (s[3] == 'x' || s[3] == 'y')) return 1;   // \fax \fay
+      if (a == 'f' && b == 'n') return 1;    // \fn<font>
+    }
+    if (!*s) break;
+  }
+  return 0;
+}

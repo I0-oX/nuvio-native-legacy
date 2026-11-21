@@ -220,6 +220,7 @@ int legenda_extrair_srt(const char *corpo,LegendaCue **saida) {
 typedef struct {
   char nome[72];
   int  an, negrito, italico, cor;
+  double angulo;          // Angle (asssinais_tipografia)
 } AssEstilo;
 
 static char *trim(char *s) {
@@ -432,7 +433,7 @@ static int extrairAssModo(const char *corpo,LegendaCue **saida,int *parcial,int 
   int secao=0;            /* 1 info, 2 estilos, 3 eventos */
   int legado=0;           /* [V4 Styles] usa o alinhamento antigo */
   float resX=0, resY=0;
-  int cNome=0,cCor=1,cNeg=2,cIta=3,cAlin=4;   /* colunas de Style: */
+  int cNome=0,cCor=1,cNeg=2,cIta=3,cAlin=4,cAng=-1;   /* colunas de Style: */
   int temFmtEstilo=0;
   int cIni=1,cFim=2,cEstilo=3,cTexto=9;       /* colunas de Dialogue: */
   int dialogoSo=libassDesligado();
@@ -482,6 +483,7 @@ static int extrairAssModo(const char *corpo,LegendaCue **saida,int *parcial,int 
         k=colunaDe(linha,"Bold");          if(k>=0) cNeg=k;
         k=colunaDe(linha,"Italic");        if(k>=0) cIta=k;
         k=colunaDe(linha,"Alignment");     if(k>=0) cAlin=k;
+        cAng=colunaDe(linha,"Angle");
         continue;
       }
       if (!strncasecmp(linha,"Style:",6) && nEst<ASS_MAX_ESTILOS && temFmtEstilo) {
@@ -498,6 +500,7 @@ static int extrairAssModo(const char *corpo,LegendaCue **saida,int *parcial,int 
         copiaCampo(campoAss(linha,cAlin),tmp,sizeof tmp);
         { int a=atoi(trim(tmp));
           if (a>=1 && a<=11) e->an = legado ? anDeLegado(a) : (a<=9?a:0); }
+        if (cAng>=0) { copiaCampo(campoAss(linha,cAng),tmp,sizeof tmp); e->angulo = atof(trim(tmp)); }
         if (e->nome[0]) nEst++;
         continue;
       }
@@ -535,6 +538,11 @@ static int extrairAssModo(const char *corpo,LegendaCue **saida,int *parcial,int 
       if (a<0 || b<=a) continue;   // so o bloco ruim cai (ver extrairSrt)
       hSinais = asssinais_hash(pt);
       if (dialogoApp && sinalPeloApp(pt, a, hSinais, gSinais)) continue;   // libass draws it
+      if (dialogoApp) {     // typeset without \pos (rotated, own font, sign style): libass too
+        char *nm=trim(nomeEst); int i;
+        for (i=0;i<nEst && strcasecmp(est[i].nome,nm);i++) {}
+        if (asssinais_tipografia(pt, i<nEst ? est[i].nome : NULL, i<nEst ? est[i].angulo : 0.0)) continue;
+      }
 
       memset(&c,0,sizeof c);
       c.assHash=hSinais;

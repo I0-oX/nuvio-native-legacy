@@ -40,6 +40,15 @@ int main(void) {
      asssinais_nome("Typesetting") && asssinais_nome("Forced"), "name: signs & songs tracks");
   OK(!asssinais_nome("Full") && !asssinais_nome("Dialogue") && !asssinais_nome("Full (incl. Signs & Songs)") &&
      !asssinais_nome("English") && !asssinais_nome(NULL), "name: full / dialogue / plain");
+  OK(asssinais_tipografia("{\\fnKomika Hand\\frz8\\an7}Fuku's note", "Default", 0) &&
+     asssinais_tipografia("{\\frz-3}x", NULL, 0) && asssinais_tipografia("{\\fr12}x", NULL, 0) &&
+     asssinais_tipografia("{\\fry20}x", NULL, 0) && asssinais_tipografia("{\\fax0.1}x", NULL, 0) &&
+     asssinais_tipografia("{\\fnArial}x", NULL, 0), "typesetting: rotation, shear, font change");
+  OK(asssinais_tipografia("plain", "Sign Note", 0) && asssinais_tipografia("plain", "Default", 7.5),
+     "typesetting: sign style name, rotated style");
+  OK(!asssinais_tipografia("{\\i1}Hello{\\i0} there", "Default", 0) &&
+     !asssinais_tipografia("{\\fad(200,200)\\fs40}x", "Main", 0) && !asssinais_tipografia("a \\frz5 outside", NULL, 0) &&
+     !asssinais_tipografia(NULL, NULL, 0), "typesetting: dialogue (italics, fade, size) stays dialogue");
 
   /* No partner: nothing matches, never active. */
   asssinais_definir(7, 0, 0, 1000000UL);
