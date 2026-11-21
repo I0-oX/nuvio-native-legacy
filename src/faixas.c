@@ -132,6 +132,14 @@ static int legOverlay = -1, legOverlayNoGo = -1;
 // sonda corre (disparada na hora); quando ela volta, faixas_atualizar decide
 // e diz no log por que ficou onde ficou.
 static int legOverlayEsperando = -1;
+#ifdef NV_WEBOS
+// webOS: while the probe runs the LG player does NOT draw the track (its
+// renderer shows ASS as plain stacked text); only after FX_ESPERA_SONDA_MS
+// without the probe does the TV take it for the time being (legOverlayEsperaTV).
+#define FX_ESPERA_SONDA_MS 10000u
+static Uint32 legOverlayEsperaDesde;
+static int legOverlayEsperaTV;
+#endif
 
 // LEGENDA AUTOMATICA DA SESSAO (#129): 1 do inicio de uma reproducao ate a
 // decisao (ligou, nao havia o que ligar, ou a pessoa escolheu na folha).
@@ -486,6 +494,7 @@ static int legendaAtiva(void) {
     return legExterna = -1;
   }
   if (legOverlay >= 0) return legOverlay;
+  if (legOverlayEsperando >= 0) return legOverlayEsperando;   // waiting for the probe (webOS: native off)
   return video_legenda_atual();
 }
 
@@ -1179,6 +1188,25 @@ static const char *rotuloLegenda(int i, const char **marca) {
     return l->rotulo; }
 }
 
+#ifdef NV_WEBOS
+// webOS: the LG list's row `i` has no pair in the file (the probe's matching
+// failed, codec unknown), but the file's text/ASS tracks were added as app
+// rows (faixasmkv_acrescentar_texto: numero <= -2, codec and ordinal known).
+// The one of the same language (or the only one) is the same track: the app
+// draws it instead of the LG renderer. -1 = none, or ambiguous.
+static int gemeaNoArquivo(int i) {
+  const VideoFaixa *f = video_legenda(i);
+  int j, n = video_n_legenda(), achou = -1, k = 0;
+  if (!f || f->codec[0] || f->numero < 0 || video_mkv_sondado() != 1) return -1;
+  for (j = 0; j < n; j++) {
+    const VideoFaixa *g = video_legenda(j);
+    if (j == i || !g || g->numero > -2 || g->ordinalMkv < 0 || !vaiOverlay(g)) continue;
+    if (f->idioma[0] && g->idioma[0] && !ling_casa(f->idioma, g->idioma)) continue;
+    achou = j; k++;
+  }
+  return k == 1 ? achou : -1;
+}
+#endif
 // Liga a legenda `i` da lista combinada (-1 desliga; embutidas primeiro, depois
 // as de addon). E o OK da folha, e tambem o que a legenda automatica usa: os
 // dois tem de passar pelo mesmo caminho, senao uma faixa ASS escolhida sozinha
@@ -1186,6 +1214,15 @@ static const char *rotuloLegenda(int i, const char **marca) {
 static void escolherLegenda(int i) {
   {
     int emb = video_n_legenda();
+#ifdef NV_WEBOS
+    { int g = i >= 0 && i < video_n_legenda() ? gemeaNoArquivo(i) : -1;
+      if (g >= 0) {
+        printf("[legenda] faixa %d sem par no arquivo: a faixa %d (%s, %s) do arquivo e a mesma; o app desenha\n",
+               i, g, video_legenda(g)->rotulo, video_legenda(g)->codec);
+        fflush(stdout);
+        i = g;
+      } }
+#endif
     const VideoFaixa *fe = (i >= 0 && i < emb) ? video_legenda(i) : NULL;
     int vaiAoApp = fe && vaiOverlay(fe) && i != legOverlayNoGo && video_url_atual()[0] &&
                    video_legenda_ordinal_mkv(i) >= 0;
@@ -1224,10 +1261,24 @@ static void escolherLegenda(int i) {
         overlayAssumir(i, ord);
       else {
         const char *motivo = motivoTV(i);
-        if (f && i != legOverlayNoGo && video_url_atual()[0] && video_mkv_sondado() == 0) {
+        int esperar = f && i != legOverlayNoGo && video_url_atual()[0] && video_mkv_sondado() == 0;
+        if (esperar) {
           legOverlayEsperando = i;
           video_sondar_mkv_agora();
         }
+#ifdef NV_WEBOS
+        // The LG renderer draws ASS as plain stacked text: while the probe runs
+        // nothing is drawn (faixas_atualizar gives it to the TV after
+        // FX_ESPERA_SONDA_MS if the probe does not come back).
+        if (esperar) {
+          legOverlayEsperaDesde = SDL_GetTicks(); legOverlayEsperaTV = 0;
+          printf("[legenda] faixa %d (%s): aguardando a sonda do cabecalho, a TV nao desenha (ate %u s)\n",
+                 i, f->rotulo, FX_ESPERA_SONDA_MS / 1000u);
+          fflush(stdout);
+          video_escolher_legenda(-1);
+          return;
+        }
+#endif
         printf("[legenda] faixa %d (%s, codec=%s) -> TV: %s\n", i, f ? f->rotulo : "?",
                f && f->codec[0] ? f->codec : "?", motivo);
         fflush(stdout);
@@ -1874,7 +1925,22 @@ void faixas_atualizar(float dt, Uint32 agora) {
         legenda_desligar();
         video_escolher_legenda(i);
       }
-    } else {
+    } else
+#ifdef NV_WEBOS
+    if (col > 0 && ehAss(video_legenda(i))) {
+      // webOS: the LG renderer draws ASS as plain stacked text (no styles,
+      // positions or fonts). With lines already collected the overlay keeps
+      // them and the reader tries again every 60 s; the TV takes the track
+      // only when nothing was collected (below), so there is always a subtitle.
+      legOverlayFalhas++;
+      legOverlayRetomar = (agora + 60000u) | 1u;
+      if (col > legOverlayColhidos) legOverlayColhidos = col;
+      printf("[legenda] mkvass no-go %d (%s, HTTP %d, curl %d) na faixa %d com %d blocos colhidos: "
+             "overlay do app mantido (webOS), nova tentativa em 60 s\n", e, motivoNoGo(e), http, curl, i, col);
+      fflush(stdout);
+    } else
+#endif
+    {
       int estavaNaTV = legOverlayTV;
       legOverlay = -1; legOverlayNoGo = i; legOverlayNoGoEstado = e; legOverlayTV = 0;
       printf("[legenda] mkvass no-go %d (%s, HTTP %d, curl %d) na faixa %d: a legenda VOLTA para a TV "
@@ -1893,17 +1959,37 @@ void faixas_atualizar(float dt, Uint32 agora) {
   if (legOverlayEsperando >= 0) {
     int i = legOverlayEsperando;
     const VideoFaixa *f = video_legenda(i);
+    int escolhida = video_legenda_atual() == i;
     video_sondar_mkv_agora();          // se o sourceInfo chegou depois da escolha
+#ifdef NV_WEBOS
+    // Waiting with the LG renderer off (escolherLegenda): the choice stands
+    // while legOverlayEsperando does (any new pick resets it). Too long: the
+    // TV draws for the time being, and the probe can still hand it to the app.
+    escolhida = 1;
+    if (video_mkv_sondado() == 0 && !legOverlayEsperaTV &&
+        SDL_GetTicks() - legOverlayEsperaDesde > FX_ESPERA_SONDA_MS) {
+      legOverlayEsperaTV = 1;
+      printf("[legenda] faixa %d: a sonda nao voltou em %u s: a TV desenha por enquanto\n", i, FX_ESPERA_SONDA_MS / 1000u);
+      fflush(stdout);
+      video_escolher_legenda(i);
+    }
+#endif
     if (video_mkv_sondado() != 0) {
       int ord = video_legenda_ordinal_mkv(i);
       legOverlayEsperando = -1;
-      if (f && vaiOverlay(f) && ord >= 0 && video_legenda_atual() == i && video_url_atual()[0]) {
+      if (f && vaiOverlay(f) && ord >= 0 && escolhida && video_url_atual()[0]) {
         printf("[legenda] sonda voltou: faixa %d (%s), o app assume\n", i, f->codec);
         overlayAssumir(i, ord);
       } else {
+#ifdef NV_WEBOS
+        if (gemeaNoArquivo(i) >= 0) { escolherLegenda(i); return; }   // the file's row of the same track: the app draws it
+#endif
         printf("[legenda] sonda voltou: faixa %d (%s, codec=%s) fica na TV: %s\n", i,
                f ? f->rotulo : "?", f && f->codec[0] ? f->codec : "?", motivoTV(i));
         fflush(stdout);
+#ifdef NV_WEBOS
+        if (!legOverlayEsperaTV) video_escolher_legenda(i);   // it was off while waiting
+#endif
         // Sem par no arquivo e uma falha do casamento, nao da TV: avisa, para
         // a pessoa poder mandar o log em vez de achar que a legenda e assim.
         if (f && !f->codec[0] && video_mkv_sondado() == 1)
@@ -1911,6 +1997,17 @@ void faixas_atualizar(float dt, Uint32 agora) {
       }
     }
   }
+#ifdef NV_WEBOS
+  // The app owns the track (libass / the app's text) but the LG player has a
+  // subtitle on (a reload or another path selected it again): both would draw,
+  // the LG one as plain stacked text over the authored ASS. The native one goes.
+  if (legOverlay >= 0 && !legOverlayTV && video_legenda_atual() >= 0) {
+    printf("[legenda] faixa %d e do app, mas a TV tinha a legenda %d ligada: nativa desligada\n",
+           legOverlay, video_legenda_atual());
+    fflush(stdout);
+    video_escolher_legenda(-1);
+  }
+#endif
 }
 
 // Traz a linha focada para dentro da janela visivel, mexendo o MINIMO: so
