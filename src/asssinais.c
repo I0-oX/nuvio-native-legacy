@@ -50,6 +50,12 @@ void asssinais_definir(unsigned g, int trilhaSinais, int faixaSinais, unsigned l
   fflush(stdout);
 }
 
+void asssinais_regerar(unsigned velha, unsigned nova) {
+  pthread_mutex_lock(&trava);
+  if (geracao == velha) geracao = nova;
+  pthread_mutex_unlock(&trava);
+}
+
 int asssinais_trilha_sinais(unsigned g) {
   int r;
   pthread_mutex_lock(&trava); r = trilha && g == geracao; pthread_mutex_unlock(&trava);

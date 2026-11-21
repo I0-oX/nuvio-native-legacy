@@ -797,6 +797,7 @@ static struct {
   int leg, sub, audio;           // the burned menu entry, TorBox's subtitle/audio indices
   int tba;                       // Nuvio's local stream is what the player has (dts/tbaudio_tpk.h)
   int tbaRetentouEm;             // the one retry of Nuvio's stream (ms, 0 = not yet)
+  Uint32 esperaDesde;            // the burned stream was opened and has no picture yet (0 = has / none)
   Uint32 pediuEm, abriuEm, logEm;
   double alvo, durOrig;
   int tocouLog, listas, nAudio, nLeg, audioSel, erroCod;
@@ -970,6 +971,9 @@ static void tbAudioPreferido(void) {
 // Asks TorBox to burn menu entry `i` (a burnable track).
 static void tbPedir(int i, const char *porque) {
   int sub = faixaLeg[i].ordinalMkv, aud = tbIdxAudio();
+  // Without a burned stream the live lists ARE the file's: a snapshot left by
+  // a request that failed or was dropped would bring back an old audio pick.
+  if (!tb.ativo) tb.listas = 0;
   tbGuardarListas();
   if ((tb.ativo || tb.pend) && tb.sub == sub && tb.audio == aud) { tb.leg = i; return; }
   tb.leg = i; tb.sub = sub; tb.audio = aud; tb.pend = 1; tb.pediuEm = SDL_GetTicks();
@@ -1149,7 +1153,11 @@ static int tbAbrirEm(double alvo) {
     k = strlen(tb.url);
     snprintf(tb.url + k, sizeof tb.url - k, "?n=%u", ++tbaUrlN);
   }
-  if (!tocarInterno(tb.url, 0)) return 0;
+  { int pausado = pausaPedida;   // pararSessao (tocarInterno) clears it
+    if (!tocarInterno(tb.url, 0)) return 0;
+    // Paused: loadCompleted seeks to posAoCarregar and pauses again.
+    if (pausado) { recarregarPausa = 1; pausaPedida = 1; } }
+  tb.esperaDesde = SDL_GetTicks();   // tbBombear: 30 s without a picture counts as a player error
   tbr_ancorar(0.0);   // the uMS starts the stream at 0; the loadCompleted seek re-anchors (seekAgora)
   tbRestaurarListas();   // the file's menu; the HLS sourceInfo is discarded
   nv_recon_zerar(&recon);   // a new pipeline; old attempts do not apply
@@ -1174,6 +1182,7 @@ static int tbAbrir(double alvo) {
       vidDV = semDVForcado ? 0 : dvPedido;   // the file's claim applies again
       dtsTentou = 0;
       if (tb.listas) { tbRestaurarListas(); tb.listas = 0; }
+      audioAoCarregar = audioAtual;   // loadCompleted selects it (pararSessao cleared the field)
       posAoCarregar = alvo > 1.0 ? alvo : 0.0;
     }
     return 0;
@@ -1202,11 +1211,17 @@ static void tbDesligar(const char *porque, int desistir) {
          alvo, corr * 1000.0, porque);
   fflush(stdout);
   vidDV = semDVForcado ? 0 : dvPedido;   // the original file's Dolby Vision claim applies again
-  if (!tocarInterno(urlAtual, !semDVForcado)) { tb.listas = 0; return; }
+  { int pausado = pausaPedida;
+    if (!tocarInterno(urlAtual, !semDVForcado)) { tb.listas = 0; return; }
+    if (pausado) { recarregarPausa = 1; pausaPedida = 1; } }
   nv_recon_zerar(&recon);   // back to the file: the stream's attempts do not apply
   dtsTentou = 0;   // TorBox's HLS closed the converter; the file may need it again
   if (tb.listas) { tbRestaurarListas(); tb.listas = 0; }
   if (aud >= 0 && aud < nAudio) audioAtual = aud;
+  // The uMS opens the original on its default track and the sourceInfo rule
+  // skips a track equal to audioAtual: loadCompleted selects it, as
+  // recarregarMesmaFonte does.
+  audioAoCarregar = audioAtual;
   posAoCarregar = alvo > 1.0 ? alvo : 0.0;
 }
 // A new pipeline on the same burned stream at `alvo` (an audio pick or a mode
@@ -1275,6 +1290,18 @@ static void tbBombear(void) {
     printf("[tbburn] the player reported failure on TorBox's burned stream\n");
     fflush(stdout);
     tbDesligar("the TV player failed on TorBox's stream", 1);
+  }
+  // A burned stream the uMS never prepares and never reports an error for
+  // (Nuvio's local server or TorBox's CDN stalled): after 30 s it counts as a
+  // player error, so the retry and then the original follow (as video_tpk.c).
+  if (tb.ativo && pronto) tb.esperaDesde = 0;
+  if (tb.ativo && tb.esperaDesde && !pronto && !reconErroPend && !fundoRet &&
+      SDL_GetTicks() - tb.esperaDesde > 30000u) {
+    printf("[tbburn] %s did not start in 30 s (no error from the TV player): treated as a player error\n",
+           tb.tba ? "Nuvio's Passthrough stream" : "TorBox's burned stream");
+    fflush(stdout);
+    tb.esperaDesde = 0;
+    reconErroPend = 1;
   }
   if (tb.pre && !tb.pend) {
     if (mkvEstado != 3 && !fioMkvVivo) {   // this source's header read (again, if it was stale)
@@ -2261,8 +2288,15 @@ static int eventoPayload(const char *p, unsigned minhaSessao) {
     // pessoa, sem som, nao recebia nenhuma explicacao. Agora e um aviso: o
     // player mostra que o audio desta fonte nao toca nesta TV.
     if (js_num(p, NULL, "errorCode", -1) == 200) {
-      audioNaoSup = 1;
-      marco("audio nao suportado pela TV (errorCode 200): video segue");
+#ifdef NV_WEBOS
+      // TorBox burn-in: the burned stream's audio (Passthrough FLAC/Opus in
+      // fMP4, or TorBox's) refused by this TV would play silent for good: it
+      // goes to the retry, then the original file (video_bombear).
+      if (tbAtivo()) { reconErroPend = 1; marco("burned stream: audio not supported by the TV (errorCode 200)"); }
+      else
+#endif
+      { audioNaoSup = 1;
+        marco("audio nao suportado pela TV (errorCode 200): video segue"); }
     } else
     if (strstr(p, "is not running") && urlAtual[0] && !recuperando) {
       tocando = 0;
@@ -3268,6 +3302,20 @@ int video_webos_fundo(double alvoPlayer, const char *porque) {
          fundoEraDts, fundoEraDv, fundoAudio, fundoLeg, fundoLegUrl[0] ? " (external sub)" : "",
          fundoRet ? " (was reopening)" : "");
   fflush(stdout);
+#ifdef NV_WEBOS
+  // TorBox burn-in not open yet (TorBox-first hold, or a request still
+  // pending): the request is dropped, and the reopen at the return opens what
+  // the player has (the original, or the burned stream already playing). With
+  // nothing burned, the burn is decided again once that has a picture.
+  if (tb.pend || tb.pre) {
+    printf("[fundo] TorBox burn-in %s dropped while away%s\n", tb.pre ? "hold" : "request",
+           tb.ativo ? "" : "; decided again after the reopen");
+    fflush(stdout);
+    if (tb.pend) { tb.pend = 0; tbburn_cancelar(); }
+    if (tb.pre) { tb.pre = 0; tb.listas = 0; }
+    if (!tb.ativo) tb.decidido = 0;
+  }
+#endif
   // Supor que a Home matou o video: solta o pipeline agora (decodificador e
   // conversao livres), sem reconexao nem comando ate a volta.
   nv_recon_zerar(&recon);
@@ -3395,14 +3443,14 @@ static void fundoTbOriginal(const char *porque) {
   printf("[fundo] %s: back to the original file at %.3f s (player clock %+.0f ms to the burned picture); "
          "Nuvio draws the subtitles\n", porque, fundoAlvo, corr * 1000.0);
   fflush(stdout);
-  // The indices were the burned menu's (the file's tracks): the original opens
-  // with its default tracks and its own sourceInfo, as tbDesligar does.
+  // No subtitle of the player's (Nuvio draws them); the audio is the menu's,
+  // selected at loadCompleted once the saved lists are back, as tbDesligar.
   fundoAudio = fundoLeg = -1; fundoLegUrl[0] = 0;
   vidDV = semDVForcado ? 0 : dvPedido;   // the file's Dolby Vision claim applies again
   fundoRetEm = SDL_GetTicks();   // the original gets its own 20 s
   fundoTent = 0;
   fundoAbrir();
-  if (tb.listas) { tbRestaurarListas(); tb.listas = 0; }
+  if (tb.listas) { tbRestaurarListas(); tb.listas = 0; audioAoCarregar = audioAtual; }
 }
 // An error (or no picture) on the burned stream while reopening: TorBox's link
 // may have expired over a long sleep, so TorBox is asked once for a fresh
@@ -3562,6 +3610,7 @@ int video_tocar(const char *url) {
   mkvNaoMkv = 0;
 #ifdef NV_WEBOS
   mkvFps = 0;   // sessoes velhas nao alimentam a grade de quadros da nova
+  mkvHdr = 0;
   mkvCor = mkvMatriz = mkvFaixaCor = 0;   // a cor e do arquivo: so uma fonte nova a apaga
 #endif
   dvNao = 0; dvSessaoN++; dvFonteAberta = 0; dvAudioDe[0] = 0;
@@ -3948,8 +3997,10 @@ static int tocarInterno(const char *url, int comDV) {
   nAudio = nLeg = 0; audioAtual = 0; legAtual = -1; vidAtmos = 0;
   legUrlAtual[0] = 0; mkvPendente = 0;
 #ifdef NV_WEBOS
-  mkvFps = 0;   // recarregar reaprende a taxa; a grade desliga ate la
-  mkvHdr = 0;   // idem para a chave da sincronia com a imagem
+  // Recarregar reaprende a taxa e o HDR (a grade e a chave da sincronia com a
+  // imagem desligam ate la). O stream queimado do TorBox nao: a sonda nao
+  // roda nele e eles sao do ARQUIVO (como o mkvFx do .tpk).
+  if (!tbAtivo()) { mkvFps = 0; mkvHdr = 0; }
 #endif
   snprintf(vidHdr, sizeof vidHdr, "none");
   seiX0 = seiX1 = seiX2 = seiY0 = seiY1 = seiY2 = 0;

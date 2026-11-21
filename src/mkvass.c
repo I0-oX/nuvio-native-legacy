@@ -612,6 +612,7 @@ typedef struct {
   // Signs & Songs; the file's Signs & Songs ASS track to match against (0 =
   // none); asssinais told at the first delivery.
   int      trilhaSinais, faixaSinais, sinaisDitos;
+  unsigned sinaisG;   // the generation asssinais was told (a reload after late fonts makes a new one)
 #ifdef NV_WEBOS
   // webOS has no relay: the partner's blocks found in the windows this
   // collector reads anyway (sinaisBloco), kept until asssinais_definir.
@@ -1543,11 +1544,13 @@ static int gravarFontesSidecar(Fio *f) {
   char *cache, *p;
   int i, ok;
   if (!f->fontesCompletas || f->nFontes < 0 || f->nFontes > MKVASS_FONTES_MAX) return 0;
-  for (i = 0; i < f->nFontes; i++) {
-    size_t nn = strlen(f->fontes[i].nome), dn = (size_t)f->fontes[i].tam;
-    if (nn > 255 || dn == 0 || dn > MKVASS_CORPO_MAX) return 0;
-    cap += b64_tamanho(nn) + b64_tamanho(dn) + 2u;
-  }
+  { long totalBruto = 0;   // the reader (lerFontesSidecar) refuses a set over MKVASS_CORPO_MAX
+    for (i = 0; i < f->nFontes; i++) {
+      size_t nn = strlen(f->fontes[i].nome), dn = (size_t)f->fontes[i].tam;
+      if (nn > 255 || dn == 0 || dn > MKVASS_CORPO_MAX || totalBruto > MKVASS_CORPO_MAX - (long)dn) return 0;
+      totalBruto += (long)dn;
+      cap += b64_tamanho(nn) + b64_tamanho(dn) + 2u;
+    } }
   if (cap > 24u * 1024u * 1024u) return 0;
   cache = malloc(cap + 1u); if (!cache) return 0;
   p = cache; usado = strlen(MARCA_FONTES); memcpy(p, MARCA_FONTES, usado); p += usado;
@@ -3549,11 +3552,16 @@ static int entregarCorpoSeAtual(Fio *f, const char *corpo) {
     /* Signs & Songs (asssinais.h): the generation this track's lines live
      * under is known now. ASS only (texto/imagem have no styled lines). */
     if (ok && !f->sinaisDitos && !f->texto && !f->imagem) {
-      f->sinaisDitos = 1;
+      f->sinaisDitos = 1; f->sinaisG = f->legG;
       asssinais_definir(f->legG, f->trilhaSinais, f->faixaSinais, f->escala);
 #ifdef NV_WEBOS
       sinaisDescarregar(f);   // the partner blocks read before this delivery
 #endif
+    } else if (ok && f->sinaisDitos && f->legG != f->sinaisG) {
+      // The late-fonts reload delivered this track again as a new subtitle
+      // generation: the same lines and partner, so the state moves with it.
+      asssinais_regerar(f->sinaisG, f->legG);
+      f->sinaisG = f->legG;
     }
   }
   if (travado) pthread_mutex_unlock(&estadoDoFio(f)->trava);

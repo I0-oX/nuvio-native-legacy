@@ -23,6 +23,10 @@
 // the track itself is signs & songs (1/0), the partner track number to read
 // from the relay (0 = none), the file's TimestampScale (ns). Forgets the old.
 void asssinais_definir(unsigned g, int trilhaSinais, int faixaSinais, unsigned long escalaNs);
+// The same track's lines moved to generation `nova` (mkvass reloaded it after
+// late fonts): the track info and the partner lines read stay. Only if the
+// current generation is `velha`.
+void asssinais_regerar(unsigned velha, unsigned nova);
 // 1 = generation g's track is a Signs & Songs track (rule 1).
 int  asssinais_trilha_sinais(unsigned g);
 // 1 = rule 2 has data for generation g (a partner track and some lines).
