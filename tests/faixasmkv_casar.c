@@ -159,6 +159,39 @@ int main(void) {
     ok(faixasmkv_idiomas_coerentes(lv, 2, fx2, idx), "faixa sem par: ignorada", "");
   }
 
+  // LG list that does not match as a whole: each row by its trackNum + declared type.
+  {
+    MkvFaixa g[6]; int num[4], idx[4];
+    const char *tipo[4];
+    mkv(&g[0], 1, "V_MPEG4/ISO/AVC", "", "", 0);
+    mkv(&g[1], 17, "S_TEXT/ASS", "eng", "Signs", 0);    // ordinal 0
+    mkv(&g[2], 17, "S_TEXT/ASS", "eng", "Full", 0);     // ordinal 1
+    mkv(&g[3], 17, "S_HDMV/PGS", "eng", "", 0);         // ordinal 2
+    mkv(&g[4], 17, "S_TEXT/UTF8", "spa", "", 0);        // ordinal 3
+    // TV shows 3 of 4 (hid the PGS), trackNum = file ordinal, types given.
+    num[0] = 0; num[1] = 1; num[2] = 3;
+    tipo[0] = "ASS"; tipo[1] = "ass"; tipo[2] = "SRT";
+    ok(faixasmkv_legendas_por_ordinal(num, tipo, 3, g, 5, idx) == 3 &&
+       idx[0] == 1 && idx[1] == 2 && idx[2] == 4, "TV esconde PGS, tipos declarados: 3 pares pelo trackNum", "");
+    // Declared type contradicts the file at that ordinal: no pair for that row.
+    tipo[1] = "SRT";
+    ok(faixasmkv_legendas_por_ordinal(num, tipo, 3, g, 5, idx) == 2 && idx[1] == -1,
+       "tipo da TV (SRT) contradiz o arquivo (ASS): sem par", "");
+    // No type: only ordinals with no image track before them.
+    tipo[0] = tipo[1] = tipo[2] = "";
+    ok(faixasmkv_legendas_por_ordinal(num, tipo, 3, g, 5, idx) == 2 &&
+       idx[0] == 1 && idx[1] == 2 && idx[2] == -1, "sem tipo: so antes da primeira PGS", "");
+    ok(faixasmkv_legendas_por_ordinal(num, NULL, 3, g, 5, idx) == 2, "tipos NULL: igual a sem tipo", "");
+    // Repeated trackNum: neither row pairs.
+    num[1] = 0; tipo[0] = tipo[1] = "ASS";
+    ok(faixasmkv_legendas_por_ordinal(num, tipo, 2, g, 5, idx) == 0, "trackNum repetido: nenhum par", "");
+    // Image declared, image in the file: pairs (the app decodes PGS).
+    num[0] = 2; tipo[0] = "PGS";
+    ok(faixasmkv_legendas_por_ordinal(num, tipo, 1, g, 5, idx) == 1 && idx[0] == 3, "PGS declarada e no arquivo: par", "");
+    num[0] = 7; tipo[0] = "ASS";
+    ok(faixasmkv_legendas_por_ordinal(num, tipo, 1, g, 5, idx) == 0, "trackNum fora do arquivo: sem par", "");
+  }
+
   printf(falhas ? "faixasmkv_casar: %d FALHA(S)\n" : "faixasmkv_casar: tudo ok\n", falhas);
   return falhas != 0;
 }

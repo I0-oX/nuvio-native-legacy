@@ -729,6 +729,10 @@ static int       semDVForcado;
 // Faixas lidas do sourceInfo. Guardadas porque a tela precisa delas a cada
 // quadro e reprocessar o JSON no desenho seria desperdicio.
 static VideoFaixa faixaAudio[NV_FAIXA_MAX], faixaLeg[NV_FAIXA_MAX];
+// The `type` of each LG subtitle row (subtitleTrackInfo): what the track says
+// it is. lerMkv pairs a row with the file by its trackNum only when this
+// agrees with the codec there (faixasmkv_legendas_por_ordinal).
+static char legTipoTV[NV_FAIXA_MAX][16];
 static int nAudio, nLeg, audioAtual, legAtual = -1;
 
 // Afirmacao de DV da fonte escolhida. Setada por video_definir_dv ANTES do
@@ -2131,6 +2135,12 @@ static int eventoPayload(const char *p, unsigned minhaSessao) {
         // Resolvido so quando o cabecalho do MKV chega (lerMkv). O memset
         // acima deixaria 0, que e um ordinal VALIDO — a primeira legenda.
         f->ordinalMkv = -1;
+        // String or number; the values were never measured, the log shows them.
+        if (!js_texto(o, fo, "type", legTipoTV[nLeg], sizeof legTipoTV[nLeg])) {
+          double ty = js_num(o, fo, "type", -1e9);
+          if (ty > -1e9) snprintf(legTipoTV[nLeg], sizeof legTipoTV[nLeg], "%g", ty);
+          else legTipoTV[nLeg][0] = 0;
+        }
         { const char *l = strstr(o, "\"language\":\"");
           if (l && (!fo || l < fo)) {
             size_t k = 0; l += 12;
@@ -3392,6 +3402,21 @@ static void *lerMkv(void *arg) {
     }
     if (modo == MKV_CASA_NADA && faixasmkv_legendas_por_idioma(faixaLeg, nt, fx, n, idx))
       printf("[mkv] legendas: pares unicos por idioma (lista da TV diferente)\n");
+    // Still without a pair: each row by its own trackNum, checked against the
+    // `type` the row itself declares (ASS / text / image). The whole-list
+    // modes above give up on every row when one does not fit.
+    if (modo == MKV_CASA_NADA) {
+      int i2[NV_FAIXA_MAX], q, r, mais = 0;
+      const char *tipos[NV_FAIXA_MAX];
+      for (q = 0; q < nt; q++) tipos[q] = legTipoTV[q];
+      faixasmkv_legendas_por_ordinal(tv, tipos, nt, fx, n, i2);
+      for (q = 0; q < nt; q++) {
+        if (idx[q] >= 0 || i2[q] < 0) continue;
+        for (r = 0; r < nt && idx[r] != i2[q]; r++) {}
+        if (r == nt) { idx[q] = i2[q]; mais++; }
+      }
+      if (mais) printf("[mkv] legendas: %d faixa(s) pelo trackNum de cada uma, conferido com o tipo que a TV declara\n", mais);
+    }
     // DIAGNOSTICO que faltou no #92: sem as duas listas lado a lado no log, o
     // deslocamento parecia "a TV desenha mal" e ninguem via que era o app.
     { int nArq = 0;
@@ -3408,18 +3433,21 @@ static void *lerMkv(void *arg) {
              modo == MKV_CASA_ORDINAL ? "ordinal" : modo == MKV_CASA_NUMERO ? "trackNumber" :
              modo == MKV_CASA_SEM_IMAGEM ? "ordinal (sem legendas de imagem)" : "nenhum",
              nt, nArq, nLeg > NV_FAIXA_MAX ? "CORTADA em NV_FAIXA_MAX" : "inteira");
-      if (modo == MKV_CASA_NADA && nt > 0) {
-        char m[96];
-        snprintf(m, sizeof m, "mkv: legendas nao casaram (tv=%d, arquivo=%d): ASS fica com a TV", nt, nArq);
-        marco(m);
-      } }
+      { int pares = 0, q;
+        for (q = 0; q < nt; q++) pares += idx[q] >= 0;
+        if (modo == MKV_CASA_NADA && nt > 0 && pares < nt) {
+          char m[112];
+          snprintf(m, sizeof m, "mkv: legendas casaram %d de %d (arquivo=%d): as sem par ficam com a TV", pares, nt, nArq);
+          marco(m);
+        } } }
     for (i = 0; i < nt; i++) {
       VideoFaixa *f = &faixaLeg[i];
       int jaTemIdioma = f->idioma[0] != 0, ordinal = -1, k;
       const MkvFaixa *m;
       j = idx[i];
-      printf("[mkv]   tv[%d] trackNum=%d idiomaTV=%s -> %s%d %s %s\n", i, f->numero,
-             f->idioma[0] ? f->idioma : "-", j >= 0 ? "num=" : "sem par", j >= 0 ? fx[j].numero : 0,
+      printf("[mkv]   tv[%d] trackNum=%d idiomaTV=%s tipoTV=%s -> %s%d %s %s\n", i, f->numero,
+             f->idioma[0] ? f->idioma : "-", i < NV_FAIXA_MAX && legTipoTV[i][0] ? legTipoTV[i] : "-",
+             j >= 0 ? "num=" : "sem par", j >= 0 ? fx[j].numero : 0,
              j >= 0 ? fx[j].codec : "", j >= 0 && fx[j].idioma[0] ? fx[j].idioma : "");
       if (j < 0) continue;
       m = &fx[j];

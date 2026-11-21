@@ -203,6 +203,10 @@ int faixasmkv_idiomas_coerentes(const VideoFaixa *leg, int nLeg, const MkvFaixa 
 int faixasmkv_legendas_por_idioma(const VideoFaixa *leg, int nLeg, const MkvFaixa *fx, int n, int *mapa) {
   (void)leg; (void)nLeg; (void)fx; (void)n; (void)mapa; return 0;
 }
+int faixasmkv_legendas_por_ordinal(const int *tvNum, const char *const *tvTipo, int nTv,
+                                   const MkvFaixa *fx, int n, int *idx) {
+  (void)tvNum; (void)tvTipo; (void)fx; (void)n; for (int i = 0; i < nTv; i++) idx[i] = -1; return 0;
+}
 int mkv_capitulos_alem(const char *url, const unsigned char *cab, long cabN,
                        MkvCap *caps, int maxCaps, int *status) {
   (void)url; (void)cab; (void)cabN; (void)caps; (void)maxCaps; (void)status; return 0;

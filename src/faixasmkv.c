@@ -132,6 +132,56 @@ int faixasmkv_idiomas_coerentes(const VideoFaixa *f, int nF, const MkvFaixa *fx,
   return 1;
 }
 
+// Kind of a subtitle from the LG `type` field or from a CodecID:
+// 'a' ASS/SSA, 's' plain text (SRT/WebVTT/SAMI), 't' text of either kind,
+// 'i' image, 0 = unknown. The TV's values were never measured, so only the
+// words below count; anything else (a number, "subtitle") says nothing.
+static int tipoDaTv(const char *t) {
+  char b[24]; size_t k;
+  if (!t || !*t) return 0;
+  for (k = 0; t[k] && k + 1 < sizeof b; k++) b[k] = (char)(t[k] >= 'A' && t[k] <= 'Z' ? t[k] + 32 : t[k]);
+  b[k] = 0;
+  if (strstr(b, "ass") || strstr(b, "ssa")) return 'a';
+  if (strstr(b, "pgs") || strstr(b, "hdmv") || strstr(b, "bitmap") || strstr(b, "image") ||
+      strstr(b, "picture") || strstr(b, "graphic") || strstr(b, "vobsub") || strstr(b, "dvb") ||
+      strstr(b, "bmp")) return 'i';
+  if (strstr(b, "srt") || strstr(b, "subrip") || strstr(b, "utf") || strstr(b, "vtt") ||
+      strstr(b, "smi") || strstr(b, "sami")) return 's';
+  if (strstr(b, "text") || strstr(b, "txt")) return 't';
+  return 0;
+}
+static int tipoDoArquivo(const MkvFaixa *m) {
+  if (legendaImagem(m)) return 'i';
+  if (!strncmp(m->codec, "S_TEXT/ASS", 10) || !strncmp(m->codec, "S_TEXT/SSA", 10) ||
+      !strcmp(m->codec, "S_ASS") || !strcmp(m->codec, "S_SSA")) return 'a';
+  if (!strncmp(m->codec, "S_TEXT/", 7)) return 's';
+  return 0;
+}
+
+int faixasmkv_legendas_por_ordinal(const int *tvNum, const char *const *tvTipo, int nTv,
+                                   const MkvFaixa *fx, int n, int *idx) {
+  int leg[MKV_MAX_FAIXAS], nLeg = 0, i, j, achou = 0;
+  unsigned char vezes[MKV_MAX_FAIXAS] = {0};
+  for (i = 0; i < nTv; i++) idx[i] = -1;
+  for (j = 0; j < n && nLeg < MKV_MAX_FAIXAS; j++) if (fx[j].tipo == MKV_LEG) leg[nLeg++] = j;
+  for (i = 0; i < nTv; i++) if (tvNum[i] >= 0 && tvNum[i] < nLeg && vezes[tvNum[i]] < 2) vezes[tvNum[i]]++;
+  for (i = 0; i < nTv; i++) {
+    int t = tvNum[i], tv = tipoDaTv(tvTipo ? tvTipo[i] : NULL), arq, ok;
+    // Out of range, or repeated (some row is not who it says): no pair.
+    if (t < 0 || t >= nLeg || vezes[t] != 1) continue;
+    arq = tipoDoArquivo(&fx[leg[t]]);
+    if (tv)      // the TV says what it is: it has to be what the file has there
+      ok = tv == arq || (tv == 't' && (arq == 'a' || arq == 's'));
+    else {       // it does not: only where a hidden image track cannot have shifted it
+      ok = arq == 'a' || arq == 's';
+      for (j = 0; ok && j < t; j++) if (legendaImagem(&fx[leg[j]])) ok = 0;
+    }
+    if (ok) idx[i] = leg[t];
+  }
+  for (i = 0; i < nTv; i++) achou += idx[i] >= 0;
+  return achou;
+}
+
 // Linha que o player entregou. numero < 0 e PGS pendurada por
 // acrescentar_imagem; a segunda sonda nao pode conta-la como faixa da TV.
 static int linhaDoPlayer(const VideoFaixa *f) { return !f || f->numero >= 0; }

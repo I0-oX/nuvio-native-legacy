@@ -40,6 +40,16 @@ int faixasmkv_legendas_por_idioma(const VideoFaixa *leg, int nLeg,
 // (ou -1). 0 quando alguma contradiz.
 int faixasmkv_idiomas_coerentes(const VideoFaixa *leg, int nLeg, const MkvFaixa *fx, const int *idx);
 
+// LG lists that do not match as a whole (another count, a hidden track):
+// each row on its own. The TV's trackNum is the subtitle ordinal in the FILE
+// (mkv_casar_legendas, measured), and the row's `type` (tvTipo[i], may be
+// NULL) has to agree with the file track there: ASS with ASS, text with
+// text, image with image. A row whose type says nothing pairs only when no
+// image track (the kind the TV hides) comes before its ordinal. `idx[i]` =
+// index in `fx` or -1; returns how many paired.
+int faixasmkv_legendas_por_ordinal(const int *tvNum, const char *const *tvTipo, int nTv,
+                                   const MkvFaixa *fx, int n, int *idx);
+
 // "2.0", "5.1", "7.1" ou "" (mesma tabela do sourceInfo da LG, video.c).
 const char *faixasmkv_canais(int canais);
 
