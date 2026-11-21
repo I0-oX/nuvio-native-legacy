@@ -5620,12 +5620,6 @@ void ajustes_dir(const char *dir) {
       if (v >= 0 && v <= 20) leg2TamanhoAntigo = v;
       continue;
     }
-    // Second subtitle opacity before the 10 % steps (owner 14/11/2026):
-    // 0 Same, 1..4 = 100/75/50/25 %.
-    if (!strcmp(chave, "legenda2OpacidadeLocal")) {
-      if (v >= 0 && v <= 4) leg2OpacAntiga = v;
-      continue;
-    }
     // Outline is aesthetic: migrate its removed Automatic value to On.
     if (!strcmp(chave, "vidroContornoLocal") && v == 2) v = 0;
     if (!strcmp(chave, "legenda2OpacidadeLocal")) {
