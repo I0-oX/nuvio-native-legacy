@@ -1957,7 +1957,7 @@ static SDL_Surface *sombraSuave(SDL_Surface *src, TxtEstilo estilo) {
   SDL_Surface *out;
   int x, y, i;
   if (sigma <= 0.0f || raio < 1 || raio >= 64 ||
-      !(out = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ABGR8888)))
+      !(out = nv_superficie(0, w, h, 32, SDL_PIXELFORMAT_ABGR8888)))
     return src;
   tmp = (float *)calloc((size_t)w * (size_t)h, sizeof *tmp);
   blur = (float *)calloc((size_t)w * (size_t)h, sizeof *blur);
