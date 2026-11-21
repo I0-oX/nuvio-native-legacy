@@ -199,4 +199,17 @@ int  mkvass_ocupado(void);
 // so cresce — e pode passar de `total` depois de varios seeks.
 void mkvass_estatisticas(long *pedidos, long *bytes, int *colhidos, int *total);
 
+// assperf "Read subs from local relay" (.tpk, mkvfix): o numero da faixa que a
+// colheita quer agora (0 = nenhuma ou chave desligada) e cada bloco dessa faixa
+// visto no fluxo que o mkvfix entrega ao player. `clPos`/`blkPos` sao posicoes
+// absolutas no arquivo, `clHdr` a largura do cabecalho do Cluster, `clTs` o
+// Timestamp dele; `b` e o elemento inteiro (BlockGroup ou SimpleBlock).
+int  mkvass_relay_faixa(void);
+void mkvass_relay_bloco(long long clPos, int clHdr, unsigned long clTs, int temTs,
+                        long long blkPos, const unsigned char *b, long n);
+
+// TorBox burn-in: the reader's connections in total (own read + prefetches)
+// while TorBox's stream plays; 0 = no cap. video_tpk.c sets it every frame.
+void mkvass_teto_conexoes(int n);
+
 #endif

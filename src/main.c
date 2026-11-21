@@ -6,6 +6,9 @@
 #include "swapint.h"
 #include "quadroc.h"
 #include "streams.h"
+#ifdef NV_WEBOS
+#include "tbburn.h"
+#endif
 #ifdef NV_DTS_DEBUG
 #include "dts/dts_engine.h"
 #include "dts/dts_pipeline.h"
@@ -80,6 +83,7 @@
 #include "androidcache.h"
 #include "negcache.h"
 #include "p2pmotor.h"
+#include "telalag.h"   // .tpk and webOS: the GPU queue limit; elsewhere no-ops (telalag.c)
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -98,6 +102,8 @@
 #include "desempenho.h"
 #include "atualizacao.h"
 #include "avisos.h"
+#include "queda.h"
+#include "passo.h"
 #include "seguro.h"
 #include "video.h"
 #include "addons.h"
@@ -792,6 +798,44 @@ static const char *pedidoVideo(void) {
 static _Atomic long pedVidTam;      // tamanho visto pelo fio (<=0: nada)
 static _Atomic long pedVidMtime;    // st_mtime visto pelo fio
 static _Atomic int pedVidFioOk;     // 1 = o fio esta de pe
+// passo.h: the watcher. Every 50 ms it reads the frame count; a count that
+// has not moved for 300 ms while the main thread is in a step other than the
+// input wait is a stall: the step goes to the log, again if it changes (up to
+// 4 lines per stall), and the total once frames move again.
+static void *passoFio(void *x) {
+  unsigned ult = 0, desde = 0, linhas = 0;
+  const char *dito = NULL;
+  struct timespec t;
+  int parado = 0;
+  (void)x;
+  for (;;) {
+    unsigned q = __atomic_load_n(&nv_passo_quadros, __ATOMIC_RELAXED), agora;
+    const char *p = __atomic_load_n(&nv_passo_atual, __ATOMIC_RELAXED);
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    agora = (unsigned)(t.tv_sec * 1000u + t.tv_nsec / 1000000);
+    if (q != ult) {
+      if (parado) {
+        printf("[parado] main thread back after %u ms; last step \"%s\"\n", agora - desde, dito ? dito : "?");
+        fflush(stdout);
+      }
+      ult = q; desde = agora; parado = 0; linhas = 0; dito = NULL;
+    } else if (agora - desde >= 300u && p && strcmp(p, "eventos") && p != dito && linhas < 4) {
+      printf("[parado] main thread %u+ ms in \"%s\" (frame %u)\n", agora - desde, p, q);
+      fflush(stdout);
+      parado = 1; dito = p; linhas++;
+    }
+    usleep(50000);
+  }
+  return NULL;
+}
+void passo_iniciar(void) {
+  static int feito;
+  pthread_t t;
+  if (feito) return;
+  feito = 1;
+  if (pthread_create(&t, NULL, passoFio, NULL) == 0) pthread_detach(t);
+}
+
 static void *pedVidFio(void *x) {
   (void)x;
   for (;;) {
@@ -1021,6 +1065,16 @@ static EM_BOOL cicloWgt(int tipo, const EmscriptenVisibilityChangeEvent *e, void
   return EM_FALSE;
 }
 #endif
+#ifdef NV_WEBOS
+// A source focused 1 s in the source list (streams.h): the early TorBox
+// lookup for burn-in, as on the .tpk (tpk.c). tbburn_procurar_cedo checks the
+// plan, the setting and the file kind; an MP4 source never has embedded ASS.
+static void webosFonteEmFoco(const Stream *s) {
+  if (!s || s->mp4) return;
+  tbburn_procurar_cedo(s->url, s->hashTorrent[0] ? s->hashTorrent : s->infoHash, s->arquivo, s->tamanhoBytes,
+                       "source focused 1 s");
+}
+#endif
 
 int main(int argc, char **argv) {
   // NUMERO COM PONTO, SEMPRE. O host .NET do .tpk poe o processo no locale do
@@ -1138,6 +1192,7 @@ int main(int argc, char **argv) {
   // lancamento (URL autenticada, tokens) naquele payload — iriam direto ao
   // registro da sessao. O sinal de ciclo chega pelo allowlist ja logado em
   // [ciclo] (nome/estado do evento de janela/app), sem payload nenhum.
+  stream_foco_demorado = webosFonteEmFoco;   // TorBox burn-in: early account lookup (tbburn.h)
 #endif
 
 #ifdef __EMSCRIPTEN__
@@ -1937,6 +1992,9 @@ int main(int argc, char **argv) {
   // verdade. Esticado 4x, nenhuma borda de texel aparece.
   gfx_borrao_iniciar(480, 270);
   NV_ETAPA("primeiro quadro");
+#ifdef NV_TPK
+  passo_iniciar();   // passo.h: names the step of a main-thread stall
+#endif
 
   Uint32 ultRelato = SDL_GetTicks();
   double txtMsQuadro = 0, piorTxtMs = 0;
@@ -2024,7 +2082,10 @@ int main(int argc, char **argv) {
 #endif
     // Enquanto o detalhe existe ele fica com o teclado inteiro: a home
     // continua desenhada por baixo, mas nao deve reagir ao D-pad.
+    passo_quadro();
+    NV_PASSO("eventos");
     while (SDL_PollEvent(&e)) {
+      NV_PASSO("evento (tecla/janela)");
 #if defined(NV_ANDROID) && defined(NV_TOUCH_UI)
       if (android_toque_cancelado(&e)) {
         ponteiro_cancelar_toque();
@@ -2091,6 +2152,16 @@ int main(int argc, char **argv) {
           ponteiro_evento(&e, app_evento);
           quadroc_suspendeu(&quadroRel);   // suspendeu: o relogio para de valer
         }
+#ifdef NV_WEBOS
+        // SAIDA E VOLTA DO APP (player.c / video.c): so a janela escondida ou
+        // minimizada solta o video; foco perdido (barra da Home, menu da TV
+        // por cima) nao. Qualquer sinal de volta reabre.
+        if (e.window.event == SDL_WINDOWEVENT_HIDDEN) player_webos_janela(1, "window hidden");
+        else if (e.window.event == SDL_WINDOWEVENT_MINIMIZED) player_webos_janela(1, "window minimized");
+        else if (e.window.event == SDL_WINDOWEVENT_SHOWN) player_webos_janela(0, "window shown");
+        else if (e.window.event == SDL_WINDOWEVENT_RESTORED) player_webos_janela(0, "window restored");
+        else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) player_webos_janela(0, "focus gained");
+#endif
 #ifdef NV_TOUCH_UI
         if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
             e.window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -2143,6 +2214,14 @@ int main(int argc, char **argv) {
       }
       player_ciclo_evento(e.type);
       if (e.type == SDL_APP_DIDENTERFOREGROUND) { atualizacao_retomou(); quadroc_suspendeu(&quadroRel); }
+#ifdef NV_WEBOS
+      if (e.type == SDL_APP_WILLENTERBACKGROUND || e.type == SDL_APP_DIDENTERBACKGROUND)
+        player_webos_janela(1, "app to background");
+      else if (e.type == SDL_APP_DIDENTERFOREGROUND) player_webos_janela(0, "app to foreground");
+      // Reserva: o relaunch do webOS nem sempre vira evento de janela
+      // (atualizacao.c). Uma tecla com o video solto e o app de volta.
+      else if (e.type == SDL_KEYDOWN && !e.key.repeat) player_webos_janela(0, "key pressed");
+#endif
       // PONTEIRO (Magic Remote, issue #99): mouse, rodinha e os avisos 484/485
       // de cursor do webOS ficam la; o que ele traduz em tecla chega a
       // app_evento como se viesse do D-pad.
@@ -2350,11 +2429,18 @@ int main(int argc, char **argv) {
     Uint64 t0 = NV_T0();
     tex_upl_n = 0; tex_upl_bytes = 0;
     gputempo_quadro_inicio();   // the GPU clock brackets uploads + draw
+    telalag_quadro_inicio();    // .tpk/webOS: the GPU queue limit (Auto at 75 %)
+#ifdef NV_TPK
+    queda_vigiar();             // .tpk: our SIGSEGV handler stays on top (one syscall; queda.h)
+#endif
+    NV_PASSO("tex_bombear");
     tex_bombear(3);
     fBomb = NV_DT(t0);
     fUplN = tex_upl_n; fUplB = tex_upl_bytes;
     t0 = NV_T0();
+    NV_PASSO("app");
     app_atualizar(dt, agora);
+    NV_PASSO("depois do app");
     // COR VIVA: UMA vez por quadro, antes do desenho. Consome o pedido que o
     // desenho do quadro anterior fez (corviva_definir) e anda a transicao; o
     // desenho deste quadro so le o resultado (ajustes_acento, NV_COR_FUNDO_*).
@@ -2440,6 +2526,7 @@ int main(int argc, char **argv) {
     t0 = NV_T0();
     txt_novo_quadro();
     ponteiro_quadro(agora);
+    NV_PASSO("desenho");
     desktop_native_sidebar(0,0);
     app_desenhar(agora);
     desktop_native_finish();
@@ -2476,6 +2563,7 @@ int main(int argc, char **argv) {
     capturaSeSolicitado();
     fAux = NV_DT(t0);
     gputempo_quadro_fim();
+    telalag_quadro_fim();       // .tpk/webOS: the fence for this frame
     t0 = NV_T0();
     int playerUi = player_ui_frame(player_aberto(), gfx_n_rect, gfx_n_outros);
     int playerClockUi = playerUi;
@@ -2500,6 +2588,7 @@ int main(int argc, char **argv) {
       playerUiPrevious = playerClockUi;
     }
     if (!nvPrimeiroQuadroFeito) arranque_etapa("primeiro SwapWindow");
+    NV_PASSO("swap");
     SDL_GL_SwapWindow(win);
 #ifdef NV_DESKTOP_MPV
     video_desktop_swap();

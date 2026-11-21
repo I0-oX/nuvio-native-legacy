@@ -5,12 +5,26 @@ TMPDIR="${TMPDIR%/}"
 # network/TLS protocols or software video decoders enter the TV executable.
 #
 # NUVIO_DTS_TARGET picks the build:
-#   webos (default) cross build with the LG SDK (tools/Dockerfile); output unchanged.
+#   webos (default) cross build with the LG SDK (tools/Dockerfile).
+#                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c, webOS):
+#                   the TrueHD/MLP decoders (converted to AC3/AAC), the mpegts/adts
+#                   muxers and the mp4 muxer (FLAC and Opus go as is in fMP4, as on
+#                   the .tpk), the opus parser (laced Opus, see tpk below). Still no
+#                   mpegts demuxer: TorBox's segments are stripped by hand
+#                   (tba_ts_sem_audio), never demuxed.
 #   tpk             Samsung .tpk (tools/tpk.sh). ARM32 build inside the selected SDK
 #                   container, from the source tree tpk.sh already downloaded and checked on the
 #                   host (NUVIO_DTS_SRC; the container has no curl). Adds what the Samsung loopback
 #                   converter needs: TrueHD/MLP
 #                   decoders, mpegts/matroska/mp4 muxers, mlp/ac3 parsers, truehd_core.
+#                   The opus parser: Matroska-laced Opus without DefaultDuration
+#                   (mkvmerge) only has a timestamp on each block's first frame;
+#                   the parser gives every frame its length, so FFmpeg fills
+#                   the rest (without it 15 of 100 packets per 2 s: no sound).
+#                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c): the adts
+#                   muxer (the MPEG-TS muxer wraps copied AAC with it). FLAC and Opus go
+#                   as is in fMP4, so no FLAC/Opus decoder. No mpegts demuxer: TorBox's
+#                   segments are stripped by hand (tba_ts_sem_audio), never demuxed.
 set -eu
 VERSION=7.1.5
 SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
@@ -36,8 +50,8 @@ if [ "$TARGET" = tpk ]; then
   SRC=${NUVIO_DTS_SRC:?tools/tpk.sh passes the extracted ffmpeg-$VERSION source}
   CC=${CC:-gcc}
   DECODERS=$DECODERS,truehd,mlp
-  MUXERS=mpegts,matroska,mp4
-  PARSERS=$PARSERS,mlp,ac3
+  MUXERS=mpegts,matroska,mp4,adts
+  PARSERS=$PARSERS,mlp,ac3,opus
   BSFS=$BSFS,truehd_core
   # zlib: Matroska tracks stored zlib-compressed (ContentCompression) and MP4
   # with a compressed header (cmov) arrive raw without it ("Unsupported encoding
@@ -58,6 +72,13 @@ else
   DECODERS=$DECODERS,truehd,ac3,eac3
   PARSERS=$PARSERS,mlp,ac3
   CC=${CC:-arm-webos-linux-gnueabi-gcc}
+  # Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c): TrueHD/MLP are
+  # converted to AC3/AAC; FLAC and Opus go as is as an fMP4 audio rendition (as
+  # on the .tpk). adts is what the mpegts muxer wraps copied AAC with (it is
+  # not a separate lib); the opus parser times laced Opus frames.
+  DECODERS=$DECODERS,truehd,mlp
+  MUXERS=mpegts,adts,mp4
+  PARSERS=$PARSERS,mlp,ac3,opus
   archive="$BUILD/ffmpeg-$VERSION.tar.xz"
   [ -f "$archive" ] || curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz" -o "$archive"
   printf '%s  %s\n' "$SHA256" "$archive" | sha256sum -c -

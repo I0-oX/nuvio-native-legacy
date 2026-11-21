@@ -54,6 +54,14 @@ int  video_tocar_posicao(const char *url, double segundos);
 // sobre a duracao do container ANTES do primeiro quadro; mesmo ack/estado.
 int  video_tocar_retomada(const char *url, double segundos, double pct);
 int  video_retomada_inicial_estado(void);
+#endif
+#ifdef NV_TPK
+// .tpk (owner 18/11): the point goes with the open; the host seeks in Ready,
+// before Start. Same estado (0 waiting, 1 applied, -1 the seek after ready).
+int  video_tocar_retomada(const char *url, double segundos, double pct);
+int  video_retomada_inicial_estado(void);
+#endif
+#ifdef NV_ANDROID
 // Fonte preparada na pagina do titulo: player pausado, sem imagem, audio ou
 // eventos da sessao de reproducao. Token identifica o dono; zero cancela todos.
 int  video_precarregar(const char *url, const char *cabecalhos, double segundos,
@@ -203,8 +211,32 @@ int    video_reconectando(void);
 // Seek sent and not yet confirmed by the TV (video_tpk.c), and a counter of
 // seeks the TV refused (EV_BUSCA_FALHOU). Used by player.c to hold the bar on
 // the target instead of the stale position.
-int      video_busca_em_voo(void);
+int    video_busca_em_voo(void);
 unsigned video_busca_falhas(void);
+#endif
+#if defined(NV_TPK) || defined(NV_WEBOS)
+// SUBTITLE CLOCK (owner 25/10; webOS 14/11). The position is a real reading,
+// stamped on the CLOCK_MONOTONIC in seconds, and it is stale by `incerteza`
+// (the .tpk host queries the TV for 50-600 ms and stamps the middle of it;
+// webOS is pushed the currentTime event and stamps its arrival, the event
+// cadence being the uncertainty). 1 = there is a reading; *seq changes with
+// every new one. Same transform as video_pos. 2.1 owns the name
+// video_pos_amostra(Uint64*); this stamped reading is a separate API.
+int      video_pos_amostra_carimbo(double *pos, double *carimbo, double *incerteza, unsigned *seq);
+// 1 from a seek until the first real reading of where the TV landed (the TV
+// seeks to a keyframe, seconds before the target). Subtitles hide meanwhile.
+int      video_pos_incerta(void);
+// Frame rate and HDR of the playing file, per kind of video (legimagem.c):
+// the .tpk host's MKV header; on webOS the MKV probe (DefaultDuration,
+// transfer/DV) plus the pipeline's hdrType. 0 = unknown.
+int      video_tpk_quadro(double *fps, int *hdr);
+// Colour of the playing MKV's video (Colour element): MatrixCoefficients and
+// Range as in the file (0 = not stated), and HDR. 0 = no MKV video track.
+int      video_tpk_cor(int *matriz, int *faixa, int *hdr);
+// Measurements for the libass log (assrender.c): position readings since the
+// last call. n = arrived, fora = dropped (query older than the last seek),
+// somaMs / maxMs = time the query took. Resets the counters.
+void     video_tpk_leituras(int *n, int *fora, long *somaMs, int *maxMs);
 #endif
 int    video_tocando(void);
 // Pausa comprovada pelo backend da sessao atual, nao a intencao local de
@@ -370,7 +402,8 @@ void video_simular_estatisticas(const VideoStats *s);   // capturas; NULL zera
 // total do arquivo nunca casa pelo ordinal (mkv_casar_legendas exige contagem
 // igual) — nenhuma faixa ASS ia ao overlay do app, todas ficavam com a TV. O
 // lado do arquivo (MKV_MAX_FAIXAS) ja era 64.
-#define NV_FAIXA_MAX 64
+// 192 (17/11): remux com 145 faixas, 137 legendas (ver mkv.h).
+#define NV_FAIXA_MAX 192
 
 typedef struct {
   char rotulo[112];  // "Ingles · Atmos 5.1" ou "Legenda 3"; 112: full file track title (menu cuts by width)
@@ -479,6 +512,13 @@ typedef struct {
   int negrito;    // 1 = peso negrito no overlay (so o que o app desenha)
   int corBorda;   // -1 unset (legacy outline); 0 Black, 1 White, 2 Yellow, 3 Green, 4 Blue, 5 Red
 } VideoLegendaEstilo;
+
+// Subtitle opacity is a stable ID from legopacidade.h (0 = 100%, 20 levels
+// from 100% to 5%); the saved 0/1/2/3 values mean 100/75/50/25% as before.
+// Wrapper for callers that need the fraction directly.
+static inline float video_legenda_opacidade(const VideoLegendaEstilo *e) {
+  return leg_opacidade_alpha(e ? e->opacidade : 0);
+}
 
 #define VIDEO_LEG_NCORES 6
 // A borda tem preto puro como padrao; as demais amostras usam a paleta do texto.
@@ -595,6 +635,9 @@ void video_simular(const VideoSimulacao *s);
 // One-reply webOS LS2 request; callback runs on the GLib thread.
 #if !defined(NV_TPK) && !defined(NV_ANDROID)
 int video_luna(const char *uri, const char *payload, void (*callback)(const char *, void *), void *context);
+// Taxa de quadros do video (DefaultDuration do MKV, lida por lerMkv em
+// video.c); 0 = desconhecida, e a grade de quadros do assrender desliga.
+double video_quadro_fps(void);
 #endif
 
 // MULTIVIEW — decodificadores EXTRA (alem da sessao principal). Slots sem

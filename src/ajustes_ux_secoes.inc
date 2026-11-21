@@ -238,7 +238,7 @@ static int ajCenaSecao(int op) {
     case AJ_OPENSEEK_COMPART: case AJ_OPENSEEK_AJ_M30: case AJ_OPENSEEK_AJ_M5: case AJ_OPENSEEK_AJ_M1: case AJ_OPENSEEK_AJ_P1: case AJ_OPENSEEK_AJ_P5: case AJ_OPENSEEK_AJ_P30: case AJ_OPENSEEK_DESFAZER: case AJ_OPENSEEK_REJEITAR:
       return AJC_REP_SEEKR;
     case AJ_IDIOMA: case AJ_TMDB_IDIOMA: return AJC_IDI_INTERFACE;
-    case AJ_LEG_MOSTRAR: case AJ_AUD_LINGUA: case AJ_AUD_LINGUA2: case AJ_LEG_LINGUA: case AJ_LEG_SYNC_AUTO: case AJ_LEG_SYNC_AUDIO: case AJ_LEG_FORCADA: case AJ_LEG_EVITAR_SDH: return AJC_IDI_FAIXAS;
+    case AJ_LEG_MOSTRAR: case AJ_AUD_LINGUA: case AJ_AUD_LINGUA2: case AJ_LEG_LINGUA: case AJ_LEG_SYNC_AUTO: case AJ_LEG_SYNC_AUDIO: case AJ_LEG_SYNC_AUDIO_MOVEL: case AJ_LEG_FORCADA: case AJ_LEG_QUEIMAR: case AJ_TB_AUDIO: case AJ_LEG_EVITAR_SDH: return AJC_IDI_FAIXAS;
     case AJ_LEG_LINGUA2: case AJ_LEG2_POS: case AJ_LEG2_TAMANHO: case AJ_LEG2_COR: case AJ_LEG2_FUNDO: case AJ_LEG2_BORDA:
     case AJ_LEG_CONTORNO_COR:
       return AJC_IDI_LEGENDA2;
@@ -259,7 +259,7 @@ static int ajCenaSecao(int op) {
     case AJ_ENQUETES: return AJC_CON_AVISOS;
     case AJ_DISCORD: case AJ_SALVOS_DEST: case AJ_CW_FONTE: case AJ_CW_PROXIMO: case AJ_HIST_CONTA: case AJ_SOCIAL: case AJ_DIARIO_NUVEM: return AJC_CON_SOCIAL;
     case AJ_PROVEDORES_ESCOPO: case AJ_DEBRID_RD: case AJ_DEBRID_TB: case AJ_DEBRID_PM: case AJ_DEBRID_AD: case AJ_DEBRID_AD_TESTAR:
-    case AJ_DEBRID_RD_TESTAR: case AJ_DEBRID_TB_TESTAR: case AJ_DEBRID_PM_TESTAR:
+    case AJ_DEBRID_RD_TESTAR: case AJ_DEBRID_TB_TESTAR: case AJ_DEBRID_PM_TESTAR: case AJ_TB_PLANO:
       return AJC_CON_CHAVES;
     case AJ_P2P_LIGADO: case AJ_P2P_URL: case AJ_P2P_TESTAR: case AJ_P2P_LIMITE: case AJ_P2P_DESTINO: return AJC_CON_P2P;
     case AJ_JF_LIGADO: case AJ_JF_SERVIDOR: case AJ_JF_ENTRAR: case AJ_JF_SAIR: case AJ_EM_SERVIDOR:
@@ -959,7 +959,8 @@ static void ajcIdiFaixas(int A) {
 #ifdef NV_ANDROID
   n = 5;
 #endif
-  if (ajc.op == AJ_LEG_SYNC_AUDIO) n = 5;
+  if (ajc.op == AJ_LEG_SYNC_AUDIO_MOVEL) OP[4] = AJ_LEG_SYNC_AUDIO_MOVEL;   // a linha em foco no lugar da sincronia por audio
+  if (ajc.op == AJ_LEG_SYNC_AUDIO || ajc.op == AJ_LEG_SYNC_AUDIO_MOVEL) n = 5;
   if (ajc.op == AJ_AUD_LINGUA2) OP[0] = AJ_AUD_LINGUA2;   // a linha em foco no lugar da principal
   CIMG(ajArte(AJA_FUNDO, A), 0, 0, 640, 360, 22, 1);
   gfx_veu_css(CR(0, 220, 640, 140), 0, 0, 1.0f, 0.6f);

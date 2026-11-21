@@ -57,13 +57,16 @@ with tempfile.TemporaryDirectory(prefix="nuvio-streamfit-passive-", dir=os.envir
     deps.append(aar_jar("androidx.core", "core", "1.13.1", tmp))
     deps.append(jar("androidx.annotation", "annotation-jvm", "1.6.0"))
     deps.append(aar_jar("androidx.annotation", "annotation-experimental", "1.4.0", tmp))
+    deps.append(aar_jar("org.jellyfin.media3", "media3-ffmpeg-decoder", "1.8.0+1", tmp))
     deps.append(jar("com.google.guava", "guava", "33.3.1-android"))
     deps.append(jar("com.squareup.okhttp3", "okhttp", "4.12.0"))
     deps.append(jar("com.squareup.okio", "okio-jvm", "3.6.0"))
     deps.append(aar_jar("androidx.tvprovider", "tvprovider", "1.0.0", tmp))
     # NvPlayer (thumbnails, live, HLS) and NuvioActivity transitively need the whole
-    # package, same as cacheboost_android.py.
-    sources = sorted(kt.glob("*.kt"))
+    # package, same as cacheboost_android.py; 06/11 adds the Reshaped audio sync.
+    sources = sorted(p for p in kt.glob("*.kt") if not p.name.startswith("AudioSync"))
+    sources += sorted((kt / "audiosync").glob("*.kt"))
+    sources.append(kt.parents[2] / "androidx" / "media3" / "decoder" / "ffmpeg" / "AudioSyncFfmpegDecoder.kt")
     java_roots = []
     if sdl.is_dir():
         java_roots = ["-Xjava-source-roots=" + str(sdl)]

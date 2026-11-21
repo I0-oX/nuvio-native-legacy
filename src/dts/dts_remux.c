@@ -35,10 +35,10 @@
 /* Real code only in the Samsung .tpk build with FFmpeg (and the host smoke
  * test). webOS also defines NV_DTS_FFMPEG but never remuxes: stubs there keep
  * its binary as it was. */
-#include "../audsync.h"
+#include "../audiooffset.h"
 #include <stdatomic.h>
 static atomic_int audioOffsetMs;
-void dts_remux_set_audio_offset_ms(int ms) { atomic_store(&audioOffsetMs, audsync_offset_ms(ms)); }
+void dts_remux_set_audio_offset_ms(int ms) { atomic_store(&audioOffsetMs, audio_offset_ms(ms)); }
 /* #605 exists in both builds so the callers need no ifdef. */
 static atomic_int gHdr10pStrip;
 void dts_remux_set_hdr10p_strip(int on) { atomic_store(&gHdr10pStrip, !!on); }

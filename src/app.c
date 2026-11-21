@@ -191,8 +191,10 @@
 #include "audiomemoria.h"
 #include "fontesmortas.h"
 #include "video.h"
+#include "passo.h"
 #ifdef NV_TPK
 void video_tpk_cdn_arquivo(const char *url, int usenet, int item, int file);
+#include "tpkborda.h"
 #endif
 #include "addons.h"
 #include "legauto.h"
@@ -951,6 +953,7 @@ static int armarPoliticaFonteAberta(int indice, int manual, const char *url) {
 #include "plex.h"
 #include "srvidx.h"
 #include "partes.h"
+#include "tbburn.h"
 #include "logrede.h"
 #include "extras.h"
 #include "perfilinfantil.h"
@@ -1617,6 +1620,9 @@ static int tocarFonteGuardada(void) {
   marco("abrir: fonte guardada, sem busca");
   stream_definir_atual(-1);
   voltaFonte = s;
+#if defined(NV_TPK) || defined(NV_WEBOS)
+  tbburn_fonte_guardada(s.url, s.hashTorrent[0] ? s.hashTorrent : s.infoHash, s.arquivo, s.tamanhoBytes);
+#endif
 #ifdef NV_ANDROID
   stream_contexto_guardado(&s);
 #endif
@@ -2791,6 +2797,9 @@ static void abrirProximoEpisodio(int t, int e, int apontar) {
   // Consumir/adotar vem antes do encerramento: posplay_fechar e video_parar
   // so podem cancelar os trabalhos que ainda pertencem ao episodio antigo.
   diagnostico_cancelar_vazao();
+#if defined(NV_TPK) || defined(NV_WEBOS)
+  tbburn_manter_proximo();   // the playback "Burn in" choice carries to the next episode
+#endif
   player_encerrar();
   limparFonteVOD();
   if (!nv_perfil_sessao_atual(sessaoPerfil) || (titulo = reabrirTitulo(titulo)) < 0) {
@@ -5652,7 +5661,9 @@ void app_atualizar(float dt, Uint32 agora) {
   col_arte_conta(ajustes_col_arte_conta());
   // O backend precisa progredir mesmo no login, perfis e transicoes que
   // retornam cedo: seek pendente no Tizen e prazo de recuo DV no webOS.
+  NV_PASSO("app: video_bombear");
   video_bombear();
+  NV_PASSO("app: depois do video");
   // Dolby Vision in MKV handed playback back to the TV player (HDR10).
   { int dvr = video_dv_recuo_consumir();
     if (dvr) {
@@ -5665,6 +5676,12 @@ void app_atualizar(float dt, Uint32 agora) {
       else ilha_avisar("dv-mkv", ILHA_INFO, NULL, t, 6000u, 0);
     } }
   player_validar_retido(agora);
+#ifdef NV_TPK
+  player_tpk_fundo_passo();
+#endif
+#ifdef NV_WEBOS
+  player_webos_fundo_passo();
+#endif
   if (tela == TELA_LOGIN) {
     login_atualizar(dt, agora);
     // A troca so acontece AQUI, quando a sessao existe de verdade — nao no
@@ -5802,6 +5819,7 @@ void app_atualizar(float dt, Uint32 agora) {
 
   // O fundo das listras (login e escolha de perfil) sai da memoria quando a
   // pessoa passa das duas telas. Sem textura carregada, e um teste e nada mais.
+  NV_PASSO("app: sessao/sync");
   login_soltar();
 
   // Um ciclo por vez, e so quando a conta existe. O passo e barato: sem fio
@@ -7625,7 +7643,9 @@ void app_atualizar(float dt, Uint32 agora) {
   // O player devolve 1 para a coluna de audio e 2 para a de legenda.
   { int q = player_pediu_faixas();
     if (q) faixas_abrir_em(q == 2 ? 1 : 0); }
+  NV_PASSO("app: faixas_atualizar");
   if (!player_retido()) faixas_atualizar(dt, agora);
+  NV_PASSO("app: folha e avisos");
   atualizarFolha(dt, agora);
   // FOLHA FECHADA SEM ESCOLHER, com o player esperando por ela. Voltar na
   // folha e "desisti", nao "tente sozinho": abrir a fonte que a pessoa acabou
@@ -7727,15 +7747,22 @@ void app_atualizar(float dt, Uint32 agora) {
     }
   }
 #endif
+  NV_PASSO("app: player_atualizar");
   player_atualizar(dt, agora);
+  NV_PASSO("app: depois do player");
+#ifdef NV_TPK
+  tpkborda_quadro();   // premult do GLView so enquanto o libass desenha (tpkborda.c)
+#endif
   // A barra por cima da pagina: o trailer do fundo fica mudo enquanto ela
   // esta aberta (detail_sob_menu). O pedido de barra da pagina e lido em
   // app_evento, no mesmo evento da ESQUERDA, e abre por cima dela.
   detail_sob_menu(detail_aberto() && menu_aberto());
+  NV_PASSO("app: detail/menu");
   detail_atualizar(dt, agora);
   if (!detail_aberto() && !desc_titulo_buscando()) trilhas_voltar_do_titulo();
   voltarAoPainel();
   menu_atualizar(dt, agora);
+  NV_PASSO("app: depois do detail/menu");
   // PÓS-REPRODUÇÃO. O proximo episodio reabre a busca de fonte com o id novo;
   // o titulo relacionado sai do player e abre o detalhe, que e onde o dono
   // escolhe se quer mesmo assistir.
@@ -7811,6 +7838,7 @@ void app_atualizar(float dt, Uint32 agora) {
     case TELA_DIAGNOSTICO: diagnostico_atualizar(dt, agora); break;
     case TELA_LIVETV_DIAG: livetvdiag_atualizar(dt, agora); break;
     default:              home_painel_aberto(spainel_aberto() || menu_aberto());
+                          NV_PASSO("app: home_atualizar");
                           home_atualizar(dt, agora);       break;
   }
   // TRAILER NO DESTAQUE: so com a home na frente de tudo. A lista e a mesma

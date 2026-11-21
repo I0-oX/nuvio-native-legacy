@@ -877,7 +877,7 @@ static const char *ajSelo(int op) {
 #if !defined(NV_TPK) && !defined(NV_ANDROID)
   if (op == AJ_DV_MKV) return "Só LG";
 #endif
-  if (op == AJ_LEG_SYNC_AUDIO) return "Android";
+  if (op == AJ_LEG_SYNC_AUDIO || op == AJ_LEG_SYNC_AUDIO_MOVEL) return "Android";
   // 2.1: "Avancado", "Esta TV" e "Este perfil" sairam da linha; o alcance mora
   // no inspetor ("Vale para") e as tecnicas ja estao atras de "Mais opcoes".
   return NULL;

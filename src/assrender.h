@@ -92,4 +92,21 @@ int  assrender_ler_pasta_fontes(const char *dir,
 /* Pasta de fontes do app que o libass le: <base>fonts, ou deploy/app/fonts. */
 void assrender_pasta_fontes_app(const char *base, int wasm, char *out, size_t n);
 
+#ifdef NV_TPK
+// Borda das legendas (tpkborda.c): 1 = o libass desenhou ou vai desenhar
+// (fala em ate 200 ms) no ultimo segundo, com a faixa ativa.
+int assrender_borda_quer(void);
+#endif
+
+// Frame rate of the video (0 = unknown). With it, the subtitle instant and the
+// render-ahead requests sit in the MIDDLE of a video frame: typeset is timed
+// per frame, and an instant on the boundary flipped a sign one frame early or
+// late with a few ms of clock jitter (owner 25/10).
+void assrender_definir_fps(double fps);
+// The video's colour (MKV Colour element: MatrixCoefficients, Range; 0 = not
+// stated), whether it is HDR and its height. With them, ASS colours authored
+// for another YCbCr matrix (the script's "YCbCr Matrix") are converted to the
+// video's, as mpv and VSFilter do (.tpk only).
+void assrender_definir_cor_video(int matriz, int faixa, int hdr, int altura);
+
 #endif

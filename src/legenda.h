@@ -45,6 +45,11 @@ typedef struct {
   // criterio de desempate: dois eventos no mesmo instante empilham na ordem em
   // que o fansub os escreveu, que e a ordem em que ele pensou a tela.
   int   ordem;
+  // ASS: asssinais_hash of the line's Text field (0 otherwise). With
+  // "Dialogue by libass" Off the app draws the dialogue and libass the signs
+  // & songs; a line found in the Signs & Songs track later is a sign
+  // (legenda_cue_sinal), never drawn twice.
+  unsigned assHash;
 } LegendaCue;
 
 /* OpenSubtitles e desenhado pela UI, acima do plano de video. */
@@ -79,6 +84,11 @@ int  legenda_texto(double posSeg, int atrasoMs, char *dst, size_t tam);
 // Todos os blocos vivos em `posSeg`, ate `max`. Devolve quantos preencheu.
 // Ordem: a do arquivo (ver `ordem`), que e a ordem de empilhamento na tela.
 int  legenda_cues(double posSeg, int atrasoMs, LegendaCue *dst, int max);
+// "Dialogue by libass" Off (.tpk, owner 19/11/2026): the app draws the
+// dialogue of a styled ASS track, libass the signs & songs.
+int  legenda_dialogo_pelo_app(void);
+// That mode: the cue turned out to be a sign/song (asssinais.h): libass draws it.
+int  legenda_cue_sinal(const LegendaCue *c);
 
 /* Parser puro, tambem usado pela regressao. O chamador libera *saida.
  * RECONHECE O FORMATO SOZINHO: SRT/VTT pelo "-->" e ASS/SSA pelo cabecalho.
@@ -103,6 +113,8 @@ int legenda_extrair_srt(const char *corpo, LegendaCue **saida);
 int legenda_extrair_ass(const char *corpo, LegendaCue **saida);
 /* 1 quando o corpo se parece com ASS/SSA. */
 int legenda_eh_ass(const char *corpo);
+/* 1 while the subtitle on (this generation) is an ASS/SSA document. */
+int legenda_ass_ativa(void);
 
 /* Immutable subtitle documents, independent of the currently drawn overlay.
  * Build once on a worker, retain while analysing/drawing, release when done.
@@ -114,7 +126,12 @@ enum {
   LEGENDA_DOC_COMPLETO = 1u << 0,
   LEGENDA_DOC_FORCED = 1u << 1,
   LEGENDA_DOC_SINAIS = 1u << 2,
-  LEGENDA_DOC_JANELA = 1u << 3 /* COMPLETO somente entre janelaInicio/Fim */
+  LEGENDA_DOC_JANELA = 1u << 3, /* COMPLETO somente entre janelaInicio/Fim */
+  /* Timing-only reference whose cue ENDS are partly estimated (an index point
+   * without CueDuration: end = next start, capped). Starts are exact. The
+   * engine then matches on starts only. Set only by legref's index mode
+   * (.tpk 6+); no other document carries it. */
+  LEGENDA_DOC_FIM_ESTIMADO = 1u << 4
 };
 typedef struct {
   char idioma[24], origem[96], identidade[128];
