@@ -70,7 +70,9 @@ static int hostErroCod, hostErroPreparo;
 static void hostInvalidar(void) {
   pthread_mutex_lock(&hostTrava); hostGer = hostErroGer = 0; pthread_mutex_unlock(&hostTrava);
 }
-static void hostAbrir(const char *url, const char *cab) {
+// 2.1: every open carries a generation, so a late error of an old open is not
+// this one's. Our hostAbrir (below: saved point / resume headers) goes through it.
+static void hostAbrirGeracao(const char *url, const char *cab) {
   unsigned ger = ++hostProx;
   if (!ger) ger = ++hostProx;
   pthread_mutex_lock(&hostTrava); hostGer = ger; hostErroGer = 0; pthread_mutex_unlock(&hostTrava);
@@ -615,7 +617,8 @@ void nv_tpk_video_legenda(const char *texto, int durMs) {
 enum { EV_PRONTO = 1, EV_TOCANDO = 2, EV_PAUSADO = 3, EV_FIM = 4, EV_ERRO = 5,
        EV_TAMANHO = 6, EV_BUFFER = 7, EV_VELOCIDADE = 8,
        EV_PRESO = 9, EV_CONSULTA_LENTA = 10, EV_BUSCOU = 11, EV_BUSCA_FALHOU = 12,
-       EV_RETOMADA = 13, EV_INICIO = 14 };
+       EV_RETOMADA = 13, EV_INICIO = 14,
+       EV_INFO = 15 };   // 2.1's StreamInfo fps/bitrate (was a raw 13, which EV_RETOMADA already had)
 
 // SEEK QUE A TV RECUSA NUM MKV DE INDICE ESCONDIDO (mkvfix.h). `hostUrl` e o
 // que o player recebeu de verdade (link do CDN, do addon ou do TorBox): e ele
@@ -679,7 +682,7 @@ static void hostAbrir(const char *url, const char *cab) {
                tb.ativo ? "TorBox's burned stream" : mf.ativo ? "through the local fix" : "the source");
         fflush(stdout);
         snprintf(c, sizeof c, "%s%sX-Nuvio-Start: %d", cab ? cab : "", cab && *cab ? "\n" : "", ms);
-        hAbrir(url, c);
+        hostAbrirGeracao(url, c);
         return;
       }
       ini.estado = -1;
@@ -687,14 +690,14 @@ static void hostAbrir(const char *url, const char *cab) {
              cv.ativo ? "converted DTS/TrueHD stream" : ini.seg <= 1.0 && ini.pct > 0 ? "a percent, the file's length not known yet" : "no point");
       fflush(stdout);
     }
-    hAbrir(url, cab);
+    hostAbrirGeracao(url, cab);
     return;
   }
   ms = hostPontoMs();
   retHost = 1;
   atomic_store(&retHostFim, 0); atomic_store(&retHostMs, -1);
   snprintf(c, sizeof c, "%s%sX-Nuvio-Resume: %d,%d", cab ? cab : "", cab && *cab ? "\n" : "", ms, !retQuerTocar);
-  hAbrir(url, c);
+  hostAbrirGeracao(url, c);
 }
 
 static void abrirHost(const char *url, const char *cab) {
@@ -788,7 +791,7 @@ void nv_tpk_video_evento(int tipo, int a, int b) {
                      atomic_store(&temErroDetalhe, 1);
                      reconErroCod = a; reconErroPend = 1; tocando = 0; atomic_store(&pausaAck, 0);
                      printf("[video] tpk: player error 0x%08x (%d)\n", (unsigned)a, b); break;
-    case 13: // output fps / video bitrate from StreamInfo, on the session worker
+    case EV_INFO: // output fps / video bitrate from StreamInfo, on the session worker
       pthread_mutex_lock(&infoTrava); infoTpk.fps = a > 0 ? a : 0; infoTpk.kbps = b > 0 ? b / 1000 : 0;
       pthread_mutex_unlock(&infoTrava); break;
     case EV_TAMANHO: largura = a; altura = b; break;

@@ -124,7 +124,7 @@ namespace NuvioTpk
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int FnPos();
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnEscolher(int tipo, int idx);
 
-        const int EV_PRONTO = 1, EV_TOCANDO = 2, EV_PAUSADO = 3, EV_FIM = 4, EV_ERRO = 5, EV_TAMANHO = 6, EV_BUFFER = 7, EV_VELOCIDADE = 8, EV_PRESO = 9, EV_CONSULTA_LENTA = 10, EV_BUSCOU = 11, EV_BUSCA_FALHOU = 12, EV_RETOMADA = 13, EV_INICIO = 14;
+        const int EV_PRONTO = 1, EV_TOCANDO = 2, EV_PAUSADO = 3, EV_FIM = 4, EV_ERRO = 5, EV_TAMANHO = 6, EV_BUFFER = 7, EV_VELOCIDADE = 8, EV_PRESO = 9, EV_CONSULTA_LENTA = 10, EV_BUSCOU = 11, EV_BUSCA_FALHOU = 12, EV_RETOMADA = 13, EV_INICIO = 14, EV_INFO = 15;
 
         readonly Func<Display> fazDisplay;
         readonly Action<Action> principal;
@@ -720,7 +720,7 @@ namespace NuvioTpk
                 try { dur = p.StreamInfo.GetDuration(); } catch { }
                 try { var v = p.StreamInfo.GetVideoProperties();
                     NvVid.Evento(EV_TAMANHO, v.Size.Width, v.Size.Height);
-                    NvVid.Evento(13, v.Fps, v.BitRate);
+                    NvVid.Evento(EV_INFO, v.Fps, v.BitRate);
                     NvVid.Faixa(2, 0, p.StreamInfo.GetVideoCodec() ?? "");
                 } catch { }
                 int nAudio = Faixas(p);

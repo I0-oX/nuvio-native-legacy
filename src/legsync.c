@@ -528,6 +528,18 @@ void legsync_audio_falhou(const char *chave, const char *motivo) {
   pthread_mutex_unlock(&M);
 }
 
+// 2.1 (faixas.c): the person picked another audio track. What the audio
+// backend was still listening to or working out came from the old track: it
+// stops (an accepted map stays: the timing does not depend on the language).
+void legsync_audio_trocou(void) {
+  pthread_mutex_lock(&M);
+  if (L.criado && (L.audEtapa == 1 || (L.audEtapa == 2 && !L.audN))) {
+    pararAudio();
+    printf("[legsync] audio: another audio track picked; the audio sync in progress stops\n"); fflush(stdout);
+  }
+  pthread_mutex_unlock(&M);
+}
+
 void legsync_audio_trocar(const char *chave, const char *url) {
   pthread_mutex_lock(&M);
   if (L.criado && mesmaChave(chave) && url && url[0]) {

@@ -123,6 +123,9 @@ void legsync_audio_falhou(const char *chave, const char *motivo);
 // O audio encaixa melhor OUTRA legenda do idioma (url de add-on): troca, se a
 // regra de uma troca por episodio deixar; a legenda nova adota o mapa.
 void legsync_audio_trocar(const char *chave, const char *url);
+// The person picked another audio track (faixas.c): an audio sync still
+// listening or without a map stops.
+void legsync_audio_trocou(void);
 
 // R4: SINCRONIA AUTOMATICA. Toda legenda externa que entra como principal
 // (escolha da pessoa ou a automatica de idioma) e sincronizada sozinha contra a
