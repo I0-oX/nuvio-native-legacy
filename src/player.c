@@ -5776,7 +5776,8 @@ static double escalaFonteAss(void) {
   /* Styled ASS on the .tpk and webOS: its own dialogue size (Subtitles > Style),
    * 100 % = as authored. .tpk and webOS: libass scales only the dialogue
    * (selective font scale, ass_escala_dialogo_locked); signs keep their size. */
-  if (ASS_NOVO) return assperf_get(AP_ASSTAM) / 100.0;   /* signs & songs never (libass nv_sign, asssinais.h) */
+  if (ASS_NOVO && !assrender_texto_simples())
+    return assperf_get(AP_ASSTAM) / 100.0;   /* signs & songs never (libass nv_sign, asssinais.h) */
 #endif
   if (pct < TXT_LEG_PCT_MIN) pct = TXT_LEG_PCT_MIN;
   if (pct > TXT_LEG_PCT_MAX) pct = TXT_LEG_PCT_MAX;

@@ -2078,6 +2078,15 @@ static int ass_inc_lote(const char *corpo, size_t tamanho, unsigned geracao) {
     incPronto = 0;
     goto fim;
   }
+  /* Fonts on demand (mkvass): a batch can bring the attached font a family
+   * was already drawn without (Arial). libass keeps that pick in its font
+   * cache until ass_set_fonts, so the rebuild runs here too, not only on a
+   * full load (ass_carregar). */
+  { int fb = __atomic_load_n(&assFallbacks, __ATOMIC_RELAXED);
+    if (assFonteNovaTarde && fb > 0) {
+      ass_aplicar_fontes_locked();
+      fprintf(stderr, "[ass] attached fonts arrived after %d fallback font pick(s): font choice redone (batch)\n", fb);
+    } }
   if (reconstruir) { ass_flush_events(assTrack); incEvN = 0; ass_pod_soltar(); }
   if (incEvN != assTrack->n_events) {
     /* Desalinhou (nao deveria): refaz na proxima entrega. */

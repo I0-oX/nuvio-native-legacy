@@ -166,11 +166,12 @@ static long lerId(const unsigned char *p, long n, int *usados) {
 }
 
 void asssinais_bloco(unsigned long clTs, const unsigned char *b, long n) {
-  int ui = 0, us = 0, ut = 0, virgulas = 0;
+  int ui = 0, us = 0, ut = 0, virgulas = 0, fx;
   long id = lerId(b, n, &ui), k;
   long long tam, trk, ms;
   const unsigned char *bl = NULL; long blN = 0;
   unsigned long esc;
+  unsigned ger;
   char texto[1024]; long tn = 0;
   if (id != 0xA0 && id != 0xA3) return;
   tam = lerTam(b + ui, n - ui, &us);
@@ -189,9 +190,12 @@ void asssinais_bloco(unsigned long clTs, const unsigned char *b, long n) {
   }
   if (!bl || blN < 4) return;
   trk = lerTam(bl, blN, &ut);
-  if (trk != asssinais_relay_faixa() || ut + 3 > blN) return;
+  /* One snapshot of the partner, its scale and generation: a track switch
+   * (asssinais_definir on another thread) in the middle must not put the old
+   * partner's line into the new table. */
+  pthread_mutex_lock(&trava); fx = faixa; esc = escala; ger = geracao; pthread_mutex_unlock(&trava);
+  if (!fx || trk != fx || ut + 3 > blN) return;
   if (bl[ut + 2] & 0x06) return;   // laced: never a subtitle
-  pthread_mutex_lock(&trava); esc = escala; pthread_mutex_unlock(&trava);
   ms = ((long long)clTs + (short)((bl[ut] << 8) | bl[ut + 1])) * (long long)esc / 1000000LL;
   /* "ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text" */
   for (k = ut + 3; k < blN && virgulas < 8; k++) if (bl[k] == ',') virgulas++;
@@ -201,7 +205,7 @@ void asssinais_bloco(unsigned long clTs, const unsigned char *b, long n) {
   { unsigned h = asssinais_hash(texto);
     if (!h) return;
     pthread_mutex_lock(&trava);
-    if (faixa) inserir_locked(ms, h);
+    if (faixa == fx && geracao == ger) inserir_locked(ms, h);
     pthread_mutex_unlock(&trava); }
 }
 

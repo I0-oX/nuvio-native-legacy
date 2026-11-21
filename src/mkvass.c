@@ -1712,9 +1712,9 @@ static void prebuscaTextoSoltar(Fio *f);
  * Signs & Songs, of the chosen track's language if there is one. */
 static void sinaisDoArquivo(Fio *f, const unsigned char *p, long n) {
   Iter it = { p, n, 0 }; unsigned long id; const unsigned char *d; long t;
-  struct { int numero, ass, sinais; char lang[16]; } v[64];
+  struct { int numero, ass, sinais; char lang[16]; } v[MKVASS_MAX_LEGENDAS];
   int nv = 0, i, meu = -1, par = 0, parLang = 0;
-  while (proximo(&it, &id, &d, &t) && nv < 64) {
+  while (proximo(&it, &id, &d, &t) && nv < MKVASS_MAX_LEGENDAS) {
     Iter j; unsigned long fid; const unsigned char *fd; long ft;
     char nome[128] = "";
     if (id != ID_TRACKENTRY) continue;
@@ -2591,12 +2591,7 @@ static long lerBloco(Fio *f, const unsigned char *p, long n, const ClCache *cl,
   if (!bl || blN < 4) return total;
   { int vt = 0; long trk = lerVint(bl, blN, &vt); int rel; unsigned flags;
     double ini, fim;
-    if (trk != f->faixa || vt + 3 > blN) {
-#ifdef NV_WEBOS
-      if (trk > 0 && trk == f->faixaSinais && cl->temTs) sinaisBloco(f, cl->ts, p, total);
-#endif
-      return total;
-    }
+    if (trk != f->faixa || vt + 3 > blN) return total;
     rel = (int)(short)((bl[vt] << 8) | bl[vt + 1]);
     flags = bl[vt + 2];
     // Start = Timestamp do Cluster + relativo do bloco. Sem Timestamp no
@@ -2639,11 +2634,62 @@ static long lerBloco(Fio *f, const unsigned char *p, long n, const ClCache *cl,
 
 static int blocoDaFaixa(const Fio *f, const unsigned char *p, long n);
 
+#ifdef NV_WEBOS
+/* The track number of the block element at p (BlockGroup with Block first,
+ * or SimpleBlock) and its relative timestamp; 0 = not a block / cut. */
+static long faixaDoBloco(const unsigned char *p, long n, int *rel) {
+  int ui = 0, ut = 0, vt = 0; unsigned long id; long tam, blN, trk;
+  const unsigned char *bl;
+  id = lerId(p, n, &ui);
+  if (id != ID_BLOCKGROUP && id != ID_SIMPLEBLOCK) return 0;
+  tam = lerTam(p + ui, n - ui, &ut);
+  if (tam < 4) return 0;
+  bl = p + ui + ut; blN = n - ui - ut; if (blN > tam) blN = tam;
+  if (id == ID_BLOCKGROUP) {
+    int bi = 0, bt = 0; long bn;
+    if (lerId(bl, blN, &bi) != ID_BLOCK) return 0;
+    bn = lerTam(bl + bi, blN - bi, &bt);
+    if (bn < 4 || bi + bt + bn > tam) return 0;
+    bl += bi + bt; blN -= bi + bt;
+  }
+  trk = lerVint(bl, blN, &vt);
+  if (trk <= 0 || vt + 2 > blN) return 0;
+  if (rel) *rel = (int)(short)((bl[vt] << 8) | bl[vt + 1]);
+  return trk;
+}
+/* Signs & Songs partner (sinaisBloco): every whole block element in p[o..n)
+ * of the same Cluster. clTs: the Cluster's timestamp, else derived from the
+ * first block (a point of this track: its absolute time is the CueTime). */
+static void sinaisVarrer(Fio *f, const unsigned char *p, long n, long o, const ClCache *cl, unsigned long cueTempo) {
+  unsigned long clTs;
+  int rel = 0;
+  if (f->faixaSinais <= 0 || o < 0 || o >= n) return;
+  if (cl->temTs) clTs = cl->ts;
+  else {
+    if (!faixaDoBloco(p + o, n - o, &rel) || (long long)cueTempo < rel) return;
+    clTs = (unsigned long)((long long)cueTempo - rel);
+  }
+  while (o < n) {
+    int ui = 0, ut = 0; unsigned long id = lerId(p + o, n - o, &ui); long tam, total;
+    if (id != ID_BLOCKGROUP && id != ID_SIMPLEBLOCK) break;   // another Cluster or not a block: stop
+    tam = lerTam(p + o + ui, n - o - ui, &ut);
+    if (tam <= 0 || tam > n - o - ui - ut) break;            // cut at the end of the window
+    total = ui + ut + tam;
+    if (faixaDoBloco(p + o, total, NULL) == f->faixaSinais) sinaisBloco(f, clTs, p + o, total);
+    o += total;
+  }
+}
+#endif
+
 // Interpreta os pontos [i..j] a partir de um buffer que comeca no byte
 // `bufIni` do arquivo. Mesmo contrato de colherGrupo.
 static int colherDoBuffer(Fio *f, int i, int j, unsigned char *p, long n, Off bufIni,
                           const ClCache *cl) {
   int k;
+#ifdef NV_WEBOS
+  { Off oi = f->pontos[i].cluster + cl->hdr + f->pontos[i].rel - bufIni;
+    if (oi >= 0 && oi < n) sinaisVarrer(f, p, n, (long)oi, cl, f->pontos[i].tempo); }
+#endif
   for (k = i; k <= j; k++) {
     // A diferenca e pequena (cabe no buffer) so quando o ponto esta nele.
     Off oo = f->pontos[k].cluster + cl->hdr + f->pontos[k].rel - bufIni;
@@ -3045,6 +3091,14 @@ static int varrerTrecho(Fio *f, int i, double tLim) {
             if (f->sujo && (!f->primeiraFala || agoraMs() - f->ultEntrega >= MKVASS_ENTREGA_MS))
               entregar(f);
           } else if (g != 2) { r = g; goto sair; }
+#ifdef NV_WEBOS
+        } else if (g == 1 && ctam <= MKVASS_VARRE_BLOCO && cl.temTs && f->faixaSinais > 0 &&
+                   faixaDoBloco(p, disp, NULL) == f->faixaSinais) {
+          // Signs & Songs partner (sinaisBloco): read here because it is here.
+          g = garantir(f, wp, o, cab + ctam, lim, &p, &disp);
+          if (g == 1) sinaisBloco(f, cl.ts, p, cab + ctam);
+          else if (g != 2) { r = g; goto sair; }
+#endif
         } else if (g != 1 && g != 2) { r = g; goto sair; }
       }
       o = cfim;

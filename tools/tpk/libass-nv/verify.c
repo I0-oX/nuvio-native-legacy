@@ -228,7 +228,10 @@ static int check_split(ASS_Library *lib, const char *file, int simd, const Frame
     ass_nv_set_split(rh, 2, 1);
     ass_set_frame_size(rh, W / 2, H / 2);
     ASS_Track *t = ass_read_file(lib, (char *) file, NULL);
-    if (!t) return frames + 1;
+    /* rh: its own copy of the track. The collision memory lives on the
+     * track's events per slot, and rh would share rb's slot 1 on `t`. */
+    ASS_Track *th = ass_read_file(lib, (char *) file, NULL);
+    if (!t || !th) return frames + 1;
     int diff = 0;
     for (int k = 0; k < frames; k++) {
         long long ms_t = (long long) k * STEP_MS;
@@ -241,9 +244,9 @@ static int check_split(ASS_Library *lib, const char *file, int simd, const Frame
             if (diff < 5) printf("  split DIFF at %lld ms (%u vs %u images)\n", ms_t, f.imgs, ref[k].imgs);
             diff++;
         }
-        ass_render_frame(rh, t, ms_t, NULL);   /* half size: must just run */
+        ass_render_frame(rh, th, ms_t, NULL);   /* half size: must just run */
     }
-    ass_free_track(t);
+    ass_free_track(t); ass_free_track(th);
     ass_renderer_done(ra); ass_renderer_done(rb); ass_renderer_done(rh);
     return diff;
 }
