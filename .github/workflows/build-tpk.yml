@@ -168,7 +168,7 @@ jobs:
       # only): a prerelease tagged with the commit, shared by the .tpk and .ipk
       # workflows (whichever finishes first creates it, the other adds files).
       - name: Publish libass test prerelease
-        if: github.ref == 'refs/heads/libass-engine-rewrite-tizen' || github.ref == 'refs/heads/feat/libass-lg'
+        if: github.ref == 'refs/heads/libass-engine-rewrite-tizen' || github.ref == 'refs/heads/feat/libass-lg' || github.ref == 'refs/heads/libass-lg-2.1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
