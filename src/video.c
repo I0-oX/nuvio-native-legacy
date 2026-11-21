@@ -2288,15 +2288,8 @@ static int eventoPayload(const char *p, unsigned minhaSessao) {
     // pessoa, sem som, nao recebia nenhuma explicacao. Agora e um aviso: o
     // player mostra que o audio desta fonte nao toca nesta TV.
     if (js_num(p, NULL, "errorCode", -1) == 200) {
-#ifdef NV_WEBOS
-      // TorBox burn-in: the burned stream's audio (Passthrough FLAC/Opus in
-      // fMP4, or TorBox's) refused by this TV would play silent for good: it
-      // goes to the retry, then the original file (video_bombear).
-      if (tbAtivo()) { reconErroPend = 1; marco("burned stream: audio not supported by the TV (errorCode 200)"); }
-      else
-#endif
-      { audioNaoSup = 1;
-        marco("audio nao suportado pela TV (errorCode 200): video segue"); }
+      audioNaoSup = 1;
+      marco("audio nao suportado pela TV (errorCode 200): video segue");
     } else
     if (strstr(p, "is not running") && urlAtual[0] && !recuperando) {
       tocando = 0;
