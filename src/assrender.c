@@ -1214,7 +1214,10 @@ static void *ass_worker_loop(void *unused) {
        * track and per style change, flushed BEFORE the render. A crash right
        * after this line is inside libass on that frame. */
       { static unsigned gerLog = ~0u; static PlainAssStyle psLog; static int psLogOk;
-        int novo = generation != gerLog || (plainValid && (!psLogOk || memcmp(&plain, &psLog, sizeof plain)));
+        /* Authored ASS ignores the app's style (ps.overrides = 0 above): only a new
+         * track counts there, not the player controls moving marginV. */
+        int novo = generation != gerLog ||
+                   (plainValid && !ass_estilo_autor_locked() && (!psLogOk || memcmp(&plain, &psLog, sizeof plain)));
         if (novo && assTrack->n_styles > 0) {
           const ASS_Style *st = &assTrack->styles[assTrack->default_style];
           gerLog = generation;
