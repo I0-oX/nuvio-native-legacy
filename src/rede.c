@@ -1838,11 +1838,11 @@ static void descartarHandle(void *c) {
 // pouco e fica parado o filme inteiro (legref: 2-4 Ranges na abertura) nao
 // segura um socket aberto no CDN — o TorBox derruba com 5 (tbburn.h).
 void rede_fio_fechar(void) {
-  void *c;
+  HandlePool *p;
   if (!curl_reset) return;
   pthread_once(&handleUma, handleCriarChave);
-  c = pthread_getspecific(handleChave);
-  if (c) descartarHandle(c);
+  p = (HandlePool *)pthread_getspecific(handleChave);
+  if (p && p->c) descartarHandle(p->c);
 }
 static void soltarHandleDesde(void *c, int r, const char *url, unsigned primeiraMs) {
   // #382: HTTP recebido prova conectividade mesmo se o corpo falhou/parou.
@@ -3171,6 +3171,7 @@ int rede_baixar_fluxo(const char *url, int segundos, const char *const *cab,
     if (lista) curl_setopt(c, OPT_HTTPHEADER, lista);
   }
   tbVooEntrar(url); r = cancelVigiaPerform(&cv, c); tbVooSair(url);
+  cancelVigiaSoltar(&cv, cvOn, c);
   if (r == 42 && vigia.parou) r = 28;
   if (curl_getinfo) curl_getinfo(c, INFO_RESPONSE_CODE, &http);
   if (status) *status = (int)http;

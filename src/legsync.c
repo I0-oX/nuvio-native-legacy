@@ -534,6 +534,9 @@ void legsync_audio_falhou(const char *chave, const char *motivo) {
 void legsync_audio_trocou(void) {
   pthread_mutex_lock(&M);
   if (L.criado && (L.audEtapa == 1 || (L.audEtapa == 2 && !L.audN))) {
+    // A plan waiting on this audio work ends with it (as legsync_audio_habilitar):
+    // the stopped backend never answers, and the plan would wait forever.
+    if (L.audEtapa == 2 && L.autoFase == 1) { L.autoFase = 3; L.autoEtapa = 9; }
     pararAudio();
     printf("[legsync] audio: another audio track picked; the audio sync in progress stops\n"); fflush(stdout);
   }

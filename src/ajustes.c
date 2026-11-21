@@ -5533,7 +5533,7 @@ void ajustes_dir(const char *dir) {
     int dtsModoAntigo = -1;
 #endif
     int leg2TamanhoAntigo = -1, viuLeg2Escala = 0;
-    int leg2OpacidadeAntiga = -1, viuLeg2Opacidade = 0;
+    int leg2OpacidadeAntiga = -1, viuLeg2Opacidade = 0, leg2OpacPct = -1;
   while (fgets(linha, sizeof linha, f)) {
     char chave[64]; int v, i, inicio = 0;
     if (sscanf(linha, "%63s%n", chave, &inicio) != 1) continue;
@@ -5622,6 +5622,11 @@ void ajustes_dir(const char *dir) {
     }
     // Outline is aesthetic: migrate its removed Automatic value to On.
     if (!strcmp(chave, "vidroContornoLocal") && v == 2) v = 0;
+    // 2.0.x libass-lg builds: "legenda2OpacidadePctLocal" 0 = same as primary, k = k x 10%.
+    if (!strcmp(chave, "legenda2OpacidadePctLocal")) {
+      if (v >= 0 && v <= 10) leg2OpacPct = v;
+      continue;
+    }
     if (!strcmp(chave, "legenda2OpacidadeLocal")) {
       if (v >= 0 && v <= 4) leg2OpacidadeAntiga = v;
       continue;
@@ -5655,7 +5660,9 @@ void ajustes_dir(const char *dir) {
     if (sinopseQuatro >= 0) valor[AJ_HERO_SINOPSE_TAM] = sinopseQuatro > 0;
     else if (sinopseAntiga >= 0) valor[AJ_HERO_SINOPSE_TAM] = sinopseAntiga > 0;
   }
-  if (!viuLeg2Opacidade && leg2OpacidadeAntiga >= 0)
+  if (!viuLeg2Opacidade && leg2OpacPct >= 0)
+    valor[AJ_LEG2_OPACIDADE] = leg_opacidade_secundaria_pct_migrar(leg2OpacPct);
+  else if (!viuLeg2Opacidade && leg2OpacidadeAntiga >= 0)
     valor[AJ_LEG2_OPACIDADE] = leg_opacidade_secundaria_migrar(leg2OpacidadeAntiga);
   if (!viuLeg2Escala && leg2TamanhoAntigo >= 0) {
     static const int pct[] = {0,60,80,100,120,140,160,170,180,190,200,210,220,230,240,250,260,270,280,290,300};
@@ -7071,7 +7078,7 @@ static int perfilLerVetor(int perfil, int *v, char *tem) {
   nomePerfil(nome, sizeof nome, perfil);
   t = dados_ler(nome);
   if (!t) return 0;
-  int focoAntigo = -1, leg2OpacidadeAntiga = -1;
+  int focoAntigo = -1, leg2OpacidadeAntiga = -1, leg2OpacPct = -1;
   // Missing V2 means this profile still carries the old mute default.
   v[AJ_GUIA_PREVIA_SOM] = valorPadrao[AJ_GUIA_PREVIA_SOM];
   tem[AJ_GUIA_PREVIA_SOM] = 1;
@@ -7083,6 +7090,8 @@ static int perfilLerVetor(int perfil, int *v, char *tem) {
       focoAntigo = x;
     else if (sscanf(l, "%63s %d", chave, &x) == 2 && !strcmp(chave, "legenda2OpacidadeLocal")) {
       if (x >= 0 && x <= 4) leg2OpacidadeAntiga = x;
+    } else if (sscanf(l, "%63s %d", chave, &x) == 2 && !strcmp(chave, "legenda2OpacidadePctLocal")) {
+      if (x >= 0 && x <= 10) leg2OpacPct = x;
     } else if (sscanf(l, "%63s %d", chave, &x) == 2)
       for (i = 0; i < AJ_N; i++) {
         if (!dePerfil(i) || strcmp(CHAVE[i], chave)) continue;
@@ -7097,8 +7106,9 @@ static int perfilLerVetor(int perfil, int *v, char *tem) {
     v[AJ_FOCO_TRAILER] = focoTrailerMigrar(focoAntigo);
     tem[AJ_FOCO_TRAILER] = 1;
   }
-  if (!tem[AJ_LEG2_OPACIDADE] && leg2OpacidadeAntiga >= 0) {
-    v[AJ_LEG2_OPACIDADE] = leg_opacidade_secundaria_migrar(leg2OpacidadeAntiga);
+  if (!tem[AJ_LEG2_OPACIDADE] && (leg2OpacPct >= 0 || leg2OpacidadeAntiga >= 0)) {
+    v[AJ_LEG2_OPACIDADE] = leg2OpacPct >= 0 ? leg_opacidade_secundaria_pct_migrar(leg2OpacPct)
+                                            : leg_opacidade_secundaria_migrar(leg2OpacidadeAntiga);
     tem[AJ_LEG2_OPACIDADE] = 1;
   }
   free(t);

@@ -40,4 +40,8 @@ static inline int leg_opacidade_byte(int modo) {
 static inline int leg_opacidade_secundaria_migrar(int antigo) {
   return antigo>=1 && antigo<=4 ? leg_opacidade_indice(antigo-1)+1 : 0;
 }
+// 2.0.x libass-lg builds saved 0 = "Same as primary", k = k x 10% (1..10).
+static inline int leg_opacidade_secundaria_pct_migrar(int k) {
+  return k>=1 && k<=10 ? leg_opacidade_indice(leg_opacidade_modo(k*10))+1 : 0;
+}
 #endif

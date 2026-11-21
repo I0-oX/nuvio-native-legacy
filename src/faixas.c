@@ -139,6 +139,9 @@ static int legOverlayEsperando = -1;
 #define FX_ESPERA_SONDA_MS 10000u
 static Uint32 legOverlayEsperaDesde;
 static int legOverlayEsperaTV;
+// The LG row escolherLegenda redirected to the file's app row (gemeaNoArquivo):
+// a definitive no-go gives the track back to that row, the only one the TV has.
+static int legOverlayOrigemTV = -1;
 #endif
 
 // LEGENDA AUTOMATICA DA SESSAO (#129): 1 do inicio de uma reproducao ate a
@@ -1200,7 +1203,7 @@ static int gemeaNoArquivo(int i) {
   if (!f || f->codec[0] || f->numero < 0 || video_mkv_sondado() != 1) return -1;
   for (j = 0; j < n; j++) {
     const VideoFaixa *g = video_legenda(j);
-    if (j == i || !g || g->numero > -2 || g->ordinalMkv < 0 || !vaiOverlay(g)) continue;
+    if (j == i || !g || g->numero > -2 || g->ordinalMkv < 0 || !faixasmkv_overlay(g->codec, 1)) continue;
     if (f->idioma[0] && g->idioma[0] && !ling_casa(f->idioma, g->idioma)) continue;
     achou = j; k++;
   }
@@ -1215,12 +1218,13 @@ static void escolherLegenda(int i) {
   {
     int emb = video_n_legenda();
 #ifdef NV_WEBOS
+    legOverlayOrigemTV = -1;
     { int g = i >= 0 && i < video_n_legenda() ? gemeaNoArquivo(i) : -1;
       if (g >= 0) {
         printf("[legenda] faixa %d sem par no arquivo: a faixa %d (%s, %s) do arquivo e a mesma; o app desenha\n",
                i, g, video_legenda(g)->rotulo, video_legenda(g)->codec);
         fflush(stdout);
-        i = g;
+        legOverlayOrigemTV = i; i = g;
       } }
 #endif
     const VideoFaixa *fe = (i >= 0 && i < emb) ? video_legenda(i) : NULL;
@@ -1942,9 +1946,19 @@ void faixas_atualizar(float dt, Uint32 agora) {
 #endif
     {
       int estavaNaTV = legOverlayTV;
+      // An app row (numero < 0, added from the file) is not in the TV's list:
+      // video_escolher_legenda on it only switches the native one off.
+      int tv = video_legenda(i) && video_legenda(i)->numero >= 0 ? i : -1;
+#ifdef NV_WEBOS
+      if (tv < 0) tv = legOverlayOrigemTV;
+#endif
       legOverlay = -1; legOverlayNoGo = i; legOverlayNoGoEstado = e; legOverlayTV = 0;
-      printf("[legenda] mkvass no-go %d (%s, HTTP %d, curl %d) na faixa %d: a legenda VOLTA para a TV "
-             "(nativa religada)\n", e, motivoNoGo(e), http, curl, i);
+      if (tv >= 0)
+        printf("[legenda] mkvass no-go %d (%s, HTTP %d, curl %d) na faixa %d: a legenda VOLTA para a TV "
+               "(nativa religada, faixa %d)\n", e, motivoNoGo(e), http, curl, i, tv);
+      else
+        printf("[legenda] mkvass no-go %d (%s, HTTP %d, curl %d) na faixa %d: a TV nao lista esta faixa, "
+               "fica sem legenda\n", e, motivoNoGo(e), http, curl, i);
       fflush(stdout);
       // Aviso na tela: antes a queda era muda e a pessoa so via a legenda
       // piscar e cortar, sem saber que o app tinha desistido.
@@ -1952,7 +1966,7 @@ void faixas_atualizar(float dt, Uint32 agora) {
       // O overlay tinha o que colheu antes de desistir: sai, senao a TV e o
       // app desenhariam a mesma fala.
       legenda_desligar();
-      if (!estavaNaTV) video_escolher_legenda(i);
+      if (!estavaNaTV && tv >= 0) video_escolher_legenda(tv);
     }
   }
   // A sonda voltou para uma faixa escolhida antes dela: agora da para decidir.

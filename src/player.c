@@ -2375,7 +2375,7 @@ static void tocarFonteInterno(const char *url) {
     // first). Not applied -> the seek after ready below, as before.
     retomadaNaPreparacao = !ehCanal() && (retomarFonteSeg >= 0.0 || retomarPct > 0);
     if (retomadaNaPreparacao) marco("abrir: ponto salvo vai na abertura (.tpk)");
-    comVideo = video_tocar_retomada(proxyts_resolver(url, px, sizeof px),
+    comVideo = video_tocar_retomada(proxyts_resolver(playUrl, px, sizeof px),
                                     retomadaNaPreparacao && retomarFonteSeg >= 0.0 ? retomarFonteSeg : 0.0,
                                     retomadaNaPreparacao && retomarFonteSeg < 0.0 ? retomarPct : 0.0);
     if (!comVideo) retomadaNaPreparacao = 0;
@@ -6428,12 +6428,7 @@ static void desenharLegendaPrincipal(float *topoPilha){
         "Montserrat", "Roboto", "Atkinson Hyperlegible Next",
         "JetBrains Sans", "Plus Jakarta Sans"
       };
-      /* unitsPerEm / (usWinAscent + usWinDescent) x 1000 of the bundled
-       * files (libass sizes a face by its win metrics); 0 = unknown. Only
-       * the soft shadow of Outline uses it (assrender.c). */
-      static const short emMil[] = { 826, 0, 0, 640, 833, 711, 855, 605 };
       _Static_assert(sizeof families / sizeof *families == TXT_FAMILIA_N, "one ASS name per subtitle family");
-      _Static_assert(sizeof emMil / sizeof *emMil == TXT_FAMILIA_N, "one em ratio per subtitle family");
       PlainAssStyle style = {0};
       int pct = legEstilo.tamanho, fam = legEstilo.familia;
       float base = baseLegendaPrincipal();
@@ -6441,12 +6436,11 @@ static void desenharLegendaPrincipal(float *topoPilha){
       style.size = (pct / 10) * 4;
       if (fam < 0 || fam >= (int)(sizeof families / sizeof families[0])) fam = 0;
       snprintf(style.font, sizeof style.font, "%s", families[fam]);
-      style.emMil = emMil[fam];
       corLegenda(legEstilo.cor, &r, &g, &b);
       style.rgb = (r << 16) | (g << 8) | b;
       style.background = legEstilo.fundo >= 0 && legEstilo.fundo <= 4 ? legEstilo.fundo : 0;
       style.border = legEstilo.borda; style.bold = legEstilo.negrito;
-      style.outlineRgb = (int)ajustes_leg_borda_rgb(legEstilo.corBorda);
+      style.outlineRgb = (int)ajustes_leg_borda_cor(legEstilo.corBorda, legEstilo.borda);
       style.overrides = ajustes_legenda_estilo_ligado()?legTocado:0;
       if (ajustes_legenda_estilo_ligado() && assrender_fonte_local_ativa(legfontes_caminho(0))) {
         snprintf(style.font, sizeof style.font, "%s", legfontes_nome_ass(0));

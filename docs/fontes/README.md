@@ -52,7 +52,7 @@ The default subtitle font, chosen by the owner to match Stremio: stremio-web set
 - Source: [tokotype/PlusJakartaSans](https://github.com/tokotype/PlusJakartaSans/tree/18d1cd2f7ea10481919d2f05c1f7064b7307fc26) — commit `18d1cd2f7ea10481919d2f05c1f7064b7307fc26`, static files `fonts/ttf/`, version 2.071. Regular (400), Medium (500), Bold (700), as published; nothing generated here.
 - Licence: SIL OFL 1.1, `deploy/app/fonts/PlusJakartaSans-OFL.txt`.
 - Coverage: Latin, Vietnamese, Greek; no Cyrillic, Arabic or CJK (the text fallbacks and libass's per-glyph fallback take those).
-- libass sizes a face by its win ascent + descent (1.652 em here, Inter 1.21): at the same ASS FontSize its letters are smaller than Inter's. This only matters on the libass plain-text path (Arabic captions); `player.c` passes the em ratio (`emMil`) for the Outline shadow.
+- libass sizes a face by its win ascent + descent (1.652 em here, Inter 1.21): at the same ASS FontSize its letters are smaller than Inter's. This only matters on the libass plain-text path (Arabic captions).
 
 | Arquivo | Bytes | SHA-256 |
 |---|---:|---|
