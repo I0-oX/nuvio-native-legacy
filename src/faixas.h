@@ -61,5 +61,7 @@ void faixas_escolher_embutida(int i);
 void faixas_escolher_externa(const Legenda *copia);
 // The ASS/collector state label of embedded track `i` (NULL = nothing to say).
 const char *faixas_legenda_marca(int i);
+// Main's track index as the menus see it (-1 = off), .tpk burn-in lists.
+int faixas_legenda_main(void);
 
 #endif

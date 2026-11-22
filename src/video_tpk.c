@@ -284,6 +284,7 @@ static struct {
   // a notice asks for OK (until tardioAte) before switching; aviso: 1 = show
   // the notice, 2 = switched (Main leaves the burned ASS track), read once.
   int registrando, tardio, aviso;
+  int tirarMain;   // the burned picture just opened: Main leaves the burned ASS track (faixas.c, 22/11/2026)
   Uint32 tardioAte;
   char urlTardio[4096];
 } tb;
@@ -1175,6 +1176,7 @@ int video_tpk_queimada(void) { return tb.ativo || tb.pend ? tb.leg : -1; }
 int video_tpk_queimar_voltou(void) { int v = tb.voltar; tb.voltar = 0; return v; }
 static void tbUrlPlayer(const char *m);
 int video_tpk_queimar_aviso(void) { int v = tb.aviso; tb.aviso = 0; return v; }
+int video_tpk_queimar_tirar_main(void) { int v = tb.tirarMain; tb.tirarMain = 0; return v; }
 /* OK with the controls hidden while the late notice is up (player.c): opens
  * TorBox's burned stream at the current point. 1 = done (the OK is used). */
 int video_tpk_queimar_tardio_ok(void) {
@@ -1189,7 +1191,7 @@ int video_tpk_queimar_tardio_ok(void) {
   tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = video_pos(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
   printf("[tbburn] late burn-in: OK pressed, opening TorBox's burned stream at %.1f s\n", tb.alvo);
   fflush(stdout);
-  tb.aviso = 2;   // Main leaves the ASS track TorBox now burns
+  tb.tirarMain = 1;   // Main leaves the ASS track TorBox now burns (if it is that track)
   tbReabrir(tb.alvo);
   return 1;
 }
@@ -1545,6 +1547,7 @@ static void tbBombear(void) {
       if (tb.alvo > 0) printf("[tbburn] TorBox first: the burned stream starts at %.1f s (saved point; no segment 0 first)\n", tb.alvo);
       fflush(stdout);
       tbUrlPlayer(m);
+      tb.tirarMain = 1;   // owner 22/11/2026: Nuvio stops drawing the track TorBox burns
       abrirHost(tb.url, "");
       return;
     }
@@ -1567,6 +1570,7 @@ static void tbBombear(void) {
       printf("[tbburn] opening TorBox's burned stream at %.1f s (%u ms after the request)\n", tb.alvo,
              (unsigned)(SDL_GetTicks() - tb.pediuEm));
       fflush(stdout);
+      tb.tirarMain = 1;   // owner 22/11/2026: Nuvio stops drawing the track TorBox burns
       tbReabrir(tb.alvo);
     } else if (e == TBB_FALHOU || SDL_GetTicks() - tb.pediuEm > 30000u) {
       tb.pend = 0; tb.desistiu = 1; tb.voltar = !tb.ativo;

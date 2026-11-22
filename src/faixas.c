@@ -466,6 +466,10 @@ void faixas_reiniciar_preparada(void) { reiniciarFaixas(1); }
 #endif
 
 // Indice da legenda que a folha deve marcar como ATIVA.
+/* Main's track index (legendasui.c: while burned, the ASS track that is on in
+ * Main stays listed so it keeps its tick and can be turned off). */
+static int legendaAtiva(void);
+int faixas_legenda_main(void) { return legendaAtiva(); }
 static int legendaAtiva(void) {
   if (legExternaId[0]) {
     char id[24];
@@ -1670,9 +1674,17 @@ void faixas_atualizar(float dt, Uint32 agora) {
   /* Re-added file ready mid-episode (owner 19/11/2026): a notice; OK switches
    * (player.c). After the switch, Main leaves the ASS track TorBox now burns. */
   { int v = video_tpk_queimar_aviso();
-    if (v == 1) player_toast_ex(i18n("Legenda queimada pronta: aperte OK para trocar"), 20000, "pl_captions", 0);
-    if (v == 2) { int a = legendaAtiva();
-      if (a >= 0 && a < video_n_legenda() && video_tpk_leg_oculta(a)) { escolherLegenda(-1); legAuto = 1; legAutoDesde = 0; } } }
+    if (v == 1) player_toast_ex(i18n("Legenda queimada pronta: aperte OK para trocar"), 20000, "pl_captions", 0); }
+  /* The burned picture is on (owner 22/11/2026): Nuvio stops drawing Main
+   * only if Main is the track TorBox burns; another ASS track stays. */
+  if (video_tpk_queimar_tirar_main()) {
+    int a = legendaAtiva(), q = video_tpk_queimada();
+    if (a >= 0 && a == q) {
+      escolherLegenda(-1); legAuto = 1; legAutoDesde = 0;
+      printf("[tbburn] burned picture on: Main was the burned ASS track %d -> off, automatic pick over the other tracks\n", a);
+    } else printf("[tbburn] burned picture on: Main %d is not the burned track %d -> kept\n", a, q);
+    fflush(stdout);
+  }
 #endif
   // #202: the platform refused the speed (LG/.tpk answer after the request):
   // the row is gone and playback is back at 1x; say it once.
