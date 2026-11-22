@@ -4623,6 +4623,11 @@ void player_evento(const SDL_Event *e) {
       { double fim;if(trechoPulavel(&fim)){
           { int tp=0;if(intro_botao_visivel(NULL,&tp)&&tp==INTRO_CREDITOS)player_aprender_creditos(); }
           pularTrecho(puloDestino(fim));if(comVideo)buscarUsuario(posSeg);return; } }
+#ifdef NV_TPK
+      // "Burn-in ready: press OK to switch" (owner 19/11/2026, a re-added
+      // TorBox file): while that notice is up, OK switches instead of pausing.
+      if (!e->key.repeat && video_tpk_queimar_tardio_ok()) { toastAte = 0; return; }   // the notice goes
+#endif
       // O OK com os controles escondidos e o Play/Pause: os controles sobem
       // com o foco NO PLAY, nao onde ficou da ultima vez (Legendas, Audio,
       // Proporcao). Sem isto o OK seguinte abria aquela folha (#109).

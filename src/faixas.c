@@ -632,9 +632,10 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
         * defaults (always the last cell). With libass off it is the ordinary
         * column plus the libass row, Restore defaults last. */
        EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
-       /* Owner 19/11/2026: the Custom auto instruments (shown only while
-        * Render resolution is Custom auto) and Dialogue by libass. */
-       EST_TXTRES, EST_BLURRES, EST_DIALIB,
+       /* Owner 19/11/2026: Dialogue by libass, and "Customize text" right
+        * beside it while it is Off: the dialogue is the app's own text then,
+        * styled with the ordinary (SRT) style rows. */
+       EST_DIALIB, EST_TEXTO,
 #endif
        /* MAIN / SECOND (owner 12/11): "Edit" switches the column between the
         * main subtitle and the second one (shown only while a second subtitle
@@ -650,7 +651,7 @@ static const char *const EST_ROT[EST_TOTAL] = {
   "Negrito", "Restaurar padrão", "Cor da borda"
 #ifdef NV_TPK
   , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
-  , "Resolução do texto (teste)", "Resolução do desfoque (teste)", "Diálogo pelo libass"
+  , "Diálogo pelo libass", "Personalizar texto"
 #endif
   , "Editar",
   "Tamanho", "Fonte da legenda", "Cor", "Opacidade", "Fundo", "Posição", "Posição da segunda legenda",
@@ -682,6 +683,9 @@ static int estSegunda(void) { return legenda2_estado() == LEG2_ATIVA; }
 static int estLinhas[EST_TOTAL], estNLinhas;
 #ifdef NV_TPK
 static int sincPesada;   // Picture sync: 0 = Left/Right edit normal scenes, 1 = busy scenes
+/* "Customize text" open (owner 19/11/2026): with Dialogue by libass Off, the
+ * column shows the ordinary style rows for the app-drawn dialogue. */
+static int estTexto;
 static void escolherLegenda(int i);
 static int legendaAtiva(void);
 static int estFaixaAss(void) {
@@ -704,14 +708,27 @@ static void estMapa(void) {
 #ifdef NV_TPK
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
-      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA,
-                               EST_TXTRES, EST_BLURRES, EST_SINC, EST_DIALIB, EST_LIBASS, EST_RESTAURAR };
-      for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) {
-        if ((L[i] == EST_TXTRES || L[i] == EST_BLURRES) && assperf_get(AP_ESCALA) != AP_RES_CUSTOM) continue;
-        estLinhas[estNLinhas++] = L[i];
+      /* Dialogue by libass On: libass's dialogue Size/Opacity. Off: those two
+       * do nothing (the app draws the dialogue), "Customize text" right
+       * beside the Off row opens the ordinary style rows instead. */
+      static const int L_ON[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA,
+                                  EST_SINC, EST_DIALIB, EST_LIBASS, EST_RESTAURAR };
+      static const int L_OFF[] = { 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA,
+                                   EST_SINC, EST_DIALIB, EST_TEXTO, EST_LIBASS, EST_RESTAURAR };
+      int dialib = assperf_get(AP_DIALIB);
+      const int *L = dialib ? L_ON : L_OFF;
+      int nL = dialib ? (int)(sizeof L_ON / sizeof L_ON[0]) : (int)(sizeof L_OFF / sizeof L_OFF[0]);
+      if (dialib) estTexto = 0;
+      if (estTexto) {   // Customize text: back cell, then the ordinary rows (Restore last)
+        estLinhas[estNLinhas++] = EST_TEXTO;
+        for (i = 0; i <= EST_COR_BORDA; i++) if (i != EST_RESTAURAR) estLinhas[estNLinhas++] = i;
+        estLinhas[estNLinhas++] = EST_RESTAURAR;
+        return;
       }
+      for (i = 0; i < nL; i++) estLinhas[estNLinhas++] = L[i];
       return;
     }
+    estTexto = 0;
     /* Restore defaults stays the last cell (owner 27/10), after libass. */
     for (i = 0; i <= EST_COR_BORDA; i++) if (i != EST_RESTAURAR) estLinhas[estNLinhas++] = i;
     estLinhas[estNLinhas++] = EST_LIBASS;
@@ -754,6 +771,7 @@ static int estiloPreservadoAss(int linha) {
   int campo = estCampoAss(linha);
   if (!campo || !assrender_ativo() || assrender_texto_simples()) return 0;
 #ifdef NV_TPK
+  if (estTexto) return 0;   // Customize text: the app's dialogue follows these rows
   /* Styled ASS is drawn as the author made it (new engine, assperf.h). */
   if (ASS_NOVO) return 1;
 #endif
@@ -804,11 +822,9 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
       if (v == AP_RES_AUTO50) snprintf(dst, tam, "%s 50%%", i18n("Auto"));
       else if (v == AP_RES_AUTO75) snprintf(dst, tam, "%s 75%%", i18n("Auto"));
-      else if (v == AP_RES_CUSTOM) snprintf(dst, tam, "%s", i18n("Auto personalizado"));
       else snprintf(dst, tam, "%s", v == AP_RES_75 ? "75%" : "100%");
       break; }
-    case EST_TXTRES: snprintf(dst, tam, "%d%%", assperf_get(AP_TXTRES)); break;
-    case EST_BLURRES: snprintf(dst, tam, "%d%%", assperf_get(AP_BLURRES)); break;
+    case EST_TEXTO: snprintf(dst, tam, "%s", estTexto ? i18n("Voltar") : ""); break;
     case EST_DIALIB: snprintf(dst, tam, "%s", i18n(assperf_get(AP_DIALIB) ? "Ligado" : "Desligado")); break;
     case EST_SINC: { int lv, ps, ag;
       legimagem_valores(&lv, &ps, &ag);
@@ -846,7 +862,7 @@ static void ciclarEstilo(int linha) {
     case 8: e->negrito = !e->negrito; player_leg_estilo_tocou(PLR_LEG_NEGRITO); break;
     case EST_RESTAURAR:
 #ifdef NV_TPK
-      if (estFaixaAss() && assperf_get(AP_LIBASS)) {
+      if (estFaixaAss() && assperf_get(AP_LIBASS) && !estTexto) {
         int dialib = assperf_get(AP_DIALIB);
         assperf_restaurar();
         legimagem_restaurar();
@@ -859,16 +875,22 @@ static void ciclarEstilo(int linha) {
       player_leg_estilo_restaurar();
       return;
 #ifdef NV_TPK
-    case EST_ESCALA: {   // Auto 50 -> Auto 75 -> Custom auto -> 100 % -> 75 % (owner 19/11/2026)
+    case EST_ESCALA: {   // Auto 50 -> Auto 75 -> 100 % -> 75 % (owner 19/11/2026)
       int v = assperf_get(AP_ESCALA);
-      assperf_definir(AP_ESCALA, v == AP_RES_AUTO50 ? AP_RES_AUTO75 : v == AP_RES_AUTO75 ? AP_RES_CUSTOM :
-                                 v == AP_RES_CUSTOM ? AP_RES_100 : v == AP_RES_100 ? AP_RES_75 : AP_RES_AUTO50);
-      foco[FX_COL_ESTILO] = estPos(EST_ESCALA);   // the test rows come and go under it
+      assperf_definir(AP_ESCALA, v == AP_RES_AUTO50 ? AP_RES_AUTO75 : v == AP_RES_AUTO75 ? AP_RES_100 :
+                                 v == AP_RES_100 ? AP_RES_75 : AP_RES_AUTO50);
       return; }
+    case EST_TEXTO:   // Customize text: opens / closes the ordinary rows
+      estTexto = !estTexto;
+      foco[FX_COL_ESTILO] = estTexto ? 0 : estPos(EST_TEXTO);
+      return;
     case EST_DIALIB:
       /* The same track again: the app's cue copy and libass split the lines
        * anew (dialogue to the app's text, signs & songs to libass). */
       assperf_definir(AP_DIALIB, !assperf_get(AP_DIALIB));
+      printf("[ass] Dialogue by libass: %s\n", assperf_get(AP_DIALIB) ? "On (libass draws it)" : "Off (the app draws it, Customize text styles it)");
+      fflush(stdout);
+      estTexto = 0;
       escolherLegenda(legendaAtiva());
       foco[FX_COL_ESTILO] = estPos(EST_DIALIB);
       return;
@@ -903,8 +925,6 @@ static const EstSlider EST_SL[EST_TOTAL] = {
   [EST_ASS_OPAC] = { 20, 100, 5, 10, 1 },                         // dialogue opacity %
   [EST_CONTRASTE] = { 0, 50, 1, 5, 2 },                           // the TV's numbers, its whole range
   [EST_GAMA] = { -20, 20, 1, 5, 2 },                              // past the TV's -5..+5 (owner 16/11/2026)
-  [EST_TXTRES] = { 25, 100, 5, 5, 1 },                            // Custom auto: text %, steps of 5 (owner 19/11/2026)
-  [EST_BLURRES] = { 25, 100, 5, 5, 1 },                           // Custom auto: blur %, steps of 5
 #endif
   // The second subtitle: steps through the choices of its setting (the value
   // shown is the setting's own text); Delay in ms like the main.
@@ -940,8 +960,6 @@ static int estLer(int i) {
     case EST_ASS_OPAC: return assperf_get(AP_ASSOPAC);
     case EST_CONTRASTE: return 30 + assperf_get(AP_CONTRASTE);
     case EST_GAMA: return assperf_get(AP_GAMA);
-    case EST_TXTRES: return assperf_get(AP_TXTRES);
-    case EST_BLURRES: return assperf_get(AP_BLURRES);
 #endif
     case 0: return e->tamanho;
     case 3: return (int)lroundf(video_legenda_opacidade(e) * 100.0f);
@@ -966,8 +984,6 @@ static void estGravar(int i, int v) {
     case EST_ASS_OPAC: assperf_definir(AP_ASSOPAC, v); return;
     case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, v - 30); return;
     case EST_GAMA: assperf_definir(AP_GAMA, v); return;
-    case EST_TXTRES: assperf_definir(AP_TXTRES, v / 5 * 5); return;
-    case EST_BLURRES: assperf_definir(AP_BLURRES, v / 5 * 5); return;
 #endif
     case 0: e->tamanho = v; break;
     case 3: e->opacidade = v / 10 * 10; break;
@@ -1464,6 +1480,9 @@ static int estiloTecla(SDL_Keycode k, int rep) {
     }
     return 1;
   }
+#ifdef NV_TPK
+  if (voltar && estTexto) { estTexto = 0; *f = estPos(EST_TEXTO); return 1; }   // Customize text: back to the ASS rows
+#endif
   if (voltar) return 0;
   // A grade de FX_BARRA_COLS colunas: as quatro setas andam nela; a esquerda da
   // primeira coluna volta para a lista de legendas.
@@ -1590,6 +1609,12 @@ void faixas_atualizar(float dt, Uint32 agora) {
   { int v = video_tpk_queimar_voltou();
     if (v == 1) player_toast_ex(i18n("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda"), 6000, "pl_captions", 1);
     if (v && legendaAtiva() < 0) { legAuto = 1; legAutoDesde = 0; } }
+  /* Re-added file ready mid-episode (owner 19/11/2026): a notice; OK switches
+   * (player.c). After the switch, Main leaves the ASS track TorBox now burns. */
+  { int v = video_tpk_queimar_aviso();
+    if (v == 1) player_toast_ex(i18n("Legenda queimada pronta: aperte OK para trocar"), 20000, "pl_captions", 0);
+    if (v == 2) { int a = legendaAtiva();
+      if (a >= 0 && a < video_n_legenda() && video_tpk_leg_oculta(a)) { escolherLegenda(-1); legAuto = 1; legAutoDesde = 0; } } }
 #endif
   // #202: the platform refused the speed (LG/.tpk answer after the request):
   // the row is gone and playback is back at 1x; say it once.

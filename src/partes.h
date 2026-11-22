@@ -181,6 +181,12 @@ int  partes_achar_exato(const char *url, const char *hash, const char *arquivo, 
 // still had an item that createstream answered ITEM_NOT_FOUND for).
 int  partes_achar_exato_fresco(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
                                int *item, int *arquivoId, int *usenet, char *como, unsigned n);
+// The same as partes_achar_exato (cached lists first), also giving the found
+// torrent's info hash (lower case; "" for usenet or none). Burn-in (owner
+// 19/11): TorBox's list still showed an item createstream calls gone; its
+// hash re-adds it to the account (debrid_tb_adicionar, cached only).
+int  partes_achar_exato_hash(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
+                             int *item, int *arquivoId, int *usenet, char *como, unsigned n, char hashItem[41]);
 
 // ---- link de um arquivo (fio proprio) -------------------------------------
 // Pede o link do CDN de um arquivo. Com `comLista`, le tambem o item (para o

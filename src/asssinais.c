@@ -19,6 +19,15 @@
 
 typedef struct { long long ms; unsigned h; unsigned usado; } AsLinha;
 
+/* Known stretches of the partner (owner 19/11/2026: libass's rule until we
+ * know). [ini, fim): from the first Cluster of a run of Clusters the relay
+ * passed in a row to the start of the newest one (that one's blocks may not
+ * all be in yet). A gap of more than AS_SALTO_MS between two Clusters, or a
+ * jump of the stream, starts a new run. */
+#define AS_TRECHOS  32
+#define AS_SALTO_MS 30000LL
+typedef struct { long long ini, fim; unsigned idade; } AsTrecho;
+
 static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
 static AsLinha *tab;
 static unsigned nTab;
@@ -26,11 +35,16 @@ static unsigned geracao, versao;
 static int trilha, faixa;
 static unsigned long escala = 1000000UL;
 static int nLinhas;
-static long nConsultas, nCasadas;
+static long nConsultas, nCasadas, nDialogos, nEsperando;
+static AsTrecho trechos[AS_TRECHOS];
+static int nTrechos, trechoAtual = -1;
+static unsigned idadeTrecho;
+static const void *fluxoAtual;   /* the relay connection the current run comes from */
 
 static void esvaziar_locked(void) {
   if (tab) memset(tab, 0, AS_SLOTS * sizeof *tab);
   nTab = 0;
+  nTrechos = 0; trechoAtual = -1;   /* the lines are gone: nothing is known */
 }
 
 void asssinais_definir(unsigned g, int trilhaSinais, int faixaSinais, unsigned long escalaNs) {
@@ -44,10 +58,24 @@ void asssinais_definir(unsigned g, int trilhaSinais, int faixaSinais, unsigned l
   esvaziar_locked();
   versao++;
   pthread_mutex_unlock(&trava);
-  printf("[asssinais] generation %u: this track is %s | Signs & Songs partner for matching: %s%d\n",
-         g, trilha ? "Signs & Songs (no dialogue settings on any line)" : "dialogue/full",
-         faixa ? "track " : "none", faixa);
+  if (faixa)
+    printf("[asssinais] generation %u: this track is %s | Signs & Songs partner for matching: track %d (data only)\n",
+           g, trilha ? "Signs & Songs (no dialogue settings on any line)" : "dialogue/full", faixa);
+  else
+    printf("[asssinais] generation %u: this track is %s | Signs & Songs partner for matching: none\n",
+           g, trilha ? "Signs & Songs (no dialogue settings on any line)" : "dialogue/full");
   fflush(stdout);
+}
+
+void asssinais_trocar_geracao(unsigned velha, unsigned nova) {
+  int mudou = 0;
+  pthread_mutex_lock(&trava);
+  if (velha && nova && velha != nova && geracao == velha) { geracao = nova; versao++; mudou = 1; }
+  pthread_mutex_unlock(&trava);
+  if (mudou) {
+    printf("[asssinais] the same track reloaded: generation %u -> %u (partner lines and known stretches kept)\n", velha, nova);
+    fflush(stdout);
+  }
 }
 
 int asssinais_trilha_sinais(unsigned g) {
@@ -58,7 +86,7 @@ int asssinais_trilha_sinais(unsigned g) {
 
 int asssinais_ativo(unsigned g) {
   int r;
-  pthread_mutex_lock(&trava); r = faixa && g == geracao && nTab > 0; pthread_mutex_unlock(&trava);
+  pthread_mutex_lock(&trava); r = faixa && g == geracao; pthread_mutex_unlock(&trava);
   return r;
 }
 
@@ -135,10 +163,88 @@ int asssinais_casa(unsigned g, long long inicioMs, unsigned hash) {
   return r;
 }
 
-void asssinais_estatisticas(int *linhas, long *consultas, long *casadas) {
+static int conhecido_locked(long long ms) {
+  int i;
+  for (i = 0; i < nTrechos; i++) if (ms >= trechos[i].ini && ms < trechos[i].fim) return 1;
+  return 0;
+}
+
+static int decidir(unsigned g, long long inicioMs, unsigned hash, int contar) {
+  int r = -1;
   pthread_mutex_lock(&trava);
-  *linhas = nLinhas; *consultas = nConsultas; *casadas = nCasadas;
-  nLinhas = 0; nConsultas = 0; nCasadas = 0;
+  if (faixa && g == geracao) {
+    if (hash && achar_locked(inicioMs, hash)) r = 1;
+    else if (conhecido_locked(inicioMs)) r = 0;
+    if (contar) { nConsultas++; if (r > 0) nCasadas++; else if (!r) nDialogos++; else nEsperando++; }
+  }
+  pthread_mutex_unlock(&trava);
+  return r;
+}
+int asssinais_decidir(unsigned g, long long inicioMs, unsigned hash) { return decidir(g, inicioMs, hash, 1); }
+int asssinais_decidir_desenho(unsigned g, long long inicioMs, unsigned hash) { return decidir(g, inicioMs, hash, 0); }
+
+/* Merges the run i into any stretch it now overlaps; returns its new index. */
+static int juntar_locked(int i) {
+  int j;
+  for (j = 0; j < nTrechos; j++) {
+    if (j == i || trechos[j].fim < trechos[i].ini || trechos[j].ini > trechos[i].fim) continue;
+    if (trechos[j].ini < trechos[i].ini) trechos[i].ini = trechos[j].ini;
+    if (trechos[j].fim > trechos[i].fim) trechos[i].fim = trechos[j].fim;
+    trechos[j] = trechos[--nTrechos];
+    if (i == nTrechos) i = j;
+    j = -1;   /* start again: the merged stretch may touch another */
+  }
+  return i;
+}
+
+void asssinais_cluster(const void *fluxo, unsigned long clTs) {
+  long long ms;
+  int i;
+  pthread_mutex_lock(&trava);
+  if (!faixa) { pthread_mutex_unlock(&trava); return; }
+  ms = (long long)clTs * (long long)escala / 1000000LL;
+  if (fluxo != fluxoAtual) { fluxoAtual = fluxo; trechoAtual = -1; }   /* another connection: not a run */
+  i = trechoAtual;
+  if (i >= 0 && i < nTrechos && ms > trechos[i].fim && ms - trechos[i].fim <= AS_SALTO_MS) {
+    trechos[i].fim = ms; trechos[i].idade = ++idadeTrecho;   /* the previous Cluster is whole now */
+    trechoAtual = juntar_locked(i);
+    versao++;
+  } else if (!(i >= 0 && i < nTrechos && ms == trechos[i].fim)) {
+    /* A new run: inside a known stretch it carries on from there. */
+    int k;
+    for (k = 0; k < nTrechos; k++) if (ms >= trechos[k].ini && ms <= trechos[k].fim) break;
+    if (k == nTrechos) {
+      if (nTrechos == AS_TRECHOS) {   /* full: the stretch used longest ago goes */
+        int v = 0, m;
+        for (m = 1; m < nTrechos; m++) if (trechos[m].idade < trechos[v].idade) v = m;
+        trechos[v] = trechos[--nTrechos];
+      }
+      k = nTrechos++;
+      trechos[k].ini = trechos[k].fim = ms;
+    } else if (trechos[k].fim > ms) {
+      /* Re-reading a known stretch: the run goes on at its end once the
+       * relay gets there (a cluster past fim extends it). */
+    }
+    trechos[k].idade = ++idadeTrecho;
+    trechoAtual = k;
+  }
+  pthread_mutex_unlock(&trava);
+}
+
+void asssinais_salto(void) {
+  pthread_mutex_lock(&trava); trechoAtual = -1; pthread_mutex_unlock(&trava);
+}
+
+void asssinais_estatisticas(AssSinaisEst *e) {
+  int i, novo = -1;
+  memset(e, 0, sizeof *e);
+  pthread_mutex_lock(&trava);
+  e->linhas = nLinhas; e->consultas = nConsultas; e->sinais = nCasadas;
+  e->dialogos = nDialogos; e->esperando = nEsperando;
+  e->guardadas = (int)nTab; e->trechos = nTrechos;
+  for (i = 0; i < nTrechos; i++) if (novo < 0 || trechos[i].idade > trechos[novo].idade) novo = i;
+  if (novo >= 0) { e->conhecidoIni = trechos[novo].ini; e->conhecidoFim = trechos[novo].fim; }
+  nLinhas = 0; nConsultas = 0; nCasadas = 0; nDialogos = 0; nEsperando = 0;
   pthread_mutex_unlock(&trava);
 }
 

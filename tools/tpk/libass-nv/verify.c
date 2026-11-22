@@ -289,6 +289,13 @@ static int check_sign(ASS_Library *lib, const char *file, int simd, const Frame 
         Frame g = hash_frame(ass_render_frame(r2, t2, (long long) k * STEP_MS, NULL));
         if (f.hash != g.hash || f.imgs != g.imgs) diff++;
     }
+    /* -1 (owner 19/11/2026): the app knows every line is dialogue, even with
+     * \pos, \move or a drawing: with skip on nothing at all is drawn. */
+    for (int i = 0; i < t->n_events; i++) t->events[i].nv_sign = -1;
+    for (int k = 0; k < frames; k++) {
+        Frame f = hash_frame(ass_render_frame(r, t, (long long) k * STEP_MS, NULL));
+        if (f.imgs) diff++;
+    }
     ass_free_track(t); ass_free_track(t2);
     ass_renderer_done(r); ass_renderer_done(r2);
     return diff;

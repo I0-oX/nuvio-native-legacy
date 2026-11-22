@@ -278,7 +278,18 @@ static struct {
   // esperaDesde: when the player was handed a burned stream that has not
   // prepared yet (0 = prepared / nothing pending).
   Uint32 esperaDesde;
+  // Re-added file (tbburn.h TBB_ESPERANDO, owner 19/11/2026): registrando =
+  // TorBox is registering it; the original plays with Nuvio's subtitles (no
+  // pending request for the UI). tardio = its stream became ready mid-episode:
+  // a notice asks for OK (until tardioAte) before switching; aviso: 1 = show
+  // the notice, 2 = switched (Main leaves the burned ASS track), read once.
+  int registrando, tardio, aviso;
+  Uint32 tardioAte;
+  char urlTardio[4096];
 } tb;
+#ifndef TB_TARDIO_MS
+#define TB_TARDIO_MS 20000u   // how long OK switches to the late burned stream
+#endif
 static volatile int mkvN, mkvEstado, faixasNovas;
 // The file's own length (MKV Segment > Info > Duration), 0 = unknown. TorBox's
 // burned HLS rounds its last segment up to 5 s and the TV reports that length
@@ -1102,6 +1113,7 @@ static void tbPedir(int i, const char *porque) {
   int sub = faixaLeg[i].ordinalMkv, aud = tbIdxAudio();
   if ((tb.ativo || tb.pend) && tb.sub == sub && tb.audio == aud) { tb.leg = i; return; }
   tb.leg = i; tb.sub = sub; tb.audio = aud; tb.pend = 1; tb.pediuEm = SDL_GetTicks();
+  tb.registrando = 0; tb.tardio = 0;   // a new request replaces a re-add still waiting
   if (!tb.ativo) tb.durOrig = durMs / 1000.0;
   printf("[tbburn] burn in subtitle %d (%s, %s) [%s]: asking TorBox (subtitle %d, audio %d; playing %s)\n", i,
          faixaLeg[i].rotulo, faixaLeg[i].codec, porque, sub, aud, tb.ativo ? "TorBox's stream" : tb.pre ? "nothing yet" : "the original file");
@@ -1139,7 +1151,7 @@ void video_tpk_queimar_faixa(int i) {
     tbburn_lembrar(NULL);
     if (tbHdr()) tbburn_hdr_lembrar(0);
     NV_PASSO("Burn in Off: cancel/release");
-    if (tb.pend) { tb.pend = 0; tbburn_cancelar(); printf("[tbburn] request dropped: Burn in Off\n"); fflush(stdout); }
+    if (tb.pend || tb.registrando) { tb.pend = 0; tb.registrando = 0; tb.tardio = 0; tbburn_cancelar(); printf("[tbburn] request dropped: Burn in Off\n"); fflush(stdout); }
     if (tb.pre) tbSoltar("Burn in Off");
     NV_PASSO("Burn in Off: back to the original");
     if (tb.ativo) tbDesligar("Burn in Off", 0);
@@ -1161,6 +1173,26 @@ int video_tpk_leg_queimavel(int i) { return tbLegAss(i); }
 int video_tpk_leg_oculta(int i) { return (tb.ativo || tb.pend) && tbLegAss(i); }
 int video_tpk_queimada(void) { return tb.ativo || tb.pend ? tb.leg : -1; }
 int video_tpk_queimar_voltou(void) { int v = tb.voltar; tb.voltar = 0; return v; }
+static void tbUrlPlayer(const char *m);
+int video_tpk_queimar_aviso(void) { int v = tb.aviso; tb.aviso = 0; return v; }
+/* OK with the controls hidden while the late notice is up (player.c): opens
+ * TorBox's burned stream at the current point. 1 = done (the OK is used). */
+int video_tpk_queimar_tardio_ok(void) {
+  if (!tb.tardio) return 0;
+  if (SDL_GetTicks() - tb.tardioAte < 0x80000000u || !ativo || emTrailer || !tb.urlTardio[0]) {
+    if (tb.tardio) { printf("[tbburn] late burn-in: the notice ran out without OK; Nuvio keeps drawing (pick Burn in to ask again)\n"); fflush(stdout); }
+    tb.tardio = 0;
+    return 0;
+  }
+  tb.tardio = 0;
+  tbUrlPlayer(tb.urlTardio);
+  tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = video_pos(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
+  printf("[tbburn] late burn-in: OK pressed, opening TorBox's burned stream at %.1f s\n", tb.alvo);
+  fflush(stdout);
+  tb.aviso = 2;   // Main leaves the ASS track TorBox now burns
+  tbReabrir(tb.alvo);
+  return 1;
+}
 
 // TORBOX FIRST (owner 13/11): with "Burn in ASS with TorBox" on, a file whose
 // header (read before the open) has an embedded ASS track does not open the
@@ -1473,8 +1505,35 @@ static void tbBombear(void) {
     if (k >= 0) tbPedir(k, porque);
     else { printf("[tbburn] nothing to burn (%s)\n", porque); fflush(stdout); }
   }
-  if (tb.pend) {
+  if (tb.tardio && SDL_GetTicks() - tb.tardioAte < 0x80000000u) (void)video_tpk_queimar_tardio_ok();   // ran out: logs, drops it
+  if (tb.pend || tb.registrando) {
     e = tbburn_resultado(m, sizeof m, motivo, sizeof motivo);
+    /* Re-added file (owner 19/11/2026): TorBox may need minutes. The original
+     * opens / keeps playing with Nuvio drawing the ASS (the tracks come back
+     * to Main); the request keeps asking in the background. */
+    if (e == TBB_ESPERANDO && tb.pend) {
+      printf("[tbburn] TorBox is registering the re-added file: %s; Nuvio draws the subtitles meanwhile, "
+             "a notice asks for OK when TorBox's stream is ready\n", tb.pre ? "opening the original now" : "the original keeps playing");
+      fflush(stdout);
+      tb.pend = 0; tb.registrando = 1; tb.voltar = 2;
+      if (tb.pre) tbSoltar("TorBox is registering the re-added file");
+      return;
+    }
+    if (tb.registrando) {
+      if (e == TBB_ESPERANDO) return;
+      tb.registrando = 0;
+      if (e == TBB_PRONTO) {
+        snprintf(tb.urlTardio, sizeof tb.urlTardio, "%s", m);
+        tb.tardio = 1; tb.tardioAte = SDL_GetTicks() + TB_TARDIO_MS; tb.aviso = 1;
+        printf("[tbburn] late burn-in: TorBox's stream is ready %u ms after the request; notice up, OK within %u s switches\n",
+               (unsigned)(SDL_GetTicks() - tb.pediuEm), TB_TARDIO_MS / 1000u);
+      } else {
+        printf("[tbburn] re-added file: %s; Nuvio keeps drawing the subtitles\n", motivo[0] ? motivo : "TorBox gave no stream");
+        tbburn_cancelar();
+      }
+      fflush(stdout);
+      return;
+    }
     if (e == TBB_PRONTO && tb.pre) {
       // TorBox first: the burned stream is the first open, at the saved point
       // when there is one (hostAbrir: X-Nuvio-Start; owner 18/11).
@@ -1734,7 +1793,7 @@ int video_tocar(const char *u) {
   parado = 0; resgateAte = 0;
   if (cv.ativo || cv.sondando) dts_tpk_fechar();
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
-  if (tb.pend) tbburn_cancelar();
+  if (tb.pend || tb.registrando) tbburn_cancelar();   // a re-add still waiting stops asking too
   if (tb.tba) tba_fechar();
   tbr_encerrar();
   memset(&tb, 0, sizeof tb);
@@ -3133,7 +3192,7 @@ void video_parar(void) {
   atomic_fetch_add(&cdnGer, 1);
   if (cv.ativo || cv.sondando) dts_tpk_fechar();
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
-  if (tb.pend) tbburn_cancelar();
+  if (tb.pend || tb.registrando) tbburn_cancelar();   // a re-add still waiting stops asking too
   if (tb.tba) tba_fechar();
   tbr_encerrar();
   memset(&tb, 0, sizeof tb);

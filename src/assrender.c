@@ -119,7 +119,7 @@ char *assrender_marcar_tailandes(const char *txt) {
 #include <SDL2/SDL.h>
 #include <ass/ass.h>
 #include "asssinais.h"
-/* Custom auto (split passes) and the signs & songs flag: the .tpk's patched
+/* Split passes (Auto 50/75, busy scenes) and the signs & songs flag: the .tpk's patched
  * libass only (tools/tpk/libass-nv, 0004). Elsewhere one pass, as before. */
 #if defined(NV_TPK) && defined(ASS_NV_SPLIT)
 #define ASS_DIVIDIR 1
@@ -154,7 +154,7 @@ typedef struct {
   unsigned color;
   unsigned char *bitmap;
   unsigned long long chave;   // assperf: conteudo (bitmap + w + h); 0 = nao calculada
-  float esc;                  // Custom auto's soft pass: its own pixels per layout unit; 0 = the frame's
+  float esc;                  // the soft (blur) pass: its own pixels per layout unit; 0 = the frame's
 } AssCpuImage;
 
 typedef struct {
@@ -677,7 +677,7 @@ static unsigned long long ass_chave_bitmap(const unsigned char *b, int w, int h,
 }
 
 
-/* Custom auto (owner 19/11/2026): the sharp pass `a` and the soft pass `b`
+/* Split frames (owner 19/11/2026): the sharp pass `a` and the soft pass `b`
  * merged in libass's stacking order (ass_nv_image_key, libass-nv 0004: both
  * lists are already in key order; ties keep `a` first). b's images carry
  * their own scale (escB pixels per layout unit). b NULL = one pass. */
@@ -936,7 +936,7 @@ static void ass_aplicar_assperf_locked(void) {
 }
 
 #if ASS_DIVIDIR
-/* Custom auto: the soft-pass renderer, set up like assRenderer (fonts,
+/* Split frames: the soft-pass renderer, set up like assRenderer (fonts,
  * shaper, hinting, engine, dialogue opacity); a smaller bitmap cache, it
  * holds only blurred parts at the blur resolution. Under assTrava. */
 static void ass_b_criar_locked(void) {
@@ -960,23 +960,29 @@ static void ass_b_criar_locked(void) {
   fflush(stdout);
 }
 
-/* SIGNS & SONGS (asssinais.h): the lines on screen at t that the app knows
- * are signs or songs get nv_sign = 1 (libass then gives them no dialogue
- * size, opacity or skipping). A line checked and not found keeps
- * -(version + 1): looked at again only after more partner lines arrived. */
+/* SIGNS & SONGS (asssinais.h; owner 19/11/2026: libass's rule first, until
+ * we know, then the partner decides alone). The lines on screen at t:
+ *   nv_sign = 1   a sign (Signs & Songs track, or the line is in the partner):
+ *                 no dialogue size, opacity or skipping;
+ *   nv_sign = -1  dialogue (the partner is known there and lacks it), even
+ *                 with \pos or a drawing (libass-nv 0004);
+ *   other (<= -2) not known yet: libass's own rule. Holds -(version + 2):
+ *                 looked at again only after the partner grew. */
 static void ass_marcar_sinais_locked(unsigned g, long long t) {
   int i, todos = asssinais_trilha_sinais(g), par;
   int marca;
   if (!assTrack) return;
   par = !todos && asssinais_ativo(g);
   if (!todos && !par) return;
-  marca = -(int)(asssinais_versao() & 0x3FFFFFFFu) - 1;
+  marca = -(int)(asssinais_versao() & 0x3FFFFFFFu) - 2;
   for (i = 0; i < assTrack->n_events; i++) {
     ASS_Event *ev = &assTrack->events[i];
-    if (ev->nv_sign > 0 || ev->Start > t + 1000 || ev->Start + ev->Duration <= t) continue;
+    int r;
+    if (ev->nv_sign > 0 || ev->nv_sign == -1 || ev->Start > t + 1000 || ev->Start + ev->Duration <= t) continue;
     if (todos) { ev->nv_sign = 1; continue; }
     if (ev->nv_sign == marca) continue;
-    ev->nv_sign = asssinais_casa(g, ev->Start, asssinais_hash(ev->Text)) ? 1 : marca;
+    r = asssinais_decidir(g, ev->Start, asssinais_hash(ev->Text));
+    ev->nv_sign = r > 0 ? 1 : r == 0 ? -1 : marca;
   }
 }
 #endif
@@ -1097,9 +1103,9 @@ static void *ass_worker_loop(void *unused) {
     ox = layPedX; oy = layPedY; lw = layPedW; lh = layPedH; k = layPedK;
     /* assperf: resolucao do render. O quadro sai `resol` do tamanho do alvo e
      * o desenho amplia (esc = k x resol pixels por unidade). 1 = como antes. */
-    /* Auto 50 / Auto 75: the whole frame lower while busy. Custom auto (owner
-     * 19/11/2026): busy frames in two passes, text at AP_TXTRES and the blur
-     * at AP_BLURRES (libass-nv 0004); quiet ones at 100 %, one pass. */
+    /* Auto 50 / Auto 75 (owner 19/11/2026): busy frames in two passes, the
+     * text and the blur at their own resolutions (assperf.h; libass-nv 0004);
+     * quiet ones at 100 %, one pass. */
     dividir = assperf_resolucao_quadro(&resol, &resolB);
 #if !ASS_DIVIDIR
     dividir = 0; resolB = 0.0;
@@ -1282,7 +1288,7 @@ static void *ass_worker_loop(void *unused) {
         pico = puro > pico ? puro : pico * 0.95;
         __atomic_store(&assRenderPico, &pico, __ATOMIC_RELAXED); }
       assMed.renders++; assMed.renderSomaUs += us;
-      if (divOk) {   /* Custom auto split frame: under assFilaTrava, like the log that reads it */
+      if (divOk) {   /* Split frame: under assFilaTrava, like the log that reads it */
         assDiv.quadros++; assDiv.msA += msPassA; assDiv.msB += msPassB;
         if (msPassA > assDiv.maxA) assDiv.maxA = msPassA;
         if (msPassB > assDiv.maxB) assDiv.maxB = msPassB;
@@ -1722,7 +1728,7 @@ static int ass_main_desenhar_corpo(float x, float y, float alpha, int corAtiva, 
     gfx_tex_aspect_atual = 0.0f;
     /* Origem arredondada ao pixel do ALVO (kk); a imagem em pixels do
      * quadro do libass (esc = kk x resolucao), ampliada quando esc < kk.
-     * Custom auto: the soft pass's images have their own scale. */
+     * Split frames: the soft pass's images have their own scale. */
     { float e = im->esc > 0.01f ? im->esc : esc;
       dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / e;
       dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / e;
@@ -2604,25 +2610,30 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
                (int)(assperf_escala() * 100.0 + 0.5), assperf_pesado(),
                __atomic_exchange_n(&assAdianteMax, 0, __ATOMIC_RELAXED), assperf_tv_lenta() ? "yes" : "no");
       /* Render resolution (owner 19/11/2026): the mode, the scales in use
-       * now, and in Custom auto what each pass cost on the split frames. */
-      { static const char *const NOMES[] = { "100%", "?", "75%", "Auto 75%", "?", "Auto 50%", "Custom auto" };
+       * now, and what each pass cost on the split (busy) frames. */
+      { static const char *const NOMES[] = { "100%", "?", "75%", "Auto 75% (text 75 / blur 55)", "?", "Auto 50% (text 50 / blur 40)" };
         int v = assperf_get(AP_ESCALA);
         double bl = assperf_escala_blur();
-        printf("[ass] 10s res: mode=%s | now text %d%% blur %s%d%% | custom rows text %d%% blur %d%% | "
+        printf("[ass] 10s res: mode=%s | now text %d%% blur %s%d%% | "
                "split frames=%ld sharp avg=%.1fms max=%.1fms (%ld imgs) soft avg=%.1fms max=%.1fms (%ld imgs) | "
                "dialogue by %s\n",
-               v >= 0 && v <= 6 ? NOMES[v] : "?", (int)(assperf_escala() * 100.0 + 0.5),
+               v >= 0 && v <= 5 ? NOMES[v] : "?", (int)(assperf_escala() * 100.0 + 0.5),
                bl > 0.0 ? "" : "=", (int)((bl > 0.0 ? bl : assperf_escala()) * 100.0 + 0.5),
-               assperf_get(AP_TXTRES), assperf_get(AP_BLURRES),
                assDiv.quadros, assDiv.quadros ? assDiv.msA / assDiv.quadros : 0.0, assDiv.maxA, assDiv.imgsA,
                assDiv.quadros ? assDiv.msB / assDiv.quadros : 0.0, assDiv.maxB, assDiv.imgsB,
                assperf_get(AP_DIALIB) ? "libass" : "the app (signs & songs by libass)");
         memset(&assDiv, 0, sizeof assDiv); }
-      /* Signs & Songs matching (asssinais.h). */
-      { int ln; long cq, cs;
-        asssinais_estatisticas(&ln, &cq, &cs);
-        if (ln || cq)
-          printf("[ass] 10s signs: partner lines read=%d | lookups=%ld matched=%ld\n", ln, cq, cs); }
+      /* Signs & Songs matching (asssinais.h): how the lines were decided, and
+       * the dialogue settings they protect the signs from. */
+      { AssSinaisEst se;
+        asssinais_estatisticas(&se);
+        if (se.linhas || se.consultas || se.guardadas)
+          printf("[ass] 10s signs: partner lines read=%d held=%d | lookups=%ld: sign by partner=%ld, "
+                 "dialogue by partner=%ld, waiting (libass rule)=%ld | known stretches=%d, newest %.1f-%.1f s | "
+                 "dialogue size=%d%% opacity=%d%% by %s\n",
+                 se.linhas, se.guardadas, se.consultas, se.sinais, se.dialogos, se.esperando,
+                 se.trechos, se.conhecidoIni / 1000.0, se.conhecidoFim / 1000.0,
+                 assperf_get(AP_ASSTAM), assperf_get(AP_ASSOPAC), assperf_get(AP_DIALIB) ? "libass" : "the app"); }
       /* Drawing the subtitles on the GL thread, and the local server feeding
        * the TV (Tizen 4-6 playback damage, 16/11): every window, also paused. */
       { long long us = __atomic_exchange_n(&glDesUs, 0, __ATOMIC_RELAXED),

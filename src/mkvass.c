@@ -1643,10 +1643,11 @@ static int escolherNoCabecalho(Fio *f, const unsigned char *p, long n) {
   Iter it = { p, n, 0 }; unsigned long id; const unsigned char *d; long t;
   char idiomas[MKVASS_MAX_LEGENDAS][16];
   const char *vetor[MKVASS_MAX_LEGENDAS];
+  unsigned char sinais[MKVASS_MAX_LEGENDAS];
   int nLeg = 0, ord;
   while (proximo(&it, &id, &d, &t) && nLeg < MKVASS_MAX_LEGENDAS) {
     Iter j = { d, t, 0 }; unsigned long fid; const unsigned char *fd; long ft;
-    int tipo = 0; char lang[16] = "", bcp[16] = "";
+    int tipo = 0; char lang[16] = "", bcp[16] = "", nome[128] = "";
     if (id != ID_TRACKENTRY) continue;
     while (proximo(&j, &fid, &fd, &ft)) {
       if (fid == ID_TRACKTYPE) tipo = (int)lerUint(fd, ft);
@@ -1654,12 +1655,13 @@ static int escolherNoCabecalho(Fio *f, const unsigned char *p, long n) {
         char *dst = fid == ID_LANGUAGE ? lang : bcp;
         size_t z = (size_t)ft < 15 ? (size_t)ft : 15;
         memcpy(dst, fd, z); dst[z] = 0;
-      }
+      } else if (fid == 0x536E) { size_t z = (size_t)ft < sizeof nome - 1 ? (size_t)ft : sizeof nome - 1; memcpy(nome, fd, z); nome[z] = 0; }
     }
     if (tipo != 17) continue;
     // Sem Language o padrao do Matroska e "eng" — o mesmo que mkv.c le.
     snprintf(idiomas[nLeg], sizeof idiomas[nLeg], "%s", bcp[0] ? bcp : lang[0] ? lang : "eng");
     vetor[nLeg] = idiomas[nLeg];
+    sinais[nLeg] = (unsigned char)asssinais_nome(nome);
     nLeg++;
   }
   ord = nLeg && f->escolherCom
@@ -1669,6 +1671,20 @@ static int escolherNoCabecalho(Fio *f, const unsigned char *p, long n) {
     printf("[mkvass] pre-busca: %d legenda(s) no arquivo, nenhuma no idioma preferido\n", nLeg);
     fflush(stdout);
     return -1;
+  }
+  /* The chooser only sees languages: it took a Signs & Songs track while the
+   * same language has a Full/Dialogue one (logs 13/15: the prefetch read the
+   * Signs & Songs track's header, Cues and fonts, then the dialogue track was
+   * picked). The dialogue track first; the Signs & Songs one is read as data
+   * only, from the relay (asssinais.h). */
+  if (sinais[ord]) {
+    int k;
+    for (k = 0; k < nLeg; k++)
+      if (!sinais[k] && !strcasecmp(idiomas[k], idiomas[ord])) {
+        printf("[mkvass] pre-busca: ordinal %d is Signs & Songs; taking the %s dialogue track (ordinal %d)\n",
+               ord, idiomas[ord], k);
+        ord = k; break;
+      }
   }
   f->ordinal = ord;
   f->faixa = -ord - 1;
@@ -3342,12 +3358,17 @@ static int entregarCorpoSeAtual(Fio *f, const char *corpo) {
       // deixou. Outro dono no meio (externa, outra faixa, desligada) = este
       // corpo e de uma faixa que saiu.
       if (legenda_geracao() == f->legG) {
-        unsigned g;
+        unsigned g, velha = f->legG;
         assrender_limpar_fontes();
         if (f->fonteDada) memset(f->fonteDada, 0, (size_t)f->nFontes);   // a lista do libass recomeca aqui
         entregarFontes(f, corpo, 1);
         g = legenda_definir_corpo_se(corpo, f->legG);
         if (g) { f->legG = g; ok = 1; estadoDoFio(f)->fontesLegG = f->nFontes ? g : 0; }
+        /* The same track loaded again (the attached fonts arrived: logs 13
+         * and 15, owner 19/11/2026): the Signs & Songs matching follows it to
+         * the new generation. It stayed on the first one, so no line was ever
+         * looked up ("lookups=0"). */
+        if (g && f->sinaisDitos) asssinais_trocar_geracao(velha, g);
       }
     } else {
       // #412: parse/recriacao do ASS pode levar >120 ms. O quadro usa

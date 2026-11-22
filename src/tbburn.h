@@ -16,7 +16,11 @@
 // of its own kind, from 0, in file order.
 #include <stdint.h>
 
-enum { TBB_NADA = 0, TBB_BUSCANDO, TBB_PRONTO, TBB_FALHOU };
+// TBB_ESPERANDO (owner 19/11/2026): the file was gone from the account and
+// Nuvio re-added it by its hash (cached only); TorBox may need minutes to
+// register it, so the request keeps asking (every ~20 s, up to 3 min) while
+// the original plays with Nuvio's subtitles. Ends in TBB_PRONTO or TBB_FALHOU.
+enum { TBB_NADA = 0, TBB_BUSCANDO, TBB_PRONTO, TBB_FALHOU, TBB_ESPERANDO };
 
 // The source the player opened (player.c, after video_tocar). `url` is the
 // URL the player plays (video_url_atual()); the rest comes from the add-on.
@@ -64,7 +68,9 @@ void tbburn_pedir(const char *url, int sub, int audio);
 // log it raw). `motivo` (may be NULL) says why on TBB_FALHOU.
 int  tbburn_resultado(char *m3u8, unsigned n, char *motivo, unsigned mn);
 void tbburn_cancelar(void);
-// TorBox refused the plan (not Pro): burn-in stays off for this app session.
+// TorBox refused the plan on the last request (not Pro there). Owner
+// 19/11/2026: burn-in never goes away on Pro; that request draws, the next
+// pick or file asks again.
 int  tbburn_recusado(void);
 
 #ifdef NV_TPK
@@ -73,6 +79,12 @@ int  tbburn_recusado(void);
 // way the ASS tracks are back in Main's list (the caller re-picks Main).
 int  video_tpk_queimada(void);
 int  video_tpk_queimar_voltou(void);
+// Re-added file ready mid-episode (owner 19/11/2026). _aviso, once: 1 = show
+// the "Burn-in ready" notice (OK switches), 2 = switched (Main leaves the
+// burned ASS track). _tardio_ok: OK with the controls hidden while the notice
+// is up opens the burned stream; 1 = the OK was used.
+int  video_tpk_queimar_aviso(void);
+int  video_tpk_queimar_tardio_ok(void);
 #endif
 
 // HDR (owner 13/11): TorBox's transcode would lose HDR, so burn-in starts Off

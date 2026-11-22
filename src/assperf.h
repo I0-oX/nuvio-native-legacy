@@ -38,31 +38,33 @@
 
 // The person's options (Subtitles > Style on an ASS/SSA track, .tpk):
 enum {
-  AP_ESCALA,       // render resolution (AP_RES_*): Auto 50 % (default), Auto 75 %, Custom auto, 100 %, 75 %
+  AP_ESCALA,       // render resolution (AP_RES_*): Auto 50 % (default), Auto 75 %, 100 %, 75 %
   AP_GAMA,         // gamma like the TV's slider, signed: -20..+20 (0 off; the TV stops at 5)
   AP_CONTRASTE,    // contrast as the TV's number minus 30: -30..+20 (0 = TV default 30, gain 1.0)
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
-  /* Owner 19/11/2026: test instruments for Custom auto (busy scenes only;
-   * quiet scenes stay at 100 %), 25..100 in steps of 5. */
-  AP_TXTRES,       // text resolution, %: the sharp pass (100)
-  AP_BLURRES,      // blur resolution, %: the soft pass, blurred borders/glows/drawings (50)
   AP_DIALIB,       // 1 = libass draws the dialogue; 0 = the app draws it, libass the signs & songs (1)
   AP_N
 };
 
-/* AP_ESCALA values (owner 19/11/2026). 5 was "Auto" (100 %, 75 % busy, 50 %
- * on Tizen 4-6) before: a saved 5 is now Auto 50 %, the new default.
- *   Auto 50 / Auto 75: 100 % normally, the whole frame at 50 / 75 % while busy.
- *   Custom auto: 100 % normally; while busy the text at AP_TXTRES and the
- *   blur at AP_BLURRES (libass split passes, 0004). */
+/* AP_ESCALA values. 5 was "Auto" (100 %, 75 % busy, 50 % on Tizen 4-6)
+ * before: a saved 5 is Auto 50 %, the default. 6 was "Custom auto" (owner's
+ * test mode, 19/11/2026, removed the same day): a saved 6 is Auto 75 %.
+ * Both Autos: 100 % normally; while busy the text and the blur are drawn at
+ * their own resolutions (libass split passes, 0004). Values chosen on the S95C
+ * (owner 19/11/2026, logs 13 and 15):
+ *   Auto 50 %: text 50 %, blur 40 %.   Auto 75 %: text 75 %, blur 55 %. */
 #define AP_RES_100     0
 #define AP_RES_75      2
 #define AP_RES_AUTO75  3
 #define AP_RES_AUTO50  5
-#define AP_RES_CUSTOM  6
-#define AP_RES_AUTO(v) ((v) == AP_RES_AUTO50 || (v) == AP_RES_AUTO75 || (v) == AP_RES_CUSTOM)
+#define AP_RES_VELHO_CUSTOM 6   // only read from old files: becomes Auto 75 %
+#define AP_RES_AUTO(v) ((v) == AP_RES_AUTO50 || (v) == AP_RES_AUTO75)
+#define AP_AUTO50_TEXTO 0.50
+#define AP_AUTO50_BLUR  0.40
+#define AP_AUTO75_TEXTO 0.75
+#define AP_AUTO75_BLUR  0.55
 
 // Current value (cheap). Outside the .tpk: always 0.
 int  assperf_get(int id);
@@ -81,8 +83,8 @@ unsigned assperf_versao(void);
 #define ASSPERF_ADIANTE_MS  (ASS_NOVO ? 100 : 0)        // render ahead
 #define ASSPERF_PODA_MS     (ASS_NOVO ? 120000L : 0L)   // drop events that ended this long ago
 #define ASSPERF_PARQUE      (ASS_NOVO ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes
-double assperf_escala(void);                 // render resolution now (Auto: the one in use; Custom: the text's)
-double assperf_escala_blur(void);            // Custom auto, busy: the blur's; 0 = one pass
+double assperf_escala(void);                 // render resolution now (Auto, busy: the text's)
+double assperf_escala_blur(void);            // Auto, busy: the blur's; 0 = one pass
 // Subtitle colour like the video's (AP_GAMA, AP_CONTRASTE): the TV's picture
 // processing only touches the video plane.
 double assperf_gama(void);                   // exponent: 1.0 = off
@@ -90,8 +92,8 @@ double assperf_contraste(void);              // gain: 0.70 (0) .. 1.0 (30) .. 1.
 
 // Render resolution Auto and the busy-scene flag (picture sync in legimagem.c).
 // Worker, the next render: *texto = the scale of the (sharp) pass; returns 1
-// with *blur = the soft pass's scale when this frame is split (Custom auto,
-// busy, text and blur different), else 0 and *blur = 0.
+// with *blur = the soft pass's scale when this frame is split (an Auto mode,
+// busy), else 0 and *blur = 0.
 int    assperf_resolucao_quadro(double *texto, double *blur);
 int    assperf_reduzido(void);               // an Auto mode is below 100 % now (telalag.c)
 void   assperf_escala_reset(void);           // track change: back to 100 %
@@ -111,6 +113,7 @@ int    assperf_tv_lenta(void);
 
 #ifdef NV_ASSPERF_TESTE
 void assperf_teste_definir(int id, int v);   // tests on the computer
+int  assperf_teste_lido(int id, int v);       // a saved value as read (-1 = refused)
 #endif
 
 #endif

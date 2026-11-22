@@ -1728,17 +1728,23 @@ void partes_ponto_zerar(void) {
 }
 
 static int acharExato(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
-                      int *item, int *arquivoId, int *usenet, char *como, unsigned n, int soFresco);
+                      int *item, int *arquivoId, int *usenet, char *como, unsigned n, int soFresco,
+                      char *hashItem);
 int partes_achar_exato(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
                        int *item, int *arquivoId, int *usenet, char *como, unsigned n) {
-  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 0);
+  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 0, NULL);
 }
 int partes_achar_exato_fresco(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
                               int *item, int *arquivoId, int *usenet, char *como, unsigned n) {
-  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 1);
+  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 1, NULL);
+}
+int partes_achar_exato_hash(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
+                            int *item, int *arquivoId, int *usenet, char *como, unsigned n, char hashItem[41]) {
+  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 0, hashItem);
 }
 static int acharExato(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
-                      int *item, int *arquivoId, int *usenet, char *como, unsigned n, int soFresco) {
+                      int *item, int *arquivoId, int *usenet, char *como, unsigned n, int soFresco,
+                      char *hashItem) {
   char hashes[10][41];
   int nh = 0, confiavel = 0, pg, achou = 0, tipo = 0, itensT[2] = { 0, 0 }, paginasT[2] = { 0, 0 };
   int viuNome = 0, viuTamanho = 0;   // a miss: was the name / the size anywhere in the lists?
@@ -1750,6 +1756,7 @@ static int acharExato(const char *url, const char *hash, const char *arquivo, ui
   if (arquivoId) *arquivoId = -1;
   if (usenet) *usenet = 0;
   if (como && n) como[0] = 0;
+  if (hashItem) hashItem[0] = 0;
   if (hash && strlen(hash) == 40) {
     for (int i = 0; i < 40; i++) hashes[0][i] = (char)tolower((unsigned char)hash[i]);
     hashes[0][40] = 0;
@@ -1800,6 +1807,7 @@ static int acharExato(const char *url, const char *hash, const char *arquivo, ui
     if (arquivoId) *arquivoId = l.arq[l.atual].id;
     if (usenet) *usenet = l.usenet;
     if (como && n) snprintf(como, n, "%s%s", l.como, l.usenet ? ", usenet" : "");
+    if (hashItem && !l.usenet) snprintf(hashItem, 41, "%s", l.hash);
   }
   partes_lista_limpar(&l);
   return achou;

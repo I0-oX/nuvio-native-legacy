@@ -50,6 +50,10 @@ typedef struct {
   // & songs; a line found in the Signs & Songs track later is a sign
   // (legenda_cue_sinal), never drawn twice.
   unsigned assHash;
+  // ASS: 1 = libass's own sign rule matches the line's tags (\pos, \move,
+  // a drawing...). Used only while the Signs & Songs track is not known
+  // around the line (asssinais.h): then the rule decides, as libass does.
+  unsigned char assRegra;
 } LegendaCue;
 
 /* OpenSubtitles e desenhado pela UI, acima do plano de video. */

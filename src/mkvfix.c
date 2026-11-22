@@ -1030,7 +1030,9 @@ typedef struct {
   unsigned char *buf; long bufN, bufCap, bufTam;
 } MfTap;
 
-static void mtProcurar(MfTap *t) { t->estado = MT_PROCURA; t->janela = 0; t->cabN = 0; t->temTs = 0; }
+/* Looking for the next Cluster = bytes are skipped: the Signs & Songs
+ * partner's known stretch ends here (asssinais.h). */
+static void mtProcurar(MfTap *t) { t->estado = MT_PROCURA; t->janela = 0; t->cabN = 0; t->temTs = 0; if (t->faixaS) asssinais_salto(); }
 
 static int mtGuardar(MfTap *t, const unsigned char *b, long n) {
   if (t->bufN + n > t->bufCap) {
@@ -1160,6 +1162,7 @@ static void mtAlimentar(MfTap *t, int64_t pos, const unsigned char *b, size_t n)
         unsigned long v = 0;
         for (long q = 0; q < t->bufN; q++) v = (v << 8) | t->buf[q];
         t->clTs = v; t->temTs = 1; t->precisaTs = 0;
+        if (t->faixaS) asssinais_cluster(t, v);   // the partner: this stretch of the file is passing
       } else if (t->faixaS && mtFaixaDo(t, t->buf[0]) == t->faixaS) {
         asssinais_bloco(t->clTs, t->buf, t->bufN);   // the Signs & Songs partner: only for matching
       } else {

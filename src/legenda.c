@@ -35,9 +35,11 @@ static int libassDesligado(void) {
 }
 /* "Dialogue by libass" Off (owner 19/11/2026): libass draws the track but
  * skips the dialogue (ass_nv_set_skip_dialogue); the app's cue copy keeps only
- * the dialogue and draws it as its own text. A line is a sign when libass's
- * rule says so (asssinais_tags), when the track is a Signs & Songs track, or
- * when it is also in the file's Signs & Songs track (asssinais.h). */
+ * the dialogue and draws it as its own text. A line is a sign when the track
+ * is a Signs & Songs track or the line is in the file's Signs & Songs track;
+ * it is dialogue when that track is known around it and lacks it; while not
+ * known, libass's rule (asssinais_tags) decides — the same as libass's own
+ * marks (assrender.c), so no line is drawn twice or by nobody. */
 int legenda_dialogo_pelo_app(void) {
 #ifdef NV_TPK
   return ASS_NOVO && assperf_get(AP_LIBASS) && !assperf_get(AP_DIALIB);
@@ -45,13 +47,19 @@ int legenda_dialogo_pelo_app(void) {
   return 0;
 #endif
 }
-static int sinalPeloApp(const char *pt, double inicio, unsigned hash, unsigned g) {
-  return asssinais_tags(pt) || asssinais_trilha_sinais(g) || asssinais_casa(g, (long long)(inicio * 1000.0 + 0.5), hash);
+/* The cue copy: only a CERTAIN sign is left out (the decision can't change);
+ * a line that is a sign only by libass's rule stays, marked, and is decided
+ * when drawn (legenda_cue_sinal), when the partner may be known. */
+static int sinalCertoPeloApp(double inicio, unsigned hash, unsigned g) {
+  return asssinais_trilha_sinais(g) || asssinais_decidir(g, (long long)(inicio * 1000.0 + 0.5), hash) > 0;
 }
 int legenda_cue_sinal(const LegendaCue *c) {
   unsigned g = legenda_geracao();
+  int r;
   if (!c) return 0;
-  return asssinais_trilha_sinais(g) || (c->assHash && asssinais_casa(g, (long long)(c->inicio * 1000.0 + 0.5), c->assHash));
+  if (asssinais_trilha_sinais(g)) return 1;
+  r = asssinais_decidir_desenho(g, (long long)(c->inicio * 1000.0 + 0.5), c->assHash);
+  return r > 0 || (r < 0 && c->assRegra);
 }
 /* A sign / typesetting line: positioned, moving, clipped, rotated around an
  * origin or a drawing. Without libass they would be text in the wrong place. */
@@ -534,10 +542,11 @@ static int extrairAssModo(const char *corpo,LegendaCue **saida,int *parcial,int 
       a=tempo(trim(ini)); b=tempo(trim(fim));
       if (a<0 || b<=a) continue;   // so o bloco ruim cai (ver extrairSrt)
       hSinais = asssinais_hash(pt);
-      if (dialogoApp && sinalPeloApp(pt, a, hSinais, gSinais)) continue;   // libass draws it
+      if (dialogoApp && sinalCertoPeloApp(a, hSinais, gSinais)) continue;   // libass draws it
 
       memset(&c,0,sizeof c);
       c.assHash=hSinais;
+      c.assRegra=(unsigned char)(dialogoApp && asssinais_tags(pt));
       c.cor=-1; c.posX=c.posY=-1.0f;
       { char *nm=trim(nomeEst); int i;
         for (i=0;i<nEst;i++)
