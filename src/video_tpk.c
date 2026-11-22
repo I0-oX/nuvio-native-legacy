@@ -3091,6 +3091,26 @@ void video_bombear(void) {
   // for (Opus, 16/11: stuck at 0.3 s for minutes after the retry): after 30 s
   // it counts as a player error, so the retry / the original file follow.
   if (tb.ativo && pronto) tb.esperaDesde = 0;
+  /* Owner 22/11/2026 (log 1, Married Couple CRUCiBLE): TorBox gave the
+   * playlist but no video. Nuvio's stream failed already (tba_sem_video,
+   * 10 s): the original opens now (no 30 s wait, no retry in the same mode)
+   * and the file is re-added to TorBox by its hash, once per file. When
+   * TorBox's stream is ready the late notice asks for OK. */
+  if (tb.ativo && tb.tba && tb.esperaDesde && !pronto && !reconErroPend && !retomando && tba_sem_video()) {
+    static char readdFeito[sizeof urlAtual];
+    int sub = tb.sub, aud = tb.audio, jaFeito = !strcmp(readdFeito, urlAtual);
+    tb.esperaDesde = 0;
+    printf("[tbburn] TorBox sent no video %u ms after Nuvio's stream opened: back to the original now%s\n",
+           (unsigned)(SDL_GetTicks() - tb.abriuEm), jaFeito ? " (this file was re-added already this session)" : "; re-adding the file");
+    fflush(stdout);
+    tbDesligar("TorBox sent no video for this file", 1);
+    if (!jaFeito && urlAtual[0] && tbburn_pode()) {
+      snprintf(readdFeito, sizeof readdFeito, "%s", urlAtual);
+      tb.sub = sub; tb.audio = aud; tb.pend = 1; tb.pediuEm = SDL_GetTicks();
+      tb.registrando = 0; tb.tardio = 0;
+      tbburn_readicionar(urlAtual, sub, aud);
+    }
+  }
   if (tb.ativo && tb.esperaDesde && !pronto && !parado && !reconErroPend && !retomando && SDL_GetTicks() - tb.esperaDesde > 30000u) {
     printf("[tbburn] %s did not start in 30 s (no error from the TV player): treated as a player error\n",
            tb.tba ? "Nuvio's Passthrough stream" : "TorBox's burned stream");

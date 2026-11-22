@@ -105,25 +105,25 @@ int main(void) {
   // Burn-in (owner 18/11, log 10): a usenet download is found in the usenet list.
   paginated = 0; usenetMode = 1; listaEsquecer();
   { int item = 0, arq = -1, un = -1; char como[72];
-    assert(partes_achar_exato("https://addon.test/x", "", "Show.S01E01.mkv", 6909147632ULL, &item, &arq, &un, como, sizeof como));
+    assert(partes_achar_exato("https://addon.test/x", "", "Show.S01E01.mkv", 6909147632ULL, &item, &arq, &un, como, sizeof como, NULL));
     assert(item == 777 && arq == 3 && un == 1 && strstr(como, "usenet"));
     assert(usenetRequests == 1);   // the cached pass found it: no fresh lists
     puts("PASS exact lookup finds a usenet download (type usenet)");
     usenetRequests = 0;
-    assert(partes_achar_exato("https://addon.test/y", "", "Other.S01E01.mkv", 1234567ULL, &item, &arq, &un, como, sizeof como));
+    assert(partes_achar_exato("https://addon.test/y", "", "Other.S01E01.mkv", 1234567ULL, &item, &arq, &un, como, sizeof como, NULL));
     assert(item == 5 && arq == 1 && un == 0 && usenetRequests == 0);
     puts("PASS a torrent hit never reads the usenet list");
-    assert(!partes_achar_exato("https://addon.test/z", "", "Missing.mkv", 42ULL, &item, &arq, &un, como, sizeof como));
+    assert(!partes_achar_exato("https://addon.test/z", "", "Missing.mkv", 42ULL, &item, &arq, &un, como, sizeof como, NULL));
     assert(un == 0 && item == 0 && arq == -1);
     puts("PASS a miss on both lists");
     // Log 10: a 40-hex string in the link that is not the file's hash does not
     // block the exact file name + size match...
     assert(partes_achar_exato("https://addon.test/cccccccccccccccccccccccccccccccccccccccc/play", "",
-                              "Other.S01E01.mkv", 1234567ULL, &item, &arq, &un, como, sizeof como));
+                              "Other.S01E01.mkv", 1234567ULL, &item, &arq, &un, como, sizeof como, NULL));
     assert(item == 5 && un == 0 && !strcmp(como, "filename"));
     // ...but the add-on's own hash still wins: a wrong one is not overridden by the name.
     assert(!partes_achar_exato("https://addon.test/z", "dddddddddddddddddddddddddddddddddddddddd",
-                               "Other.S01E01.mkv", 1234567ULL, &item, &arq, &un, como, sizeof como));
+                               "Other.S01E01.mkv", 1234567ULL, &item, &arq, &un, como, sizeof como, NULL));
     puts("PASS an untrusted link hash falls back to name/size; the add-on's hash does not"); }
   return 0;
 }

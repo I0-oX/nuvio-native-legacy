@@ -64,11 +64,13 @@ int partes_achar_exato_hash(const char *u, const char *h, const char *a, uint64_
 static char viuArquivo[512]; static uint64_t viuBytes;
 // The account lookup: misses unless partesAchar; partesAtrasoMs = how long it takes.
 static int partesAchar, partesUsenet, partesAtrasoMs, conta = 1;
+static char partesHashItem[41];   // the found item's hash the lookup gives ("" = none)
 static volatile int partesN;
 unsigned debrid_tb_geracao(void) { return (unsigned)conta; }
 void rede_fio_fechar(void) {}
-int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, int *un, char *c, unsigned n) {
+int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, int *un, char *c, unsigned n, char *hi) {
   (void)u; (void)h;
+  if (hi) hi[0] = 0;
   snprintf(viuArquivo, sizeof viuArquivo, "%s", a ? a : ""); viuBytes = b;
   if (partesAtrasoMs) { struct timespec t = {partesAtrasoMs / 1000, (long)(partesAtrasoMs % 1000) * 1000000L}; nanosleep(&t, NULL); }
   __atomic_add_fetch(&partesN, 1, __ATOMIC_SEQ_CST);
@@ -78,6 +80,7 @@ int partes_achar_exato(const char *u, const char *h, const char *a, uint64_t b, 
   if (i) *i = 500;
   if (f) *f = 7;
   if (c && n) snprintf(c, n, "hash");
+  if (hi) snprintf(hi, 41, "%s", partesHashItem);
   return 1;
 }
 // Fresh lists only (after ITEM_NOT_FOUND): what the test says.
@@ -430,7 +433,29 @@ int main(void) {
       tbburn_arquivo_tem_ass(1);
       tbburn_pedir("https://s/12x", 1, 1);
       CHECA(fimPedido() == TBB_FALHOU && tbburn_recusado() && tbburn_linha_visivel() && tbburn_pode());
-      planoRecusa = 0; } }
+      planoRecusa = 0; }
+    // w) Owner 22/11/2026 (log 1, YURASUKA): the item left TorBox's lists before
+    //    the re-add, which then has no list hash; the hash kept from the lookup
+    //    that found the item re-adds it.
+    { partesAchar = 1; snprintf(partesHashItem, sizeof partesHashItem, "%s", "efefefefefefefefefefefefefefefefefefefef");
+      sumido500 = 1; frescoItem = 0; frescoN = criacoes = adicoes = 0; adicionarDa = -1; hashAchaItem = 0;
+      tbburn_fonte("https://s/12y", "", "B.S01E18.mkv", 2018);
+      tbburn_pedir("https://s/12y", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU && adicoes == 1 && !strcmp(adicionouHash, "efefefefefefefefefefefefefefefefefefefef"));
+      sumido500 = 0; hashAchaItem = 500; }
+    // x) TorBox sent no video (tbburn_readicionar): the found item is re-added by
+    //    its kept hash, the request waits, then gets the stream.
+    { char m[256];
+      partesAchar = 1; snprintf(partesHashItem, sizeof partesHashItem, "%s", "1212121212121212121212121212121212121212");
+      tbburn_fonte("https://s/12z", "", "B.S01E19.mkv", 2019);
+      tbburn_pedir("https://s/12z", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU);   // found (item 500), no playlist in these stubs
+      frescoItem = 900; frescoAPartir = 1; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 1;
+      tbburn_readicionar("https://s/12z", 1, 1);
+      CHECA(fimPedido() == TBB_PRONTO && viuEsperando && adicoes == 1 &&
+            !strcmp(adicionouHash, "1212121212121212121212121212121212121212") && strstr(ultRota, "createstream?id=900&") != NULL);
+      CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
+      pronto900 = 0; frescoItem = 0; frescoAPartir = 0; partesHashItem[0] = 0; } }
 
   if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
   printf("tbburn: ok\n");

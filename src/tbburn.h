@@ -66,6 +66,10 @@ void tbburn_arquivo_tem_ass(int sim);
 void tbburn_pedir(const char *url, int sub, int audio);
 // TBB_*; on TBB_PRONTO `m3u8` holds the playlist URL (with TorBox's token: never
 // log it raw). `motivo` (may be NULL) says why on TBB_FALHOU.
+/* TorBox listed the file and gave a playlist but sent no video (owner
+ * 22/11/2026): re-add it by its hash, then ask for the stream again. Results
+ * as tbburn_pedir (TBB_ESPERANDO while TorBox registers it). */
+void tbburn_readicionar(const char *url, int sub, int audio);
 int  tbburn_resultado(char *m3u8, unsigned n, char *motivo, unsigned mn);
 void tbburn_cancelar(void);
 // TorBox refused the plan on the last request (not Pro there). Owner

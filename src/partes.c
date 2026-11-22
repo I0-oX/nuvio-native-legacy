@@ -1731,8 +1731,8 @@ static int acharExato(const char *url, const char *hash, const char *arquivo, ui
                       int *item, int *arquivoId, int *usenet, char *como, unsigned n, int soFresco,
                       char *hashItem);
 int partes_achar_exato(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
-                       int *item, int *arquivoId, int *usenet, char *como, unsigned n) {
-  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 0, NULL);
+                       int *item, int *arquivoId, int *usenet, char *como, unsigned n, char *hashItem) {
+  return acharExato(url, hash, arquivo, bytes, item, arquivoId, usenet, como, n, 0, hashItem);
 }
 int partes_achar_exato_fresco(const char *url, const char *hash, const char *arquivo, uint64_t bytes,
                               int *item, int *arquivoId, int *usenet, char *como, unsigned n) {
