@@ -159,8 +159,8 @@ static void capturar(void) {
   for (i = 0; i < nE; i++) {
     emb[i] = video_legenda(i);
 #ifdef NV_TPK
-    // Burned in (tbburn.h): burnable ASS tracks leave Main/Second, except the one on in Main (22/11/2026).
-    if (video_tpk_leg_oculta(i) && i != faixas_legenda_main()) emb[i] = NULL;
+    // Burned in (tbburn.h): every burnable ASS track is out of Main/Second.
+    if (video_tpk_leg_oculta(i)) emb[i] = NULL;
 #endif
   }
   // Live channels have no addon subtitles (faixas.c, tests/faixas_canal).

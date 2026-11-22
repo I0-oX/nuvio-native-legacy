@@ -466,10 +466,6 @@ void faixas_reiniciar_preparada(void) { reiniciarFaixas(1); }
 #endif
 
 // Indice da legenda que a folha deve marcar como ATIVA.
-/* Main's track index (legendasui.c: while burned, the ASS track that is on in
- * Main stays listed so it keeps its tick and can be turned off). */
-static int legendaAtiva(void);
-int faixas_legenda_main(void) { return legendaAtiva(); }
 static int legendaAtiva(void) {
   if (legExternaId[0]) {
     char id[24];
@@ -1676,13 +1672,14 @@ void faixas_atualizar(float dt, Uint32 agora) {
   { int v = video_tpk_queimar_aviso();
     if (v == 1) player_toast_ex(i18n("Legenda queimada pronta: aperte OK para trocar"), 20000, "pl_captions", 0); }
   /* The burned picture is on (owner 22/11/2026): Nuvio stops drawing Main
-   * only if Main is the track TorBox burns; another ASS track stays. */
+   * whenever it is an embedded ASS track (burned or not); the automatic
+   * pick then runs over the non-ASS tracks. */
   if (video_tpk_queimar_tirar_main()) {
     int a = legendaAtiva(), q = video_tpk_queimada();
-    if (a >= 0 && a == q) {
+    if (a >= 0 && a < video_n_legenda() && video_tpk_leg_queimavel(a)) {
       escolherLegenda(-1); legAuto = 1; legAutoDesde = 0;
-      printf("[tbburn] burned picture on: Main was the burned ASS track %d -> off, automatic pick over the other tracks\n", a);
-    } else printf("[tbburn] burned picture on: Main %d is not the burned track %d -> kept\n", a, q);
+      printf("[tbburn] burned picture on: Main was embedded ASS track %d (burned: %d) -> off, automatic pick over the other tracks\n", a, q);
+    } else printf("[tbburn] burned picture on: Main %d is not an embedded ASS track -> kept\n", a);
     fflush(stdout);
   }
 #endif

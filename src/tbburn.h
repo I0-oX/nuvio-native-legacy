@@ -85,7 +85,7 @@ int  video_tpk_queimar_voltou(void);
 // is up opens the burned stream; 1 = the OK was used.
 int  video_tpk_queimar_aviso(void);
 // The burned picture just opened (TorBox first, mid-play, late OK), once: Main
-// turns off if it is the burned ASS track (owner 22/11/2026).
+// turns off if it is an embedded ASS track (owner 22/11/2026).
 int  video_tpk_queimar_tirar_main(void);
 int  video_tpk_queimar_tardio_ok(void);
 #endif
