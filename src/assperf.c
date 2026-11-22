@@ -16,9 +16,10 @@
 
 /* The person's options start here and live in assperf.txt. */
 static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __attribute__((unused)) = {
-  [AP_ESCALA] = { "escala", 0, 5, 5 }, [AP_GAMA] = { "gamma", -20, 20, 0 }, [AP_CONTRASTE] = { "contrast", -30, 20, 0 },
+  [AP_ESCALA] = { "escala", 0, 7, 5 }, [AP_GAMA] = { "gamma", -20, 20, 0 }, [AP_CONTRASTE] = { "contrast", -30, 20, 0 },
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
   [AP_DIALIB] = { "dialogo", 0, 1, 1 },
+  [AP_TXTRES] = { "txtres", 25, 100, 100 }, [AP_BLURRES] = { "blurres", 25, AP_LIMPO_BASE + AP_LIMPO_N, 50 },
 };
 
 static int val[AP_N] __attribute__((unused));   // read off the .tpk only by the tests
@@ -28,8 +29,9 @@ static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
 
 #if defined(NV_TPK) || defined(NV_ASSPERF_TESTE)
 static int valido(int id, int v) {
-  if (id == AP_ESCALA)   // 100 %, 75 %, Auto 75, Auto 50 (the old "Auto" 5)
-    return v == AP_RES_100 || v == AP_RES_75 || v == AP_RES_AUTO75 || v == AP_RES_AUTO50;
+  if (id == AP_ESCALA) return AP_RES_AUTO(v);
+  if (id == AP_TXTRES) return v >= 25 && v <= 100 && v % 5 == 0;
+  if (id == AP_BLURRES) return (v >= 25 && v <= 100 && v % 5 == 0) || (v > AP_LIMPO_BASE && v <= AP_LIMPO_BASE + AP_LIMPO_N);
   return v >= PESSOA[id].min && v <= PESSOA[id].max;
 }
 #endif
@@ -48,12 +50,13 @@ static void gravar(void) {
 // with the values in place, so an assperf_get from another thread never reads
 // half a file. The first use is always an ASS track or the Style sheet, long
 // after avisos_iniciar (the crash guard needs it).
-/* A saved value as read from the file. "Custom auto" (6) was removed on
- * 19/11/2026: it reads as Auto 75 % (owner). The old "txtres"/"blurres" keys
- * are simply not read any more. */
+/* A saved value as read from the file (owner 22/11/2026): the fixed 100 %
+ * reads as High auto, the fixed 75 % as Medium auto; Custom auto (6) is back. */
 #if defined(NV_TPK) || defined(NV_ASSPERF_TESTE)
 static int valorLido(int id, int v) {
-  return id == AP_ESCALA && v == AP_RES_VELHO_CUSTOM ? AP_RES_AUTO75 : v;
+  if (id == AP_ESCALA && v == AP_RES_100_VELHO) return AP_RES_ALTO;
+  if (id == AP_ESCALA && v == AP_RES_75_VELHO) return AP_RES_MEDIO;
+  return v;
 }
 #endif
 
@@ -278,10 +281,80 @@ int assperf_tv_lenta(void) {
 }
 static void auto_trocar_locked(int em75, double t) { A.em75 = em75; A.desde = t; }
 
+/* ---- Clean blur (owner 22/11/2026) ----------------------------------------
+ * Gradients built from thin stacked strips show horizontal lines when the
+ * strip edges land unevenly on the pixel rows. Even for any strip offset when
+ * screen pixels per script pixel f is 1/n; for strips on whole script pixels
+ * also at whole f. Simulated (22/11): 1/4, 1/3, 2/5, 1/2, 1, 2, 3, 4. */
+static const double LIMPO[AP_LIMPO_N] = { 0.25, 1.0 / 3.0, 0.4, 0.5, 1.0, 2.0, 3.0, 4.0 };
+static int gradeAlt = 1080, gradePry = 1080;   /* __atomic: the worker sets them */
+void assperf_grade_definir(int alturaPx, int playResY) {
+  if (alturaPx < 16) alturaPx = 1080;
+  if (playResY <= 0) playResY = 288;   /* libass's default when the script has none */
+  __atomic_store_n(&gradeAlt, alturaPx, __ATOMIC_RELAXED);
+  __atomic_store_n(&gradePry, playResY, __ATOMIC_RELAXED);
+}
+void assperf_grade(int *alturaPx, int *playResY) {
+  *alturaPx = __atomic_load_n(&gradeAlt, __ATOMIC_RELAXED);
+  *playResY = __atomic_load_n(&gradePry, __ATOMIC_RELAXED);
+}
+/* The % (as a scale) of clean step c on the current grid. */
+static double limpo_p(int c) {
+  int alt, pry; assperf_grade(&alt, &pry);
+  return LIMPO[c] * (double)pry / (double)alt;
+}
+static double blur_limpo(double alvo, double teto) {
+  double melhor = -1.0, maior = -1.0;
+  int c;
+  for (c = 0; c < AP_LIMPO_N; c++) {
+    double p = limpo_p(c);
+    if (p < 0.25 - 1e-9 || p > teto + 1e-9) continue;
+    if (p >= alvo - 1e-9 && (melhor < 0 || p < melhor)) melhor = p;
+    if (p > maior) maior = p;
+  }
+  return melhor > 0 ? melhor : maior > 0 ? maior : alvo;
+}
+int assperf_blur_limpos(int *pct10, int *codigo, int max) {
+  int c, n = 0;
+  for (c = 0; c < AP_LIMPO_N && n < max; c++) {
+    double p = limpo_p(c);
+    if (p < 0.25 - 1e-9 || p > 1.0 + 1e-9) continue;
+    pct10[n] = (int)(p * 1000.0 + 0.5); codigo[n] = AP_LIMPO_BASE + 1 + c; n++;
+  }
+  return n;
+}
+double assperf_blurres_escala(int v) {
+  double p;
+  if (v > AP_LIMPO_BASE && v <= AP_LIMPO_BASE + AP_LIMPO_N) p = limpo_p(v - AP_LIMPO_BASE - 1);
+  else p = v / 100.0;
+  return p < 0.25 || p > 1.0 ? 0.5 : p;
+}
+
 /* The two scales of mode v while reduced (busy). texto == blur: one pass. */
 static void escalas_reduzidas(int v, double *texto, double *blur) {
-  if (v == AP_RES_AUTO75) { *texto = AP_AUTO75_TEXTO; *blur = AP_AUTO75_BLUR; }
-  else { *texto = AP_AUTO50_TEXTO; *blur = AP_AUTO50_BLUR; }
+  int alt, pry;
+  assperf_grade(&alt, &pry);
+  if (v == AP_RES_CUSTOM) {
+    int t = assperf_get(AP_TXTRES);
+    *texto = t >= 25 && t <= 100 ? t / 100.0 : 1.0;
+    *blur = assperf_blurres_escala(assperf_get(AP_BLURRES));
+    return;
+  }
+  if (pry <= 540) { *texto = 1.0; *blur = blur_limpo(1.0 + 1e-6, 1.0); return; }
+  if (v == AP_RES_ALTO) { *texto = AP_ALTO_TEXTO; *blur = blur_limpo(AP_ALTO_BLUR, AP_BLUR_TETO); }
+  else if (v == AP_RES_MEDIO) { *texto = AP_MEDIO_TEXTO; *blur = blur_limpo(AP_MEDIO_BLUR, AP_BLUR_TETO); }
+  else { *texto = AP_BAIXO_TEXTO; *blur = blur_limpo(AP_BAIXO_BLUR, AP_BLUR_TETO); }
+}
+
+void assperf_modo_texto(char *b, int n) {
+  static const char *const NOMES[8] = { "?", "?", "?", "Medium auto", "?", "Low auto", "Custom auto", "High auto" };
+  int v = assperf_get(AP_ESCALA), alt, pry;
+  double tx = 1.0, bl = 1.0;
+  assperf_grade(&alt, &pry);
+  escalas_reduzidas(v, &tx, &bl);
+  snprintf(b, (size_t)n, "%s (busy: text %.0f / blur %.1f; px per script px %.2f / %.2f; frame %d px, PlayResY %d)",
+           v >= 0 && v < 8 ? NOMES[v] : "?", tx * 100.0, bl * 100.0,
+           tx * alt / pry, bl * alt / pry, alt, pry);
 }
 
 int assperf_resolucao_quadro(double *texto, double *blur) {
@@ -292,7 +365,7 @@ int assperf_resolucao_quadro(double *texto, double *blur) {
     pthread_mutex_lock(&autoTrava);
     A.em75 = 0;
     pthread_mutex_unlock(&autoTrava);
-    *texto = v == AP_RES_75 ? 0.75 : 1.0;
+    *texto = 1.0;
     return 0;
   }
   t = agoraS();
@@ -318,7 +391,7 @@ void assperf_escala_reset(void) {
 double assperf_escala(void) {
   int v = assperf_get(AP_ESCALA), em75;
   double tx, bl;
-  if (!AP_RES_AUTO(v)) return v == AP_RES_75 ? 0.75 : 1.0;
+  if (!AP_RES_AUTO(v)) return 1.0;
   pthread_mutex_lock(&autoTrava); em75 = A.em75; pthread_mutex_unlock(&autoTrava);
   if (!em75) return 1.0;
   escalas_reduzidas(v, &tx, &bl);

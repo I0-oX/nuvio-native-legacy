@@ -38,33 +38,48 @@
 
 // The person's options (Subtitles > Style on an ASS/SSA track, .tpk):
 enum {
-  AP_ESCALA,       // render resolution (AP_RES_*): Auto 50 % (default), Auto 75 %, 100 %, 75 %
+  AP_ESCALA,       // render resolution (AP_RES_*): Low auto (default), Medium auto, High auto, Custom auto
   AP_GAMA,         // gamma like the TV's slider, signed: -20..+20 (0 off; the TV stops at 5)
   AP_CONTRASTE,    // contrast as the TV's number minus 30: -30..+20 (0 = TV default 30, gain 1.0)
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
   AP_DIALIB,       // 1 = libass draws the dialogue; 0 = the app draws it, libass the signs & songs (1)
+  AP_TXTRES,       // Custom auto, busy: text resolution %, 25..100 in 5s (100)
+  AP_BLURRES,      // Custom auto, busy: blur resolution % 25..100 in 5s, or AP_LIMPO_BASE+c = clean step c (50)
   AP_N
 };
 
-/* AP_ESCALA values. 5 was "Auto" (100 %, 75 % busy, 50 % on Tizen 4-6)
- * before: a saved 5 is Auto 50 %, the default. 6 was "Custom auto" (owner's
- * test mode, 19/11/2026, removed the same day): a saved 6 is Auto 75 %.
- * Both Autos: 100 % normally; while busy the text and the blur are drawn at
- * their own resolutions (libass split passes, 0004). Values chosen on the S95C
- * (owner 19/11/2026, logs 13 and 15):
- *   Auto 50 %: text 50 %, blur 40 %.   Auto 75 %: text 75 %, blur 55 %. */
-#define AP_RES_100     0
-#define AP_RES_75      2
-#define AP_RES_AUTO75  3
-#define AP_RES_AUTO50  5
-#define AP_RES_VELHO_CUSTOM 6   // only read from old files: becomes Auto 75 %
-#define AP_RES_AUTO(v) ((v) == AP_RES_AUTO50 || (v) == AP_RES_AUTO75)
-#define AP_AUTO50_TEXTO 0.50
-#define AP_AUTO50_BLUR  0.40
-#define AP_AUTO75_TEXTO 0.75
-#define AP_AUTO75_BLUR  0.55
+/* AP_ESCALA values (owner 22/11/2026): three Autos and Custom auto, all at
+ * 100 % in quiet scenes; while busy the text and the blur are drawn at their
+ * own resolutions (libass split passes, 0004).
+ *   Low auto (default, was "Auto 50 %" = 5): text 50 %, blur clean near 40 %.
+ *   Medium auto (was "Auto 75 %" = 3):     text 75 %, blur clean near 50 %.
+ *   High auto (new, 7):                    text 90 %, blur clean near 55 %.
+ *   Custom auto (6): the Text / Blur resolution rows.
+ * Saved fixed 100 % (0) reads as High auto, fixed 75 % (2) as Medium auto.
+ * "Clean" blur (no horizontal lines on gradients built from thin strips):
+ * screen pixels per script pixel f = frame height (layout x k x %) / PlayResY
+ * is one of 1/4, 1/3, 2/5, 1/2, 1, 2, 3, 4. The Auto takes the lowest clean %
+ * at or above its target (25..75 %), else the highest clean % up to 75, else
+ * the target. Scripts of 540 lines or fewer: text 100 %, blur the highest
+ * clean % up to 100 (owner: 480p renders at 100). */
+#define AP_RES_100_VELHO 0   // only read from old files: High auto
+#define AP_RES_75_VELHO  2   // only read from old files: Medium auto
+#define AP_RES_MEDIO     3
+#define AP_RES_BAIXO     5
+#define AP_RES_CUSTOM    6
+#define AP_RES_ALTO      7
+#define AP_RES_AUTO(v) ((v) == AP_RES_BAIXO || (v) == AP_RES_MEDIO || (v) == AP_RES_ALTO || (v) == AP_RES_CUSTOM)
+#define AP_BAIXO_TEXTO 0.50
+#define AP_BAIXO_BLUR  0.40
+#define AP_MEDIO_TEXTO 0.75
+#define AP_MEDIO_BLUR  0.50
+#define AP_ALTO_TEXTO  0.90
+#define AP_ALTO_BLUR   0.55
+#define AP_BLUR_TETO   0.75
+#define AP_LIMPO_BASE  1000  // AP_BLURRES = 1000 + c: the clean step c (1..AP_LIMPO_N) of the playing file
+#define AP_LIMPO_N     8
 
 // Current value (cheap). Outside the .tpk: always 0.
 int  assperf_get(int id);
@@ -85,6 +100,17 @@ unsigned assperf_versao(void);
 #define ASSPERF_PARQUE      (ASS_NOVO ? (6L << 20) : 0L)   // relay blocks parked ahead, bytes
 double assperf_escala(void);                 // render resolution now (Auto, busy: the text's)
 double assperf_escala_blur(void);            // Auto, busy: the blur's; 0 = one pass
+// The pixel grid the clean values are worked out on (worker): the text pass's
+// frame height at 100 % (layout height x k) and the script's PlayResY.
+void   assperf_grade_definir(int alturaPx, int playResY);
+void   assperf_grade(int *alturaPx, int *playResY);
+// Custom auto's Blur row: the clean values of the playing file within 25..100 %:
+// percent x 10 and the AP_BLURRES code; returns how many (up to max).
+int    assperf_blur_limpos(int *pct10, int *codigo, int max);
+// AP_BLURRES as a scale (Custom auto), on the current grid.
+double assperf_blurres_escala(int v);
+// The current mode's name and busy scales, for the log.
+void   assperf_modo_texto(char *b, int n);
 // Subtitle colour like the video's (AP_GAMA, AP_CONTRASTE): the TV's picture
 // processing only touches the video plane.
 double assperf_gama(void);                   // exponent: 1.0 = off
