@@ -227,7 +227,7 @@ static unsigned assEpoch;
  * Sem hold a fila tem teto 1 e e o comportamento de sempre. Sob assFilaTrava,
  * em ordem de pedido (ms crescente dentro de um epoch). */
 #define ASS_FILA_MAX 4
-#define ASS_FILA_BYTES (24u * 1024u * 1024u)
+#define ASS_FILA_BYTES (64u * 1024u * 1024u)   /* 22/11: was 24 MB (RAM has headroom; 4K-UI flattened frames) */
 static AssCpuFrame assFila[ASS_FILA_MAX];
 static int assFilaN;
 static int assFilaTeto = 1;      // 1 = como antes; ASS_FILA_MAX com hold
@@ -269,6 +269,7 @@ static int layBW, layBH;
  * two passes' time, images each pass gave. */
 static struct { long quadros; double msA, msB, maxA, maxB; long imgsA, imgsB; } assDiv;
 static ASS_Track *assTrack;
+static unsigned assTrackMut;   // bumped wherever assTrack's events change (the time index rebuilds)
 static unsigned assTrackGeracao;
 static AssTex *assTex;
 static int assTexCap;
@@ -622,7 +623,7 @@ static void ass_iniciar_locked(int sistema) {
   snprintf(assFallbackFont, sizeof assFallbackFont, "%s", fallbackFont);
   ass_aplicar_fontes_locked();
   assNFontesVistas = 0; assBytesFontesVistas = 0;
-  ass_set_cache_limits(assRenderer, 0, 32);
+  ass_set_cache_limits(assRenderer, 0, 96);   /* 22/11: RAM has headroom (owner); was 32 */
   assFrameW = 1920; assFrameH = 1080;
   ass_set_frame_size(assRenderer, assFrameW, assFrameH);
   ass_set_storage_size(assRenderer, assFrameW, assFrameH);
@@ -878,10 +879,10 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
   plainApl = *p; plainAplValido = 1; assTrackStyleVer++;
 }
 
-#define ASS_RIGID_CACHE_MAX 384
+#define ASS_RIGID_CACHE_MAX 1024   /* 22/11: was 384 (RAM has headroom) */
 #define ASS_RIGID_FRAME_MAX 128
 #define ASS_RIGID_MISS_MAX 8
-#define ASS_RIGID_BYTES_MAX (32u * 1024u * 1024u)
+#define ASS_RIGID_BYTES_MAX (96u * 1024u * 1024u)   /* 22/11: was 32 MB */
 
 typedef struct {
   int x, y, w, h, stride;
@@ -1174,6 +1175,28 @@ static void ass_aplicar_assperf_locked(void) {
   int simples = __atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
   if (!assRenderer || (v == assApVersao && simples == assApSimples)) return;
   assApVersao = v; assApSimples = simples;
+  /* Dialogue size / opacity / "Dialogue by libass" change what a cached
+   * layer looks like: new cache key (22/11/2026). */
+  { static int tam = -1, opac = -1, dia = -1;
+    int t2 = assperf_get(AP_ASSTAM), o2 = assperf_get(AP_ASSOPAC), d2 = assperf_get(AP_DIALIB);
+    if (t2 != tam || o2 != opac || d2 != dia) {
+      if (tam != -1) assTrackStyleVer++;
+      tam = t2; opac = o2; dia = d2;
+    } }
+  /* Hinting (22/11/2026): none for authored ASS, like libass's and mpv's
+   * default. Light hinting sent every new glyph size through FreeType's
+   * autohinter, and frame-by-frame \fs/\fscx animation makes new sizes every
+   * frame. Plain text (SRT) keeps light. Only on a change: it clears caches. */
+  { static int hint = -1;
+    int h2 = simples ? ASS_HINTING_LIGHT : ASS_HINTING_NONE;
+    if (h2 != hint) {
+      hint = h2;
+      ass_set_hinting(assRenderer, (ASS_Hinting)h2);
+#if ASS_DIVIDIR
+      if (assRendererB) ass_set_hinting(assRendererB, (ASS_Hinting)h2);
+#endif
+      printf("[ass] hinting %s (%s)\n", h2 == ASS_HINTING_NONE ? "none" : "light", simples ? "plain text" : "authored ASS");
+    } }
 #if defined(NV_TPK) && defined(ASS_NV_API)
   { static int feito;
     if (!feito) {
@@ -1212,6 +1235,146 @@ static void ass_aplicar_assperf_locked(void) {
 #endif
 }
 
+/* ===== EVENT TIME INDEX (22/11/2026) =========================================
+ * Every subtitle frame used to walk the WHOLE event list several times (the
+ * snapshot, the Signs & Songs marking, the busy-scene forecast), and strlen
+ * every event starting in the next 2.2 s. The track keeps 2 min behind and up
+ * to 3 min ahead: tens of thousands of frame-by-frame events in a busy ED. Now
+ * the events are indexed by Start once per change of the track (a batch from
+ * mkvass, a prune, a seek back), text lengths are kept with prefix sums, and a
+ * frame touches only the active events plus the forecast window. Long events
+ * (> ASS_IDX_CURTO ms: songs, whole-scene signs) sit in their own short list
+ * so the backward reach for active events stays the longest SHORT event.
+ * Worker thread, under assTrava. */
+#define ASS_IDX_CURTO 2000LL
+static int *idxOrd, idxN = -1, idxCap;       // event indices sorted by (Start, index)
+static long long *idxIni, *idxPre;           // Start of idxOrd[i]; prefix sums of text length (N+1)
+static int *idxLongo, idxLongoN, idxLongoCap;
+static long long idxCurtoMax;
+static int *idxLen, idxLenCap;               // text length per event index
+static int *idxCand, idxCandCap;
+static unsigned idxMut = ~0u;
+static const ASS_Track *idxTrack;
+static const ASS_Event *idxEvs;
+static long idxReconstrucoes;
+static int assIdxAtivosUlt;   // active events of the last snapshot (under assTrava)
+static int assPlayResYVisto = 1080;   // worker only: the script's PlayResY seen last (clean blur grid)
+typedef struct { const char *txt; long long ini; int ro, len; } AssLenEnt;
+static AssLenEnt *idxMapa; static int idxMapaCap;   // previous lengths by (Text, Start, ReadOrder)
+static const ASS_Event *idxCmpEv;
+static int ass_idx_cmp(const void *a, const void *b) {
+  int ia = *(const int *)a, ib = *(const int *)b;
+  long long sa = idxCmpEv[ia].Start, sb = idxCmpEv[ib].Start;
+  return sa < sb ? -1 : sa > sb ? 1 : ia - ib;
+}
+static unsigned ass_idx_h(const char *txt, long long ini, int ro) {
+  uint64_t h = (uint64_t)(uintptr_t)txt * UINT64_C(0x9E3779B97F4A7C15) ^ (uint64_t)ini * UINT64_C(0xC2B2AE3D27D4EB4F) ^ (uint64_t)(unsigned)ro;
+  return (unsigned)(h ^ (h >> 31));
+}
+static int ass_idx_cresce(int **p, int *cap, int n) {
+  if (n <= *cap) return 1;
+  { int nc = *cap ? *cap : 1024; int *nv;
+    while (nc < n) nc *= 2;
+    nv = (int *)realloc(*p, (size_t)nc * sizeof *nv);
+    if (!nv) return 0;
+    *p = nv; *cap = nc; }
+  return 1;
+}
+/* 1 = the index matches assTrack. 0 = no memory: callers fall back to a walk. */
+static int ass_idx_garantir(void) {
+  int n, i, mc;
+  AssLenEnt *novo;
+  if (!assTrack) return 0;
+  n = assTrack->n_events;
+  if (idxTrack == assTrack && idxEvs == assTrack->events && idxN == n &&
+      idxMut == __atomic_load_n(&assTrackMut, __ATOMIC_ACQUIRE)) return 1;
+  idxN = -1;
+  if (!ass_idx_cresce(&idxOrd, &idxCap, n + 1) || !ass_idx_cresce(&idxLen, &idxLenCap, n + 1) ||
+      !ass_idx_cresce(&idxLongo, &idxLongoCap, n + 1)) return 0;
+  { long long *a = (long long *)realloc(idxIni, (size_t)(n + 1) * sizeof *a);
+    if (!a) return 0;
+    idxIni = a;
+    a = (long long *)realloc(idxPre, (size_t)(n + 2) * sizeof *a);
+    if (!a) return 0;
+    idxPre = a; }
+  /* Lengths: reuse the previous rebuild's (same Text pointer, Start and
+   * ReadOrder), strlen only what is new. */
+  for (mc = 1024; mc < 2 * n + 2; mc *= 2) {}
+  novo = (AssLenEnt *)calloc((size_t)mc, sizeof *novo);
+  if (!novo) return 0;
+  for (i = 0; i < n; i++) {
+    const ASS_Event *e = &assTrack->events[i];
+    int len = -1;
+    unsigned h;
+    if (!e->Text) { idxLen[i] = 0; continue; }
+    if (idxMapa) {
+      for (h = ass_idx_h(e->Text, e->Start, e->ReadOrder) & (unsigned)(idxMapaCap - 1); idxMapa[h].txt;
+           h = (h + 1) & (unsigned)(idxMapaCap - 1))
+        if (idxMapa[h].txt == e->Text && idxMapa[h].ini == e->Start && idxMapa[h].ro == e->ReadOrder) { len = idxMapa[h].len; break; }
+    }
+    if (len < 0) len = (int)strlen(e->Text);
+    idxLen[i] = len;
+    for (h = ass_idx_h(e->Text, e->Start, e->ReadOrder) & (unsigned)(mc - 1); novo[h].txt; h = (h + 1) & (unsigned)(mc - 1)) {}
+    novo[h].txt = e->Text; novo[h].ini = e->Start; novo[h].ro = e->ReadOrder; novo[h].len = len;
+  }
+  free(idxMapa); idxMapa = novo; idxMapaCap = mc;
+  idxLongoN = 0; idxCurtoMax = 0;
+  for (i = 0; i < n; i++) {
+    const ASS_Event *e = &assTrack->events[i];
+    idxOrd[i] = i;
+    if (e->Duration > ASS_IDX_CURTO) idxLongo[idxLongoN++] = i;
+    else if (e->Duration > idxCurtoMax) idxCurtoMax = e->Duration;
+  }
+  idxCmpEv = assTrack->events;
+  qsort(idxOrd, (size_t)n, sizeof *idxOrd, ass_idx_cmp);
+  idxPre[0] = 0;
+  for (i = 0; i < n; i++) {
+    idxIni[i] = assTrack->events[idxOrd[i]].Start;
+    idxPre[i + 1] = idxPre[i] + idxLen[idxOrd[i]];
+  }
+  idxTrack = assTrack; idxEvs = assTrack->events; idxN = n;
+  idxMut = __atomic_load_n(&assTrackMut, __ATOMIC_ACQUIRE);
+  idxReconstrucoes++;
+  return 1;
+}
+static int ass_idx_lb(long long v) {   // first i with idxIni[i] >= v
+  int lo = 0, hi = idxN;
+  while (lo < hi) { int m = (lo + hi) / 2; if (idxIni[m] < v) lo = m + 1; else hi = m; }
+  return lo;
+}
+/* Events starting in [de, ate): count and text length. */
+static void ass_idx_janela(long long de, long long ate, int *n, long *chars) {
+  int a = ass_idx_lb(de), b = ass_idx_lb(ate);
+  if (b < a) b = a;
+  *n = b - a; *chars = (long)(idxPre[b] - idxPre[a]);
+}
+/* First Start after t (LLONG_MAX: none). */
+static long long ass_idx_prox(long long t) {
+  int i = ass_idx_lb(t + 1);
+  return i < idxN ? idxIni[i] : LLONG_MAX;
+}
+static int ass_int_cmp(const void *a, const void *b) { int x = *(const int *)a, y = *(const int *)b; return x - y; }
+/* Events with Start <= ate and End > t, in track order (as the old walk). */
+static int ass_idx_candidatos(long long t, long long ate, const int **out) {
+  int i, n = 0, a, b;
+  const ASS_Event *ev = assTrack->events;
+  a = ass_idx_lb(t - idxCurtoMax);
+  b = ass_idx_lb(ate + 1);
+  if (!ass_idx_cresce(&idxCand, &idxCandCap, (b > a ? b - a : 0) + idxLongoN + 1)) { *out = NULL; return -1; }
+  for (i = a; i < b; i++) {
+    const ASS_Event *e = &ev[idxOrd[i]];
+    if (e->Duration > ASS_IDX_CURTO) continue;   // in idxLongo
+    if (e->Start + e->Duration > t) idxCand[n++] = idxOrd[i];
+  }
+  for (i = 0; i < idxLongoN; i++) {
+    const ASS_Event *e = &ev[idxLongo[i]];
+    if (e->Start <= ate && e->Start + e->Duration > t) idxCand[n++] = idxLongo[i];
+  }
+  qsort(idxCand, (size_t)n, sizeof *idxCand, ass_int_cmp);
+  *out = idxCand;
+  return n;
+}
+
 #if ASS_DIVIDIR
 /* Split frames: the soft-pass renderer, set up like assRenderer (fonts,
  * shaper, hinting, engine, dialogue opacity); a smaller bitmap cache, it
@@ -1223,8 +1386,8 @@ static void ass_b_criar_locked(void) {
   ass_set_shaper(assRendererB, ASS_SHAPING_COMPLEX);
   ass_set_fonts(assRendererB, assFallbackFont[0] ? assFallbackFont : NULL, "Arial",
                 ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-  ass_set_cache_limits(assRendererB, 0, 24);
-  ass_set_hinting(assRendererB, ASS_HINTING_LIGHT);
+  ass_set_cache_limits(assRendererB, 0, 64);   /* 22/11: was 24 */
+  ass_set_hinting(assRendererB, ASS_HINTING_NONE);   /* authored ASS only (22/11) */
   ass_set_font_scale(assRendererB, 1.0);
 #ifdef ASS_NV_API
   ass_nv_set_engine(assRendererB, 1);
@@ -1245,6 +1408,7 @@ static void ass_b_criar_locked(void) {
  *                 with \pos or a drawing (libass-nv 0004);
  *   other (<= -2) not known yet: libass's own rule. Holds -(version + 2):
  *                 looked at again only after the partner grew. */
+
 static void ass_marcar_sinais_locked(unsigned g, long long t) {
   int i, todos = asssinais_trilha_sinais(g), par;
   int marca;
@@ -1252,15 +1416,18 @@ static void ass_marcar_sinais_locked(unsigned g, long long t) {
   par = !todos && asssinais_ativo(g);
   if (!todos && !par) return;
   marca = -(int)(asssinais_versao() & 0x3FFFFFFFu) - 2;
-  for (i = 0; i < assTrack->n_events; i++) {
-    ASS_Event *ev = &assTrack->events[i];
+  { const int *cand = NULL;
+    int nc = ass_idx_garantir() ? ass_idx_candidatos(t, t + 1000, &cand) : -1, ci;
+  for (ci = 0; ci < (nc >= 0 ? nc : assTrack->n_events); ci++) {
+    ASS_Event *ev = &assTrack->events[nc >= 0 ? cand[ci] : ci];
     int r;
     if (ev->nv_sign > 0 || ev->nv_sign == -1 || ev->Start > t + 1000 || ev->Start + ev->Duration <= t) continue;
     if (todos) { ev->nv_sign = 1; continue; }
     if (ev->nv_sign == marca) continue;
     r = asssinais_decidir(g, ev->Start, asssinais_hash(ev->Text));
     ev->nv_sign = r > 0 ? 1 : r == 0 ? -1 : marca;
-  }
+  } }
+  (void)i;
 }
 #endif
 
@@ -1371,8 +1538,17 @@ static int ass_evento_anima_nao_move(const ASS_Event *e) {
  * mode 0: short-duration (<=150ms) non-clipped rigid \pos(x,y) layer
  * mode 1: static positioned layer (>150ms, no animation, may be clipped)
  * mode 2: non-clipped rigid \move(x1,y1,x2,y2[,t1,t2]) without \org/\frx/\fry. */
-static int ass_rigid_parse(const ASS_Event *e, long long t, int playResX, int playResY,
-                           uint64_t *outSig, double *outPx, double *outPy, int *outMode) {
+/* Known dialogue (nv_sign -1, the Signs & Songs comparison): it gets the
+ * dialogue size/opacity or is skipped with "Dialogue by libass" Off, so it
+ * never reuses a bitmap cached while it was drawn as a sign (22/11/2026). */
+#ifdef ASS_NV_API
+#define ASS_EV_DIALOGO_CONHECIDO(ev) ((ev)->nv_sign == -1)
+#else
+#define ASS_EV_DIALOGO_CONHECIDO(ev) 0
+#endif
+typedef struct { double x1, y1, x2, y2, t1, t2; } AssMove;
+static int ass_rigid_parse_cru(const ASS_Event *e, int playResX, int playResY,
+                               uint64_t *outSig, double *outPx, double *outPy, int *outMode, AssMove *mv) {
   const char *txt = e->Text, *p, *posEnd = NULL, *orgEnd = NULL, *moveEnd = NULL;
   double px = 0.0, py = 0.0, ox = 0.0, oy = 0.0;
   int hasPos = 0, hasOrg = 0, hasMove = 0, hasRot = 0, has3d = 0, hasClip = 0;
@@ -1426,10 +1602,9 @@ static int ass_rigid_parse(const ASS_Event *e, long long t, int playResX, int pl
           if (e6 && *e6 == ')') endP = e6;
         }
         if (endP) {
-          double rel = (double)(t - e->Start);
-          if (rel <= t1 || t2 <= t1) { px = x1; py = y1; }
-          else if (rel >= t2) { px = x2; py = y2; }
-          else { double u = (rel - t1) / (t2 - t1); px = x1 + (x2 - x1) * u; py = y1 + (y2 - y1) * u; }
+          /* The position along the move is worked out per frame by the
+           * caller (the parse itself is cached, 22/11/2026). */
+          mv->x1 = x1; mv->y1 = y1; mv->x2 = x2; mv->y2 = y2; mv->t1 = t1; mv->t2 = t2;
           hasMove = 1; moveEnd = endP + 1;
         }
       }
@@ -1478,6 +1653,69 @@ static int ass_rigid_parse(const ASS_Event *e, long long t, int playResX, int pl
   return 1;
 }
 
+/* The rigid signature, cached per event (22/11/2026): the raw parse hashes
+ * the whole Text (vector drawings are long) and used to run for every active
+ * event on every frame. Everything in it is fixed for an event except the
+ * position along a \move, which is worked out here per frame. Key: the Text
+ * pointer plus the fields the signature reads, so a reused pointer of another
+ * event never matches. Worker, under assTrava. */
+typedef struct {
+  const char *txt; long long ini, dur; int ro, layer, style, ml, mr, mvv, sinal;
+  int ok, mode; uint64_t sig; double px, py; AssMove mv;
+} AssSigEnt;
+#define ASS_SIG_CAP 16384
+static AssSigEnt *assSig; static int assSigN;
+static long assSigAcertos, assSigCalculos;
+static int ass_rigid_parse(const ASS_Event *e, long long t, int playResX, int playResY,
+                           uint64_t *outSig, double *outPx, double *outPy, int *outMode) {
+  AssSigEnt *s;
+  unsigned h;
+  int sinal = 0;
+#ifdef ASS_NV_API
+  sinal = e->nv_sign > 0 ? 1 : 0;
+#endif
+  if (!e->Text) return 0;
+  if (!assSig) { assSig = (AssSigEnt *)calloc(ASS_SIG_CAP, sizeof *assSig); assSigN = 0; }
+  if (!assSig) return 0;   /* no memory: no rigid caching (rendered normally) */
+  { uint64_t k = (uint64_t)(uintptr_t)e->Text * UINT64_C(0x9E3779B97F4A7C15) ^ (uint64_t)e->Start * UINT64_C(0xC2B2AE3D27D4EB4F) ^
+                 (uint64_t)(unsigned)e->ReadOrder ^ ((uint64_t)(unsigned)e->Layer << 32) ^ (uint64_t)sinal << 63;
+    h = (unsigned)(k ^ (k >> 29)) & (ASS_SIG_CAP - 1); }
+  for (;; h = (h + 1) & (ASS_SIG_CAP - 1)) {
+    s = &assSig[h];
+    if (!s->txt) break;
+    if (s->txt == e->Text && s->ini == e->Start && s->dur == e->Duration && s->ro == e->ReadOrder &&
+        s->layer == e->Layer && s->style == e->Style && s->ml == e->MarginL && s->mr == e->MarginR &&
+        s->mvv == e->MarginV && s->sinal == sinal) {
+      assSigAcertos++;
+      goto achou;
+    }
+  }
+  /* Full: start over (the busy ED keeps a few thousand live events). */
+  if (assSigN >= ASS_SIG_CAP * 3 / 4) {
+    memset(assSig, 0, ASS_SIG_CAP * sizeof *assSig); assSigN = 0;
+    { uint64_t k = (uint64_t)(uintptr_t)e->Text * UINT64_C(0x9E3779B97F4A7C15) ^ (uint64_t)e->Start * UINT64_C(0xC2B2AE3D27D4EB4F) ^
+                   (uint64_t)(unsigned)e->ReadOrder ^ ((uint64_t)(unsigned)e->Layer << 32) ^ (uint64_t)sinal << 63;
+      h = (unsigned)(k ^ (k >> 29)) & (ASS_SIG_CAP - 1); }
+    s = &assSig[h];
+  }
+  memset(s, 0, sizeof *s);
+  s->txt = e->Text; s->ini = e->Start; s->dur = e->Duration; s->ro = e->ReadOrder; s->layer = e->Layer;
+  s->style = e->Style; s->ml = e->MarginL; s->mr = e->MarginR; s->mvv = e->MarginV; s->sinal = sinal;
+  s->ok = ass_rigid_parse_cru(e, playResX, playResY, &s->sig, &s->px, &s->py, &s->mode, &s->mv);
+  assSigN++; assSigCalculos++;
+achou:
+  if (!s->ok) return 0;
+  *outSig = s->sig; *outMode = s->mode; *outPx = s->px; *outPy = s->py;
+  if (s->mode != 2) return 1;
+  { const AssMove *m = &s->mv;
+    double rel = (double)(t - e->Start), px, py;
+    if (rel <= m->t1 || m->t2 <= m->t1) { px = m->x1; py = m->y1; }
+    else if (rel >= m->t2) { px = m->x2; py = m->y2; }
+    else { double u = (rel - m->t1) / (m->t2 - m->t1); px = m->x1 + (m->x2 - m->x1) * u; py = m->y1 + (m->y2 - m->y1) * u; }
+    *outPx = px; *outPy = py; }
+  return 1;
+}
+
 static int ass_snap_build_locked(AssRigidCtx *w, unsigned generation, long long t,
                                  int lw, int lh, int lwB, int lhB, int vw, int vh,
                                  int dividir, double esc,
@@ -1496,14 +1734,29 @@ static int ass_snap_build_locked(AssRigidCtx *w, unsigned generation, long long 
     w->snapGen = generation;
     w->snapStyleVer = assTrackStyleVer;
   }
-  for (i = 0; i < assTrack->n_events; i++) {
+  /* The time index (22/11/2026): only the active events and the forecast
+   * window, not the whole track. Without memory for it: the old full walk. */
+  const int *cand = NULL;
+  int nCand = ass_idx_garantir() ? ass_idx_candidatos(t, t, &cand) : -1, ci;
+  if (nCand >= 0) {
+    *prox = ass_idx_prox(t);
+    *validoAte = *prox;
+    if (ASS_NOVO) {
+      ass_idx_janela(t, t + 1000, nIni, chars);
+      ass_idx_janela(t + 500, t + 2200, nIniC, charsC);
+    }
+  }
+  for (ci = 0; ci < (nCand >= 0 ? nCand : assTrack->n_events); ci++) {
+    i = nCand >= 0 ? cand[ci] : ci;
     const ASS_Event *ev = &assTrack->events[i];
     long long ini = ev->Start, fimE = ini + ev->Duration;
-    if (ini > t && ini < *prox) *prox = ini;
-    if (ASS_NOVO && ini >= t && ini < t + 2200) {
-      long n = ev->Text ? (long)strlen(ev->Text) : 0;
-      if (ini < t + 1000) { (*nIni)++; *chars += n; }
-      if (ini >= t + 500) { (*nIniC)++; *charsC += n; }
+    if (nCand < 0) {
+      if (ini > t && ini < *prox) *prox = ini;
+      if (ASS_NOVO && ini >= t && ini < t + 2200) {
+        long n = ev->Text ? (long)strlen(ev->Text) : 0;
+        if (ini < t + 1000) { (*nIni)++; *chars += n; }
+        if (ini >= t + 500) { (*nIniC)++; *charsC += n; }
+      }
     }
     if (ini > t) {
       if (ini < *validoAte) *validoAte = ini;
@@ -1514,7 +1767,7 @@ static int ass_snap_build_locked(AssRigidCtx *w, unsigned generation, long long 
       if (fimE < *validoAte) *validoAte = fimE;
       if (!anima && ass_evento_anima(ev)) anima = 1;
       if (ini > *inicioMax) *inicioMax = ini;
-      if (ASS_NOVO && w->hitN < ASS_RIGID_FRAME_MAX &&
+      if (ASS_NOVO && w->hitN < ASS_RIGID_FRAME_MAX && !ASS_EV_DIALOGO_CONHECIDO(ev) &&
           ass_rigid_parse(ev, t, assTrack->PlayResX, assTrack->PlayResY,
                           &rSig, &rPx, &rPy, &rMode)) {
         if (ass_rigid_has(rSig, generation, assTrackStyleVer, lw, lh, lwB, lhB, vw, vh, dividir, esc)) {
@@ -1554,6 +1807,7 @@ static int ass_snap_build_locked(AssRigidCtx *w, unsigned generation, long long 
     }
   }
   if (anima) *validoAte = t;
+  assIdxAtivosUlt = activeN + w->hitN + w->missN;
   w->snapTrack->events = w->snapEvents;
   w->snapTrack->n_events = activeN;
   w->snapTrack->max_events = w->snapCap;
@@ -1755,7 +2009,7 @@ static int ass_frame_merge_rigid(AssRigidCtx *w, unsigned generation,
       out->x = im->dst_x; out->y = im->dst_y;
       out->subX = 0.0f; out->subY = 0.0f;
       out->color = im->color; out->type = im->type; out->esc = items[i].esc;
-      out->chave = sz <= 256u * 1024u ? ass_chave_bitmap(out->bitmap, out->w, out->h, out->stride) : 0ULL;
+      out->chave = 0;   /* after the flatten decision: ass_frame_chaves (22/11/2026) */
       totalBytes += sz;
     } else {
       const AssRigidImg *rim = items[i].rim;
@@ -1808,30 +2062,63 @@ static void ass_cor_final(const AssCpuImage *im, int corAtiva, int cr, int cg, i
  * on the worker so the GL thread draws 1 quad instead of 17-60+ quads.
  * `corAtiva` is the viewer's dialogue colour override: when it is on, this
  * hands the frame back untouched, because that colour is applied per image at
- * draw time and a flattened frame could not follow it changing. */
-static void ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiva) {
+ * draw time and a flattened frame could not follow it changing.
+ *
+ * Split frames (22/11/2026, owner OK): the soft (blur) pass's images have
+ * their own scale (im->esc). They are resampled bilinearly into the text
+ * pass's pixel grid while compositing, in the same stacking order. Rigid-cache
+ * images with a sub-pixel offset (subX/subY) go the same way (ratio 1), so a
+ * flattened frame keeps their exact position like the per-image path's
+ * GL_LINEAR quads. Returns 1 when the frame was flattened. */
+static long assFlatQuadros, assFlatFeitos, assFlatDivididos;   // [ass] cost (under assFilaTrava when read)
+static int ass_flat_reamostra(const AssCpuImage *im, float escF, float *r, float *ox, float *oy) {
+  float e = im->esc > 0.01f ? im->esc : escF;
+  *r = escF / e;
+  *ox = ((float)im->x + im->subX) * *r;
+  *oy = ((float)im->y + im->subY) * *r;
+  return fabsf(*r - 1.0f) >= 0.001f || fabsf(im->subX) >= 0.001f || fabsf(im->subY) >= 0.001f;
+}
+static inline void ass_flat_px(unsigned char *dst, unsigned lr, unsigned lg, unsigned lb, unsigned sa) {
+  unsigned inv = 255u - sa;
+  unsigned r = lr * sa + (unsigned)dst[0] * inv + 128u;
+  unsigned g = lg * sa + (unsigned)dst[1] * inv + 128u;
+  unsigned b = lb * sa + (unsigned)dst[2] * inv + 128u;
+  unsigned a = (unsigned)dst[3] * inv + 128u;
+  dst[0] = (unsigned char)((r + (r >> 8)) >> 8);
+  dst[1] = (unsigned char)((g + (g >> 8)) >> 8);
+  dst[2] = (unsigned char)((b + (b >> 8)) >> 8);
+  dst[3] = (unsigned char)(sa + ((a + (a >> 8)) >> 8));
+}
+static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiva) {
   static uint32_t invAlpha[256];
   static int invInit;
-  int i, minX, minY, maxX, maxY, outW, outH;
+  int i, minX, minY, maxX, maxY, outW, outH, dividido = 0;
   size_t sumArea = 0, outBytes;
   unsigned char *rgba;
   double gama, contraste;
-  if (!f || f->count <= 16 || !f->images || frameW <= 0 || frameH <= 0) return;
+  float escF;
+  if (!f || f->count <= 16 || !f->images || frameW <= 0 || frameH <= 0) return 0;
+  escF = f->esc > 0.01f ? f->esc : 1.0f;
   minX = frameW; minY = frameH; maxX = 0; maxY = 0;
   for (i = 0; i < f->count; i++) {
     const AssCpuImage *im = &f->images[i];
     int x0, y0, x1, y1;
-    if (im->rgba || !im->bitmap || im->w <= 0 || im->h <= 0) return;
-    /* The viewer's dialogue colour is applied per image at draw time on the
-     * normal path, so a flattened frame could not follow it changing. Hand
-     * these frames back to that path instead of baking a colour. */
-    if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) return;
-    if (im->esc > 0.01f && fabsf(im->esc - f->esc) >= 0.01f) return;
-    sumArea += (size_t)im->w * (size_t)im->h;
-    x0 = im->x < 0 ? 0 : im->x;
-    y0 = im->y < 0 ? 0 : im->y;
-    x1 = im->x + im->w > frameW ? frameW : im->x + im->w;
-    y1 = im->y + im->h > frameH ? frameH : im->y + im->h;
+    float r, fx, fy;
+    if (im->rgba || !im->bitmap || im->w <= 0 || im->h <= 0) return 0;
+    if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) return 0;
+    if (ass_flat_reamostra(im, escF, &r, &fx, &fy)) {
+      if (im->esc > 0.01f && fabsf(im->esc - escF) >= 0.01f) dividido = 1;
+      x0 = (int)floorf(fx) - 1; y0 = (int)floorf(fy) - 1;
+      x1 = (int)ceilf(fx + (float)im->w * r) + 1; y1 = (int)ceilf(fy + (float)im->h * r) + 1;
+      sumArea += (size_t)((float)im->w * r * (float)im->h * r);
+    } else {
+      x0 = im->x; y0 = im->y; x1 = im->x + im->w; y1 = im->y + im->h;
+      sumArea += (size_t)im->w * (size_t)im->h;
+    }
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > frameW) x1 = frameW;
+    if (y1 > frameH) y1 = frameH;
     if (x0 < x1 && y0 < y1) {
       if (x0 < minX) minX = x0;
       if (y0 < minY) minY = y0;
@@ -1840,78 +2127,97 @@ static void ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAti
     }
   }
   outW = maxX - minX; outH = maxY - minY;
-  if (outW <= 0 || outH <= 0) return;
+  if (outW <= 0 || outH <= 0) return 0;
   outBytes = (size_t)outW * (size_t)outH * 4u;
-  if (outBytes > 1920u * 1080u * 4u) return;
+  if (outBytes > 3840u * 2160u * 4u) return 0;   /* 4K UI (k = 2): the text pass can be 3840x2160 */
   int highOverdraw = f->count > 24 && sumArea > (size_t)frameW * (size_t)frameH;
   int smallBatch = f->count > 16 && outBytes <= 512u * 1024u;
-  if (!highOverdraw && !smallBatch) return;
+  if (!highOverdraw && !smallBatch) return 0;
   if (!invInit) {
     for (int a = 1; a < 255; a++)
       invAlpha[a] = (255u * 65536u + (unsigned)a / 2u) / (unsigned)a;
     invInit = 1;
   }
   rgba = (unsigned char *)calloc(outBytes, 1);
-  if (!rgba) return;
+  if (!rgba) return 0;
   gama = assperf_gama(); contraste = assperf_contraste();
   for (i = 0; i < f->count; i++) {
     const AssCpuImage *im = &f->images[i];
-    float rf, gf, bf, opf;
+    float rf, gf, bf, opf, r, fx, fy;
     unsigned lr, lg, lb, lop;
-    int x0 = im->x < minX ? minX : im->x;
-    int y0 = im->y < minY ? minY : im->y;
-    int x1 = im->x + im->w > maxX ? maxX : im->x + im->w;
-    int y1 = im->y + im->h > maxY ? maxY : im->y + im->h;
     int y;
-    if (x0 >= x1 || y0 >= y1) continue;
     ass_cor_final(im, 0, 0, 0, 0, gama, contraste, &rf, &gf, &bf, &opf);
     lr = (unsigned)lroundf(rf * 255.0f);
     lg = (unsigned)lroundf(gf * 255.0f);
     lb = (unsigned)lroundf(bf * 255.0f);
     lop = (unsigned)lroundf(opf * 255.0f);
     if (lop == 0) continue;
-    for (y = y0; y < y1; y++) {
-      const unsigned char *src = im->bitmap + (size_t)(y - im->y) * (size_t)im->stride + (size_t)(x0 - im->x);
-      unsigned char *dst = rgba + ((size_t)(y - minY) * (size_t)outW + (size_t)(x0 - minX)) * 4u;
-      int w = x1 - x0, x;
-      if (lop == 255u) {
-        for (x = 0; x < w; x++, dst += 4) {
-          unsigned sa = src[x];
+    if (ass_flat_reamostra(im, escF, &r, &fx, &fy)) {
+      /* Bilinear, like the GL_LINEAR quad: destination pixel centre (u+0.5)
+       * maps to source (u+0.5-fx)/r - 0.5. Outside the bitmap = 0. */
+      int x0 = (int)floorf(fx) - 1, y0 = (int)floorf(fy) - 1;
+      int x1 = (int)ceilf(fx + (float)im->w * r) + 1, y1 = (int)ceilf(fy + (float)im->h * r) + 1;
+      int w, u;
+      int *cx; unsigned short *cw;
+      if (x0 < minX) x0 = minX;
+      if (y0 < minY) y0 = minY;
+      if (x1 > maxX) x1 = maxX;
+      if (y1 > maxY) y1 = maxY;
+      if (x0 >= x1 || y0 >= y1) continue;
+      w = x1 - x0;
+      cx = (int *)malloc((size_t)w * sizeof *cx);
+      cw = (unsigned short *)malloc((size_t)w * sizeof *cw);
+      if (!cx || !cw) { free(cx); free(cw); continue; }
+      for (u = 0; u < w; u++) {
+        float sx = ((float)(x0 + u) + 0.5f - fx) / r - 0.5f;
+        int ix = (int)floorf(sx);
+        cx[u] = ix; cw[u] = (unsigned short)lroundf((sx - (float)ix) * 256.0f);
+      }
+      for (y = y0; y < y1; y++) {
+        float sy = ((float)y + 0.5f - fy) / r - 0.5f;
+        int iy = (int)floorf(sy);
+        unsigned wy = (unsigned)lroundf((sy - (float)iy) * 256.0f);
+        const unsigned char *l0 = iy >= 0 && iy < im->h ? im->bitmap + (size_t)iy * (size_t)im->stride : NULL;
+        const unsigned char *l1 = iy + 1 >= 0 && iy + 1 < im->h ? im->bitmap + (size_t)(iy + 1) * (size_t)im->stride : NULL;
+        unsigned char *dst = rgba + ((size_t)(y - minY) * (size_t)outW + (size_t)(x0 - minX)) * 4u;
+        if (!l0 && !l1) continue;
+        for (u = 0; u < w; u++, dst += 4) {
+          int ix = cx[u];
+          unsigned wx = cw[u], p00 = 0, p01 = 0, p10 = 0, p11 = 0, v, sa;
+          if (ix + 1 < 0 || ix >= im->w) continue;
+          if (ix >= 0) { if (l0) p00 = l0[ix]; if (l1) p10 = l1[ix]; }
+          if (ix + 1 < im->w) { if (l0) p01 = l0[ix + 1]; if (l1) p11 = l1[ix + 1]; }
+          v = ((p00 * (256u - wx) + p01 * wx) * (256u - wy) + (p10 * (256u - wx) + p11 * wx) * wy + 32768u) >> 16;
+          if (v == 0u) continue;
+          if (lop == 255u) sa = v;
+          else { unsigned st = v * lop + 128u; sa = (st + (st >> 8)) >> 8; }
           if (sa == 0u) continue;
-          if (sa == 255u) {
-            dst[0] = (unsigned char)lr; dst[1] = (unsigned char)lg;
-            dst[2] = (unsigned char)lb; dst[3] = 255u;
-          } else {
-            unsigned inv = 255u - sa;
-            unsigned r = lr * sa + (unsigned)dst[0] * inv + 128u;
-            unsigned g = lg * sa + (unsigned)dst[1] * inv + 128u;
-            unsigned b = lb * sa + (unsigned)dst[2] * inv + 128u;
-            unsigned a = (unsigned)dst[3] * inv + 128u;
-            dst[0] = (unsigned char)((r + (r >> 8)) >> 8);
-            dst[1] = (unsigned char)((g + (g >> 8)) >> 8);
-            dst[2] = (unsigned char)((b + (b >> 8)) >> 8);
-            dst[3] = (unsigned char)(sa + ((a + (a >> 8)) >> 8));
-          }
-        }
-      } else {
-        for (x = 0; x < w; x++, dst += 4) {
-          unsigned sv = src[x];
-          if (sv == 0u) continue;
-          unsigned st = sv * lop + 128u;
-          unsigned sa = (st + (st >> 8)) >> 8;
-          if (sa == 0u) continue;
-          unsigned inv = 255u - sa;
-          unsigned r = lr * sa + (unsigned)dst[0] * inv + 128u;
-          unsigned g = lg * sa + (unsigned)dst[1] * inv + 128u;
-          unsigned b = lb * sa + (unsigned)dst[2] * inv + 128u;
-          unsigned a = (unsigned)dst[3] * inv + 128u;
-          dst[0] = (unsigned char)((r + (r >> 8)) >> 8);
-          dst[1] = (unsigned char)((g + (g >> 8)) >> 8);
-          dst[2] = (unsigned char)((b + (b >> 8)) >> 8);
-          dst[3] = (unsigned char)(sa + ((a + (a >> 8)) >> 8));
+          if (sa == 255u) { dst[0] = (unsigned char)lr; dst[1] = (unsigned char)lg; dst[2] = (unsigned char)lb; dst[3] = 255u; }
+          else ass_flat_px(dst, lr, lg, lb, sa);
         }
       }
+      free(cx); free(cw);
+      continue;
     }
+    { int x0 = im->x < minX ? minX : im->x;
+      int y0 = im->y < minY ? minY : im->y;
+      int x1 = im->x + im->w > maxX ? maxX : im->x + im->w;
+      int y1 = im->y + im->h > maxY ? maxY : im->y + im->h;
+      if (x0 >= x1 || y0 >= y1) continue;
+      for (y = y0; y < y1; y++) {
+        const unsigned char *src = im->bitmap + (size_t)(y - im->y) * (size_t)im->stride + (size_t)(x0 - im->x);
+        unsigned char *dst = rgba + ((size_t)(y - minY) * (size_t)outW + (size_t)(x0 - minX)) * 4u;
+        int w = x1 - x0, x;
+        for (x = 0; x < w; x++, dst += 4) {
+          unsigned sv = src[x], sa;
+          if (sv == 0u) continue;
+          if (lop == 255u) sa = sv;
+          else { unsigned st = sv * lop + 128u; sa = (st + (st >> 8)) >> 8; }
+          if (sa == 0u) continue;
+          if (sa == 255u) { dst[0] = (unsigned char)lr; dst[1] = (unsigned char)lg; dst[2] = (unsigned char)lb; dst[3] = 255u; }
+          else ass_flat_px(dst, lr, lg, lb, sa);
+        }
+      } }
   }
   /* Unpremultiply for straight-RGBA GFX_TEXTO blending via reciprocal table. */
   { size_t p, nPx = (size_t)outW * (size_t)outH;
@@ -1935,8 +2241,107 @@ static void ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAti
     one->x = minX; one->y = minY; one->w = outW; one->h = outH;
     one->stride = outW * 4; one->rgba = 1; one->bitmap = rgba;
     f->images = one; f->count = 1; f->bytes = outBytes; }
+  return dividido ? 2 : 1;
+}
+
+/* Texture keys only for frames that stay per image (22/11/2026): a flattened
+ * frame never uses them, and hashing every bitmap byte of a busy frame on the
+ * 32-bit ARM worker was pure waste. */
+static void ass_frame_chaves(AssCpuFrame *f) {
+  int i;
+  for (i = 0; i < f->count; i++) {
+    AssCpuImage *im = &f->images[i];
+    if (!im->chave && !im->rgba && im->bitmap && im->w > 0 && im->h > 0)
+      im->chave = ass_chave_bitmap(im->bitmap, im->w, im->h, 0u);
+  }
 }
 #endif
+
+/* [ass] cost (22/11/2026): what each stage of a subtitle frame costs the
+ * worker, so the next log shows where the time goes (scan of the event list,
+ * libass pass A / B, rigid misses, copy/merge, flatten, texture keys). Under
+ * assFilaTrava. */
+enum { CU_SCAN, CU_A, CU_B, CU_MISS, CU_COPIA, CU_FLAT, CU_CHAVE, CU_N };
+static const char *const cuNome[CU_N] = { "scan", "libassA", "libassB", "misses", "copy", "flat", "keys" };
+static double cuSoma[CU_N], cuMax[CU_N];
+static long cuQuadros, cuEventos, cuAtivos;
+static double ass_ms_desde(const struct timespec *t0) {
+  struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
+  return ass_ms_entre(t0, &t1);
+}
+
+
+/* [ass] strips (22/11/2026, the owner's gradient phone screen): horizontal
+ * lines on a gradient built from thin stacked strips, depending on the
+ * resolution. Busy frames, at most once per 10 s: per pass the thin images
+ * (h <= 3 px, w >= 64 px), the pass scale, the grid (frame px at 100 %, k,
+ * PlayResY, screen px per script px), and up to 3 active events whose rect
+ * \clip or \p drawing is <= 4 script px tall. Worker, under assTrava. */
+static double ass_tira_altura(const char *txt, int *clipRet, int *clipVet, int *desenho, double *blur) {
+  const char *p;
+  double alt = -1.0;
+  *clipRet = *clipVet = *desenho = 0; *blur = 0.0;
+  if (!txt) return -1.0;
+  for (p = strchr(txt, '\\'); p; p = strchr(p + 1, '\\')) {
+    if (!strncmp(p, "\\clip(", 6) || !strncmp(p, "\\iclip(", 7)) {
+      double a, b, c, d;
+      const char *q = strchr(p, '(') + 1;
+      if (sscanf(q, "%lf,%lf,%lf,%lf", &a, &b, &c, &d) == 4) { *clipRet = 1; alt = fabs(d - b); }
+      else *clipVet = 1;
+    } else if (!strncmp(p, "\\blur", 5)) *blur = atof(p + 5);
+    else if (!strncmp(p, "\\be", 3) && *blur == 0.0) *blur = atof(p + 3);
+    else if (p[1] == 'p' && p[2] >= '1' && p[2] <= '9') *desenho = p[2] - '0';
+  }
+  if (*desenho && alt < 0) {   /* the drawing's y range (text after the last override block) */
+    const char *d = strrchr(txt, '}');
+    double ymin = 1e18, ymax = -1e18, v;
+    int i = 0, n;
+    d = d ? d + 1 : txt;
+    while (*d) {
+      if ((*d >= '0' && *d <= '9') || *d == '-' || *d == '.') {
+        if (sscanf(d, "%lf%n", &v, &n) == 1) {
+          if (i % 2 == 1) { if (v < ymin) ymin = v; if (v > ymax) ymax = v; }
+          i++; d += n; continue;
+        }
+      }
+      d++;
+    }
+    if (ymax >= ymin) alt = (ymax - ymin) / (double)(1 << (*desenho - 1));
+  }
+  return alt;
+}
+static void ass_diag_tiras(const ASS_Image *a, const ASS_Image *b, long long t, double resol, double resolB,
+                           int altPx, int k) {
+  static double ult;
+  struct timespec ts; double agora;
+  int nA = 0, nB = 0, pry, i, mostrados = 0;
+  const ASS_Image *im;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  agora = (double)ts.tv_sec + ts.tv_nsec / 1e9;
+  if (ult > 0 && agora - ult < 10.0) return;
+  for (im = a; im; im = im->next) if (im->h <= 3 && im->w >= 64) nA++;
+  for (im = b; im; im = im->next) if (im->h <= 3 && im->w >= 64) nB++;
+  ult = agora;
+  pry = assPlayResYVisto > 0 ? assPlayResYVisto : 288;
+  printf("[ass] strips: t=%lld ms | sharp pass %.0f%% (%.2f px per script px): %d thin images | soft pass %s%.0f%% (%.2f): %d thin | "
+         "frame %d px at 100%%, k=%d, PlayResY %d\n",
+         t, resol * 100.0, resol * altPx / pry, nA, resolB > 0 ? "" : "= sharp ", (resolB > 0 ? resolB : resol) * 100.0,
+         (resolB > 0 ? resolB : resol) * altPx / pry, nB, altPx, k, pry);
+  if (assTrack && ass_idx_garantir()) {
+    const int *cand = NULL;
+    int nc = ass_idx_candidatos(t, t, &cand);
+    for (i = 0; i < nc && mostrados < 3; i++) {
+      const ASS_Event *e = &assTrack->events[cand[i]];
+      int cr, cv, dz; double bl, alt = ass_tira_altura(e->Text, &cr, &cv, &dz, &bl);
+      if (alt < 0 || alt > 4.0) continue;
+      mostrados++;
+      printf("[ass] strips: event layer %d style %s | box %.2f script px | clip %s | drawing %s | blur %.2f | %.120s\n",
+             e->Layer, e->Style >= 0 && e->Style < assTrack->n_styles && assTrack->styles[e->Style].Name ? assTrack->styles[e->Style].Name : "?",
+             alt, cr ? "rect" : cv ? "vector" : "none", dz ? "yes" : "no", bl, e->Text ? e->Text : "");
+    }
+  }
+  fflush(stdout);
+}
 
 static void *ass_worker_loop(void *unused) {
   (void)unused;
@@ -1996,6 +2401,10 @@ static void *ass_worker_loop(void *unused) {
     ASS_Image *images = NULL;
     int changed = 0, pronto = 0, igual = 0, seq = 0;
     long long validoDe = LLONG_MAX, validoAte = LLONG_MAX;
+    double cu[CU_N] = {0};
+    struct timespec cuT;
+    int cuEv = 0, cuAt = 0;
+    (void)cuEv; (void)cuAt;
     memset(&frame, 0, sizeof frame);
     pthread_mutex_lock(&assFilaTrava);
     while (!assWorkerParar && !assPedidoPendente)
@@ -2034,6 +2443,10 @@ static void *ass_worker_loop(void *unused) {
     /* Auto 50 / Auto 75 (owner 19/11/2026): busy frames in two passes, the
      * text and the blur at their own resolutions (assperf.h; libass-nv 0004);
      * quiet ones at 100 %, one pass. */
+    /* Clean blur (22/11/2026): the grid is the text pass's frame height at
+     * 100 % (layout x k: 2 on a 4K UI) and the script's PlayResY (read under
+     * assTrava on an earlier frame; the worker is the only writer). */
+    assperf_grade_definir(baseH * k, assPlayResYVisto);
     dividir = assperf_resolucao_quadro(&resol, &resolB);
 #if !ASS_DIVIDIR
     dividir = 0; resolB = 0.0;
@@ -2058,9 +2471,36 @@ static void *ass_worker_loop(void *unused) {
         generation == assTrackGeracao &&
         assTrack && assRenderer) {
       long long t = (long long)llround(ms);
+      /* The script's height as libass uses it: a script without PlayResY gets
+       * libass's default on its first render (on the snapshot copy when the
+       * rigid path renders that). */
+      int pryAgora = assTrack->PlayResY > 0 ? assTrack->PlayResY :
+                     assRigidCtx.snapTrack && assRigidCtx.snapTrack->PlayResY > 0 ? assRigidCtx.snapTrack->PlayResY : 0;
+      if (pryAgora > 0 && pryAgora != assPlayResYVisto) {
+        /* A new script size: the clean values change, take them this frame. */
+        assPlayResYVisto = pryAgora;
+        assperf_grade_definir(baseH * k, assPlayResYVisto);
+        dividir = assperf_resolucao_quadro(&resol, &resolB);
+#if !ASS_DIVIDIR
+        dividir = 0; resolB = 0.0;
+#endif
+        if (dividir) {
+          lwB = (int)lround((double)baseW * k * resolB); lhB = (int)lround((double)baseH * k * resolB);
+          if (lwB < 16) lwB = 16;
+          if (lhB < 16) lhB = 16;
+        }
+        lw = (int)lround((double)baseW * k * resol); lh = (int)lround((double)baseH * k * resol);
+        if (lw < 16) lw = 16;
+        if (lh < 16) lh = 16;
+      }
+      clock_gettime(CLOCK_MONOTONIC, &cuT);
       if (ASS_NOVO && ass_estilo_autor_locked() && !assperf_pesado()) {
         int nP = 0, nCP = 0;
         long cP = 0, cCP = 0;
+        if (ass_idx_garantir()) {   // the time index (22/11/2026)
+          ass_idx_janela(t, t + 1000, &nP, &cP);
+          ass_idx_janela(t + 500, t + 2200, &nCP, &cCP);
+        } else
         for (int pi = 0; pi < assTrack->n_events; pi++) {
           const ASS_Event *pev = &assTrack->events[pi];
           if (pev->Start < t || pev->Start >= t + 2200) continue;
@@ -2084,6 +2524,7 @@ static void *ass_worker_loop(void *unused) {
           if (lh < 16) lh = 16;
         }
       }
+      cu[CU_SCAN] += ass_ms_desde(&cuT);
       ass_aplicar_assperf_locked();
       if (lw != layAplW || lh != layAplH) {
         ass_set_frame_size(assRenderer, lw, lh);
@@ -2121,16 +2562,21 @@ static void *ass_worker_loop(void *unused) {
         ass_set_selective_style_override_enabled(assRendererB, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
         ass_nv_set_skip_dialogue(assRendererB, pularDialogo);
       }
+      clock_gettime(CLOCK_MONOTONIC, &cuT);
       if (ass_estilo_autor_locked()) ass_marcar_sinais_locked(generation, t);
+      cu[CU_SCAN] += ass_ms_desde(&cuT);
 #endif
       int useRigid = ASS_NOVO && !__atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
       long long prox = LLONG_MAX, inicioMax = -1;
       int nIni = 0, nIniC = 0, nImg = 0, snapOk = 0;
       long chars = 0, charsC = 0;
+      clock_gettime(CLOCK_MONOTONIC, &cuT);
       if (useRigid && ass_rigid_ensure_locked(&assRigidCtx)) {
         snapOk = ass_snap_build_locked(&assRigidCtx, generation, t, lw, lh, lwB, lhB, vw, vh, dividir, esc,
                                        &validoDe, &validoAte, &prox, &nIni, &chars, &nIniC, &charsC, &inicioMax);
       }
+      cu[CU_SCAN] += ass_ms_desde(&cuT);
+      cuEv = assTrack->n_events; cuAt = assIdxAtivosUlt;
 #ifdef NV_TPK
       /* Crash capture (owner 14/11): what libass is asked to draw, once per
        * track and per style change, flushed BEFORE the render. A crash right
@@ -2159,8 +2605,10 @@ static void *ass_worker_loop(void *unused) {
       if (snapOk) {
         struct timespec pa, pb;
         if (assRigidCtx.missN > 0) {
+          clock_gettime(CLOCK_MONOTONIC, &cuT);
           ass_rigid_render_misses(&assRigidCtx, generation, lw, lh, lwB, lhB,
                                   vw, vh, dividir, esc, (float)((double)k * resolB));
+          cu[CU_MISS] = ass_ms_desde(&cuT);
         }
         clock_gettime(CLOCK_MONOTONIC, &pa);
         images = ass_render_frame(assRenderer, assRigidCtx.snapTrack, t, &changed);
@@ -2178,9 +2626,11 @@ static void *ass_worker_loop(void *unused) {
 #ifdef NV_TPK
         __atomic_store_n(&assProxInicio, prox, __ATOMIC_RELAXED);
 #endif
+        clock_gettime(CLOCK_MONOTONIC, &cuT);
         pronto = ass_frame_merge_rigid(&assRigidCtx, generation, lw, lh, lwB, lhB, vw, vh,
                                        dividir, esc, images, imagesB,
                                        (float)((double)k * resolB), &frame, &nImg);
+        cu[CU_COPIA] = ass_ms_desde(&cuT);
         if (ASS_NOVO) assperf_previsao(nIni, chars, nImg, nIniC, charsC);
         if (dividir && pronto) {
           const ASS_Image *im;
@@ -2256,8 +2706,11 @@ static void *ass_worker_loop(void *unused) {
               assProduzidoGeracao == generation && epoch == assEpoch;
       pthread_mutex_unlock(&assFilaTrava);
       if (!igual) {
-        pronto = dividir ? ass_frame_copiar2(images, imagesB, (float)((double)k * resolB), &frame, ASS_NOVO)
-                         : ass_frame_copiar(images, &frame, ASS_NOVO);
+        clock_gettime(CLOCK_MONOTONIC, &cuT);
+        /* Texture keys after the flatten decision (22/11/2026): ass_frame_chaves. */
+        pronto = dividir ? ass_frame_copiar2(images, imagesB, (float)((double)k * resolB), &frame, 0)
+                         : ass_frame_copiar(images, &frame, 0);
+        cu[CU_COPIA] = ass_ms_desde(&cuT);
         if (dividir && pronto) {
           const ASS_Image *im;
           divImgsA = divImgsB = 0;
@@ -2276,12 +2729,21 @@ static void *ass_worker_loop(void *unused) {
           } }
       }
       rigid_done:;
+      if (ASS_NOVO && pronto && assperf_pesado()) ass_diag_tiras(images, imagesB, t, resol, dividir ? resolB : 0.0, baseH * k, k);
     }
     pthread_mutex_unlock(&assTrava);
 #if ASS_NOVO
     /* Read atomically: the GL thread writes these when the viewer picks a color. */
-    if (pronto) ass_frame_flatten(&frame, lw, lh,
-                                  __atomic_load_n(&assCorAtiva, __ATOMIC_ACQUIRE));
+    int flatR = -1;
+    if (pronto) {
+      clock_gettime(CLOCK_MONOTONIC, &cuT);
+      frame.esc = frame.esc > 0.01f ? frame.esc : (float)((double)k * resol);
+      flatR = ass_frame_flatten(&frame, lw, lh, __atomic_load_n(&assCorAtiva, __ATOMIC_ACQUIRE));
+      cu[CU_FLAT] = ass_ms_desde(&cuT);
+      clock_gettime(CLOCK_MONOTONIC, &cuT);
+      if (!flatR) ass_frame_chaves(&frame);
+      cu[CU_CHAVE] = ass_ms_desde(&cuT);
+    }
 #endif
     clock_gettime(CLOCK_MONOTONIC, &b);
     if (ASS_NOVO && pronto) assperf_escala_custo(ass_ms_entre(&c0, &b));
@@ -2302,6 +2764,17 @@ static void *ass_worker_loop(void *unused) {
       }
       if (us > assMed.renderMaxUs) assMed.renderMaxUs = us;
       if (igual) assMed.iguais++;
+#if ASS_NOVO
+      if (pronto) {   /* [ass] cost */
+        int ci;
+        cu[CU_A] = msPassA; cu[CU_B] = msPassB;
+        for (ci = 0; ci < CU_N; ci++) { cuSoma[ci] += cu[ci]; if (cu[ci] > cuMax[ci]) cuMax[ci] = cu[ci]; }
+        cuQuadros++; cuEventos = cuEv; cuAtivos += cuAt;
+        if (frame.count > 16 || flatR > 0) assFlatQuadros++;
+        if (flatR > 0) assFlatFeitos++;
+        if (flatR == 2) assFlatDivididos++;
+      }
+#endif
       assUltimoRenderUs = us; }
     /* SEM o antigo "fabs(assPedidoMs - ms) <= 50": com o relogio interpolado o
      * pedido anda 16 ms por quadro, e um render de mais de 50 ms na C9 jogava
@@ -2529,8 +3002,8 @@ typedef struct {
   unsigned long long chave;
   unsigned uso;          // assGlQuadro do ultimo desenho
 } AssTc;
-#define ASS_TC_TETO 768
-#define ASS_TC_BYTES (24u * 1024u * 1024u)
+#define ASS_TC_TETO 2048   /* 22/11: was 768 (the busy ED hit it) */
+#define ASS_TC_BYTES (64u * 1024u * 1024u)   /* 22/11: was 24 MB */
 #define ASS_TC_RECICLA 2u
 static AssTc *assTc;
 static int assTcN, assTcCap;
@@ -2991,7 +3464,7 @@ static void ass_pod_devolver_assTrava(void) {
     if (devolvidas < assPodN) memmove(assPod, assPod + devolvidas, (size_t)(assPodN - devolvidas) * sizeof *assPod),
                               memmove(assPodH, assPodH + devolvidas, (size_t)(assPodN - devolvidas) * sizeof *assPodH);
     assPodN -= devolvidas;
-    assEventos = assTrack->n_events;
+    assEventos = assTrack->n_events; __atomic_add_fetch(&assTrackMut, 1, __ATOMIC_RELEASE);
     for (i = assTrack->n_events - (devolvidas - repetidas); i < assTrack->n_events; i++)
       if (assTrack->events[i].Start < assCoberturaIni) assCoberturaIni = assTrack->events[i].Start;
   }
@@ -3111,7 +3584,7 @@ static int ass_inc_lote(const char *corpo, size_t tamanho, unsigned geracao) {
         __atomic_store_n(&assPodaLimite, limite, __ATOMIC_RELEASE);
     } }
   total = assTrack->n_events;
-  assEventos = total;
+  assEventos = total; __atomic_add_fetch(&assTrackMut, 1, __ATOMIC_RELEASE);
   assCoberturaIni = LLONG_MAX; assCoberturaFim = LLONG_MIN;
   { int k;
     for (k = 0; k < total; k++) {
@@ -3195,7 +3668,7 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   __atomic_store_n(&assTextoSimples, simples, __ATOMIC_RELEASE);
   __atomic_store_n(&assTrackMatriz, simples ? -1 : (int)track->YCbCrMatrix, __ATOMIC_RELEASE);
   plainAplValido = 0;
-  assEventos = track->n_events;
+  assEventos = track->n_events; __atomic_add_fetch(&assTrackMut, 1, __ATOMIC_RELEASE);
   assResolucaoFonte = 0;
   assCoberturaIni = LLONG_MAX; assCoberturaFim = LLONG_MIN;
   { int i;
@@ -3212,7 +3685,7 @@ static int ass_carregar(const char *corpo, size_t tamanho, unsigned geracao, int
   if (!ass_worker_iniciar()) {
     pthread_mutex_lock(&assTrava);
     if (assTrack == track) { ass_authored_styles_free(); ass_rigid_free_ctx_locked(); ass_rigid_clear(); ass_free_track(assTrack); assTrack = NULL; }
-    assEventos = 0;
+    assEventos = 0; __atomic_add_fetch(&assTrackMut, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&assTrackAtivo, 0, __ATOMIC_RELEASE);
     ass_diag("libass: worker de render indisponivel");
     pthread_mutex_unlock(&assTrava);
@@ -3392,7 +3865,7 @@ void assrender_limpar(void) {
   ass_rigid_clear();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
   __atomic_store_n(&assTrackMatriz, -1, __ATOMIC_RELEASE);
-  assEventos = 0;
+  assEventos = 0; __atomic_add_fetch(&assTrackMut, 1, __ATOMIC_RELEASE);
   assCoberturaIni = assCoberturaFim = 0;
   __atomic_store_n(&assTrackGeracao, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&assTrackAtivo, 0, __ATOMIC_RELEASE);
@@ -3416,7 +3889,7 @@ void assrender_limpar_fontes(void) {
   ass_rigid_clear();
   if (assTrack) { ass_free_track(assTrack); assTrack = NULL; }
   __atomic_store_n(&assTrackMatriz, -1, __ATOMIC_RELEASE);
-  assEventos = 0; assFontes = 0; assResolucaoFonte = 0;
+  assEventos = 0; __atomic_add_fetch(&assTrackMut, 1, __ATOMIC_RELEASE); assFontes = 0; assResolucaoFonte = 0;
   assCoberturaIni = assCoberturaFim = 0;
   __atomic_store_n(&assTrackGeracao, 0, __ATOMIC_RELEASE);
   __atomic_store_n(&assTrackAtivo, 0, __ATOMIC_RELEASE);
@@ -3678,6 +4151,25 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
              assMed.renders ? assMed.renderSomaUs / 1000.0 / assMed.renders : 0.0,
              assMed.renderMaxUs / 1000.0, assMed.piscas, assMed.vaziosPisca, assMed.falas,
              assMed.falas ? assMed.atrasoSoma / assMed.falas : 0, assMed.atrasoMax, assEventos, rHits, rMiss);
+#if ASS_NOVO
+      /* Where a subtitle frame's worker time goes (22/11/2026): avg/max ms per
+       * stage, the event list size vs the events a frame touched (time index),
+       * the flatten (busy frames flattened, split ones among them) and the
+       * signature cache. */
+      if (cuQuadros > 0) {
+        char b[512]; int o = 0, ci;
+        for (ci = 0; ci < CU_N; ci++)
+          o += snprintf(b + o, sizeof b - (size_t)o, "%s %s=%.1f/%.1f", ci ? "" : "", cuNome[ci],
+                        cuSoma[ci] / (double)cuQuadros, cuMax[ci]);
+        printf("[ass] cost (ms avg/max per frame, %ld frames):%s | events=%ld active avg=%.0f index rebuilds=%ld | "
+               "flat=%ld of %ld busy frames (split %ld) | sig cache hits=%ld parses=%ld\n",
+               cuQuadros, b, cuEventos, (double)cuAtivos / (double)cuQuadros, idxReconstrucoes,
+               assFlatFeitos, assFlatQuadros, assFlatDivididos, assSigAcertos, assSigCalculos);
+      }
+      memset(cuSoma, 0, sizeof cuSoma); memset(cuMax, 0, sizeof cuMax);
+      cuQuadros = 0; cuAtivos = 0; idxReconstrucoes = 0;
+      assFlatFeitos = assFlatQuadros = assFlatDivididos = 0; assSigAcertos = assSigCalculos = 0;
+#endif
     }
 #if defined(NV_TPK) && ASS_NOVO
     /* The TV's side of the same window (libass on the Tizen 4/5 .tpk, 09/11):
@@ -3698,13 +4190,13 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
                __atomic_exchange_n(&assAdianteMax, 0, __ATOMIC_RELAXED), assperf_tv_lenta() ? "yes" : "no");
       /* Render resolution (owner 19/11/2026): the mode, the scales in use
        * now, and what each pass cost on the split (busy) frames. */
-      { static const char *const NOMES[] = { "100%", "?", "75%", "Auto 75% (text 75 / blur 55)", "?", "Auto 50% (text 50 / blur 40)" };
-        int v = assperf_get(AP_ESCALA);
+      { char modo[200];
         double bl = assperf_escala_blur();
+        assperf_modo_texto(modo, (int)sizeof modo);
         printf("[ass] 10s res: mode=%s | now text %d%% blur %s%d%% | "
                "split frames=%ld sharp avg=%.1fms max=%.1fms (%ld imgs) soft avg=%.1fms max=%.1fms (%ld imgs) | "
                "dialogue by %s\n",
-               v >= 0 && v <= 5 ? NOMES[v] : "?", (int)(assperf_escala() * 100.0 + 0.5),
+               modo, (int)(assperf_escala() * 100.0 + 0.5),
                bl > 0.0 ? "" : "=", (int)((bl > 0.0 ? bl : assperf_escala()) * 100.0 + 0.5),
                assDiv.quadros, assDiv.quadros ? assDiv.msA / assDiv.quadros : 0.0, assDiv.maxA, assDiv.imgsA,
                assDiv.quadros ? assDiv.msB / assDiv.quadros : 0.0, assDiv.maxB, assDiv.imgsB,
