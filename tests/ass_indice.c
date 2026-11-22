@@ -3,9 +3,10 @@
 //      start match a full walk of the track, after loads and after events go;
 //  [2] rigid signature cache: the same signature, mode and position (also
 //      along a \move) as the raw parse, on first use and from the cache;
-//  [3] flatten of split frames: soft-pass images (their own scale) and
-//      sub-pixel images are resampled into the text grid; the result matches
-//      a straightforward float composite, and frames at one scale stay exact.
+//  [3] flatten of split frames: images of each pass go to layers at their
+//      own scale (stacking kept where images touch), or into one grid when
+//      that needs too many layers; drawn like the GPU does, the result
+//      matches a straightforward float composite; one scale stays exact.
 // src/assrender.c is included (its statics), with the fake GL of ass_matriz.
 #include "../src/assrender.c"
 #include <stdio.h>
@@ -168,9 +169,43 @@ static void referencia(const AssCpuImage *im, int n, float escF, int minX, int m
   }
 }
 
+/* The layers of a flattened frame composited like the GPU does: each layer
+ * (straight RGBA at its own scale) bilinear onto the text grid, in order. */
+static void compor_camadas(const AssCpuFrame *f, float escF, int minX, int minY, int W, int H, float *rgba) {
+  int c, x, y;
+  memset(rgba, 0, sizeof(float) * 4 * (size_t)W * (size_t)H);
+  for (c = 0; c < f->count; c++) {
+    const AssCpuImage *m = &f->images[c];
+    float e = m->esc > 0.01f ? m->esc : escF, rr = escF / e;
+    float ox = (float)m->x * rr, oy = (float)m->y * rr;
+    for (y = 0; y < H; y++)
+      for (x = 0; x < W; x++) {
+        float sx = ((float)(x + minX) + 0.5f - ox) / rr - 0.5f, sy = ((float)(y + minY) + 0.5f - oy) / rr - 0.5f;
+        int ix = (int)floorf(sx), iy = (int)floorf(sy), a, b, k;
+        float fx = sx - (float)ix, fy = sy - (float)iy, pm[4] = {0, 0, 0, 0}, *d, v;
+        for (b = 0; b < 2; b++) for (a = 0; a < 2; a++) {
+          int px = ix + a, py = iy + b;
+          float w = (a ? fx : 1 - fx) * (b ? fy : 1 - fy);
+          if (px >= 0 && px < m->w && py >= 0 && py < m->h) {
+            const unsigned char *q = m->bitmap + ((size_t)py * (size_t)m->w + (size_t)px) * 4;
+            float al = q[3] / 255.f;
+            for (k = 0; k < 3; k++) pm[k] += w * al * q[k] / 255.f;   /* GL_LINEAR of straight RGBA, as premultiplied */
+            pm[3] += w * al;
+          }
+        }
+        v = pm[3];
+        if (v <= 0) continue;
+        d = &rgba[((size_t)y * (size_t)W + (size_t)x) * 4];
+        { float pa = d[3], na = v + pa * (1 - v);
+          for (k = 0; k < 3; k++) d[k] = na > 0 ? (pm[k] + d[k] * pa * (1 - v)) / na : 0;
+          d[3] = na; }
+      }
+  }
+}
+
 static void teste_flatten(void) {
   AssCpuFrame f; int i, x, y, r;
-  for (r = 0; r < 2; r++) {
+  for (r = 0; r < 3; r++) {
     float escF = 0.5f;
     int maxErr = 0, maxErrA = 0, W, H, minX, minY;
     AssCpuImage copia[24];
@@ -184,6 +219,13 @@ static void teste_flatten(void) {
       m->type = IMAGE_TYPE_OUTLINE;
       if (r == 1 && i % 3 == 0) m->esc = 0.4f;                       /* soft pass at its own scale */
       if (r == 1 && i % 3 == 1) { m->subX = 0.37f; m->subY = 0.61f; } /* rigid cache, sub-pixel */
+      if (r == 2) {   /* signs side by side: soft glow, then sharp text, per sign (no overlap between signs) */
+        int sinal = i / 2;
+        m->w = 30; m->h = 20;
+        m->x = 10 + (sinal % 4) * 60; m->y = 10 + (sinal / 4) * 40;
+        if (i % 2 == 0) { m->esc = 0.4f; m->x = (int)lroundf(m->x * 0.8f); m->y = (int)lroundf(m->y * 0.8f); }
+      }
+      m->stride = m->w;
       m->bitmap = malloc((size_t)m->w * (size_t)m->h);
       for (y = 0; y < m->h; y++) for (x = 0; x < m->w; x++) {
         int v = (x == 0 || y == 0 || x == m->w - 1 || y == m->h - 1) ? 0 : aleat(4) ? 255 : aleat(256);
@@ -193,23 +235,44 @@ static void teste_flatten(void) {
       copia[i].bitmap = malloc((size_t)m->w * (size_t)m->h); memcpy(copia[i].bitmap, m->bitmap, (size_t)m->w * (size_t)m->h);
     }
     { int res = ass_frame_flatten(&f, 960, 540, 0);
-      ok(r ? res == 2 : res == 1, r ? "[3] split frame flattened (soft images resampled)" : "[3] one-scale frame flattened"); }
-    ok(f.count == 1 && f.images[0].rgba, "[3] one RGBA image");
-    W = f.images[0].w; H = f.images[0].h; minX = f.images[0].x; minY = f.images[0].y;
-    { float *ref = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H);
-      referencia(copia, 24, escF, minX, minY, W, H, ref);
-      for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
-        const unsigned char *p = f.images[0].bitmap + ((size_t)y * (size_t)W + (size_t)x) * 4;
-        const float *q = &ref[((size_t)y * (size_t)W + (size_t)x) * 4];
-        int ea = abs((int)p[3] - (int)lroundf(q[3] * 255.f));
-        if (ea > maxErrA) maxErrA = ea;
-        if (q[3] > 0.25f) for (i = 0; i < 3; i++) { int e = abs((int)p[i] - (int)lroundf(q[i] * 255.f)); if (e > maxErr) maxErr = e; }
+      ok(r ? res == 2 : res == 1, r ? "[3] split frame flattened" : "[3] one-scale frame flattened"); }
+    if (r == 0) ok(f.count == 1 && f.images[0].rgba, "[3] one-scale frame: one RGBA image");
+    if (r == 1) ok(f.count >= 1 && f.count <= ASS_FLAT_CAMADAS_CPU && f.images[0].rgba, "[3] split frame, overlapping: RGBA layers (or one grid)");
+    if (r == 2) {
+      char m[120];
+      snprintf(m, sizeof m, "[3] split frame, signs apart: 2 layers (soft, then text), got %d", f.count);
+      ok(f.count == 2 && f.images[0].rgba && f.images[1].rgba && fabsf(f.images[0].esc - 0.4f) < 1e-6f && f.images[1].esc == 0.0f, m);
+    }
+    /* Box of the result on the text grid. */
+    { int c, x0 = 1 << 30, y0 = 1 << 30, x1 = 0, y1 = 0;
+      for (c = 0; c < f.count; c++) {
+        const AssCpuImage *m = &f.images[c];
+        float e = m->esc > 0.01f ? m->esc : escF, rr = escF / e;
+        int a0 = (int)floorf(m->x * rr), b0 = (int)floorf(m->y * rr), a1 = (int)ceilf((m->x + m->w) * rr), b1 = (int)ceilf((m->y + m->h) * rr);
+        if (a0 < x0) x0 = a0;
+        if (b0 < y0) y0 = b0;
+        if (a1 > x1) x1 = a1;
+        if (b1 > y1) y1 = b1;
       }
-      free(ref); }
-    { char m[160];
-      snprintf(m, sizeof m, "[3] %s matches the float composite (alpha off by %d, colour by %d)",
-               r ? "split frame" : "one-scale frame", maxErrA, maxErr);
-      ok(maxErrA <= 3 && maxErr <= 4, m); }
+      minX = x0; minY = y0; W = x1 - x0; H = y1 - y0; }
+    { float *ref = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H), *got = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H);
+      referencia(copia, 24, escF, minX, minY, W, H, ref);
+      compor_camadas(&f, escF, minX, minY, W, H, got);
+      for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+        const float *p = &got[((size_t)y * (size_t)W + (size_t)x) * 4];
+        const float *q = &ref[((size_t)y * (size_t)W + (size_t)x) * 4];
+        int ea = abs((int)lroundf(p[3] * 255.f) - (int)lroundf(q[3] * 255.f));
+        if (ea > maxErrA) maxErrA = ea;
+        if (q[3] > 0.25f && p[3] > 0.25f) for (i = 0; i < 3; i++) { int e = abs((int)lroundf(p[i] * 255.f) - (int)lroundf(q[i] * 255.f)); if (e > maxErr) maxErr = e; }
+      }
+      free(ref); free(got); }
+    { char m[200];
+      /* One grid: exact as before. Layers: the soft layer is resampled after
+       * compositing (as on the GPU), so its edges may differ a little. */
+      int lim = f.count > 1 ? 24 : 4;
+      snprintf(m, sizeof m, "[3] %s: the drawn layers match the float composite (alpha off by %d, colour by %d; limit %d)",
+               r == 0 ? "one-scale frame" : r == 1 ? "split frame, overlapping" : "split frame, signs apart", maxErrA, maxErr, lim);
+      ok(maxErrA <= lim && maxErr <= lim + 1, m); }
     for (i = 0; i < 24; i++) free(copia[i].bitmap);
     ass_frame_liberar(&f);
   }

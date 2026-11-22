@@ -44,9 +44,12 @@ enum {
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
-  AP_DIALIB,       // 1 = libass draws the dialogue; 0 = the app draws it, libass the signs & songs (1)
   AP_TXTRES,       // Custom auto, busy: text resolution %, 25..100 in 5s (100)
   AP_BLURRES,      // Custom auto, busy: blur resolution % 25..100 in 5s, or AP_LIMPO_BASE+c = clean step c (50)
+  /* Busy scenes (owner 22/11/2026): 0 Off = only the newest frame (signs
+   * update less often, each on time); 1 Auto = every frame while the render
+   * peak fits in 80 % of a video frame; 2 On = every frame always. (0) */
+  AP_TODOS,
   AP_N
 };
 
@@ -130,6 +133,9 @@ void   assperf_carga_gl(double ms);          // GL thread: cost of a new frame (
 // 0.5 s ahead (render resolution Auto only, so it drops to 75 % just before).
 void   assperf_previsao(int inicios, long chars, int imagens, int iniciosCedo, long charsCedo);
 int    assperf_pesado(void);                 // 1 = busy scene now
+/* Busy and still rendering only the newest frame (Every frame Off, or Auto
+ * with a render peak `picoMs` over 80 % of a frame at `fps`). */
+int    assperf_so_o_mais_novo(double picoMs, double fps);
 // Tizen 4-6 TVs (owner, 17/11/2026). Set by video_tpk.c from the Tizen
 // version; always 1 in the Tizen 4/5 library; 0 elsewhere. Since 19/11/2026
 // only the log reads it: busy scenes render further ahead on every .tpk, and

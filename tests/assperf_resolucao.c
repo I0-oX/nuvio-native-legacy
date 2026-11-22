@@ -28,8 +28,8 @@ int main(void) {
 
   /* 1080 UI (k = 1), 1080p script: clean f = p. */
   modo(AP_RES_BAIXO, &tx, &bl, &d);
-  OK(d && tx == 0.5 && PERTO(bl, 0.40), "Low, 1080 UI, 1080p: text 50, blur 40 (f 2/5)");
-  OK(assperf_reduzido() && PERTO(assperf_escala_blur(), 0.40) && assperf_escala() == 0.5, "busy: reduced, scales logged");
+  OK(!d && tx == 0.5 && bl == 0.0, "Low, 1080 UI, 1080p: 50 is clean (f 1/2): one pass 50/50, no split (log 1, 22/11)");
+  OK(assperf_reduzido() && assperf_escala_blur() == 0.0 && assperf_escala() == 0.5, "busy: reduced, one pass logged");
   modo(AP_RES_MEDIO, &tx, &bl, &d);
   OK(d && tx == 0.75 && PERTO(bl, 0.50), "Medium, 1080 UI, 1080p: text 75, blur 50");
   modo(AP_RES_ALTO, &tx, &bl, &d);

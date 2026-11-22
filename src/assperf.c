@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -18,8 +19,8 @@
 static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __attribute__((unused)) = {
   [AP_ESCALA] = { "escala", 0, 7, 5 }, [AP_GAMA] = { "gamma", -20, 20, 0 }, [AP_CONTRASTE] = { "contrast", -30, 20, 0 },
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
-  [AP_DIALIB] = { "dialogo", 0, 1, 1 },
   [AP_TXTRES] = { "txtres", 25, 100, 100 }, [AP_BLURRES] = { "blurres", 25, AP_LIMPO_BASE + AP_LIMPO_N, 50 },
+  [AP_TODOS] = { "todos_quadros", 0, 2, 0 },
 };
 
 static int val[AP_N] __attribute__((unused));   // read off the .tpk only by the tests
@@ -256,6 +257,13 @@ int assperf_pesado(void) {
   pthread_mutex_unlock(&autoTrava);
   return r;
 }
+int assperf_so_o_mais_novo(double picoMs, double fps) {
+  int t = assperf_get(AP_TODOS);
+  if (!assperf_pesado()) return 0;
+  if (t == 2) return 0;
+  if (t == 1) return !(fps > 0 && picoMs > 0 && picoMs <= 0.8 * 1000.0 / fps);
+  return 1;
+}
 
 /* ---- Render resolution Auto -----------------------------------------------
  * 100 % normally; lower while the subtitles are busy (owner 25/10: "only as a
@@ -343,7 +351,15 @@ static void escalas_reduzidas(int v, double *texto, double *blur) {
   if (pry <= 540) { *texto = 1.0; *blur = blur_limpo(1.0 + 1e-6, 1.0); return; }
   if (v == AP_RES_ALTO) { *texto = AP_ALTO_TEXTO; *blur = blur_limpo(AP_ALTO_BLUR, AP_BLUR_TETO); }
   else if (v == AP_RES_MEDIO) { *texto = AP_MEDIO_TEXTO; *blur = blur_limpo(AP_MEDIO_BLUR, AP_BLUR_TETO); }
-  else { *texto = AP_BAIXO_TEXTO; *blur = blur_limpo(AP_BAIXO_BLUR, AP_BLUR_TETO); }
+  else {
+    /* Low (owner 22/11/2026, log 1): when the text scale is clean itself (50 %
+     * of a 1080p script on a 1080 or 4K UI), the blur uses it too: one libass
+     * pass at 50 costs less than 50 + 40, and there's no split to composite. */
+    int c;
+    *texto = AP_BAIXO_TEXTO; *blur = blur_limpo(AP_BAIXO_BLUR, AP_BLUR_TETO);
+    for (c = 0; c < AP_LIMPO_N; c++)
+      if (fabs(limpo_p(c) - AP_BAIXO_TEXTO) < 1e-6) { *blur = AP_BAIXO_TEXTO; break; }
+  }
 }
 
 void assperf_modo_texto(char *b, int n) {

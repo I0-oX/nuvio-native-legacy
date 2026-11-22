@@ -1175,13 +1175,13 @@ static void ass_aplicar_assperf_locked(void) {
   int simples = __atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE);
   if (!assRenderer || (v == assApVersao && simples == assApSimples)) return;
   assApVersao = v; assApSimples = simples;
-  /* Dialogue size / opacity / "Dialogue by libass" change what a cached
-   * layer looks like: new cache key (22/11/2026). */
-  { static int tam = -1, opac = -1, dia = -1;
-    int t2 = assperf_get(AP_ASSTAM), o2 = assperf_get(AP_ASSOPAC), d2 = assperf_get(AP_DIALIB);
-    if (t2 != tam || o2 != opac || d2 != dia) {
+  /* Dialogue size / opacity change what a cached layer looks like: new
+   * cache key (22/11/2026). */
+  { static int tam = -1, opac = -1;
+    int t2 = assperf_get(AP_ASSTAM), o2 = assperf_get(AP_ASSOPAC);
+    if (t2 != tam || o2 != opac) {
       if (tam != -1) assTrackStyleVer++;
-      tam = t2; opac = o2; dia = d2;
+      tam = t2; opac = o2;
     } }
   /* Hinting (22/11/2026): none for authored ASS, like libass's and mpv's
    * default. Light hinting sent every new glyph size through FreeType's
@@ -1280,6 +1280,41 @@ static int ass_idx_cresce(int **p, int *cap, int n) {
     *p = nv; *cap = nc; }
   return 1;
 }
+/* idxOrd[0..n) = 0..n-1 sorted by (Start, index): natural merge sort. 0 = no
+ * memory (the caller uses qsort). */
+static int *idxTmp, idxTmpCap;
+static int ass_idx_ordenar_runs(int n) {
+  const ASS_Event *ev = idxCmpEv;
+  int *a, *b, *t, larg, i;
+  int *ini, nRuns = 0;
+  if (n < 2) return 1;
+  if (!ass_idx_cresce(&idxTmp, &idxTmpCap, 2 * n + 2)) return 0;
+  /* Run starts in idxTmp[n+1..]: a new run wherever Start goes down. */
+  ini = idxTmp + n + 1;
+  ini[nRuns++] = 0;
+  for (i = 1; i < n; i++) if (ev[i].Start < ev[i - 1].Start) ini[nRuns++] = i;
+  if (nRuns == 1) return 1;                 // already in order (idxOrd is 0..n-1)
+  if (nRuns > 64) return 0;                 // shuffled: qsort is as good
+  ini[nRuns] = n;
+  a = idxOrd; b = idxTmp;
+  for (larg = 1; larg < nRuns; larg *= 2) {
+    int r;
+    for (r = 0; r < nRuns; r += 2 * larg) {
+      int lo = ini[r], mid = ini[r + larg < nRuns ? r + larg : nRuns], hi = ini[r + 2 * larg < nRuns ? r + 2 * larg : nRuns];
+      int x = lo, y = mid, k = lo;
+      while (x < mid && y < hi) {
+        const ASS_Event *ex = &ev[a[x]], *ey = &ev[a[y]];
+        if (ex->Start < ey->Start || (ex->Start == ey->Start && a[x] < a[y])) b[k++] = a[x++];
+        else b[k++] = a[y++];
+      }
+      while (x < mid) b[k++] = a[x++];
+      while (y < hi) b[k++] = a[y++];
+    }
+    t = a; a = b; b = t;
+  }
+  if (a != idxOrd) memcpy(idxOrd, a, (size_t)n * sizeof *idxOrd);
+  return 1;
+}
 /* 1 = the index matches assTrack. 0 = no memory: callers fall back to a walk. */
 static int ass_idx_garantir(void) {
   int n, i, mc;
@@ -1326,7 +1361,10 @@ static int ass_idx_garantir(void) {
     else if (e->Duration > idxCurtoMax) idxCurtoMax = e->Duration;
   }
   idxCmpEv = assTrack->events;
-  qsort(idxOrd, (size_t)n, sizeof *idxOrd, ass_idx_cmp);
+  /* Owner 22/11/2026 (log 1): rebuilds after a seek cost 12-18 ms per frame.
+   * The track is a few runs already in Start order (each mkvass batch is), so
+   * a natural merge sort (runs merged pairwise) replaces qsort. */
+  if (!ass_idx_ordenar_runs(n)) qsort(idxOrd, (size_t)n, sizeof *idxOrd, ass_idx_cmp);
   idxPre[0] = 0;
   for (i = 0; i < n; i++) {
     idxIni[i] = assTrack->events[idxOrd[i]].Start;
@@ -1539,8 +1577,7 @@ static int ass_evento_anima_nao_move(const ASS_Event *e) {
  * mode 1: static positioned layer (>150ms, no animation, may be clipped)
  * mode 2: non-clipped rigid \move(x1,y1,x2,y2[,t1,t2]) without \org/\frx/\fry. */
 /* Known dialogue (nv_sign -1, the Signs & Songs comparison): it gets the
- * dialogue size/opacity or is skipped with "Dialogue by libass" Off, so it
- * never reuses a bitmap cached while it was drawn as a sign (22/11/2026). */
+ * dialogue size/opacity, so it never reuses a bitmap cached while it was drawn as a sign (22/11/2026). */
 #ifdef ASS_NV_API
 #define ASS_EV_DIALOGO_CONHECIDO(ev) ((ev)->nv_sign == -1)
 #else
@@ -2046,6 +2083,7 @@ static double ass_ms_entre(const struct timespec *a, const struct timespec *b) {
 static void ass_pod_devolver_assTrava(void);
 static double ass_fps(void);
 static long long ass_grade_seguinte(long long t);
+static int ass_so_o_mais_novo(void);
 static long long ass_grade_desde(long long ms);
 #if defined(NV_TPK) && defined(__linux__)
 // glibc declares this only under _GNU_SOURCE, and the define at the top of
@@ -2089,36 +2127,30 @@ static inline void ass_flat_px(unsigned char *dst, unsigned lr, unsigned lg, uns
   dst[2] = (unsigned char)((b + (b >> 8)) >> 8);
   dst[3] = (unsigned char)(sa + ((a + (a >> 8)) >> 8));
 }
-static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiva) {
+/* Composites the images idx[0..n-1] of `f` (in that order) into one
+ * straight-RGBA canvas on the pixel grid of scale `escG` (gW x gH). Images of
+ * another scale, or with a sub-pixel offset, are resampled bilinearly (like
+ * the GL_LINEAR quad). Returns the canvas (NULL = nothing drawn / no memory)
+ * and its box on that grid. */
+static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int n, float escG, int gW, int gH,
+                                      double gama, double contraste, int *oX, int *oY, int *oW, int *oH) {
   static uint32_t invAlpha[256];
   static int invInit;
-  int i, minX, minY, maxX, maxY, outW, outH, dividido = 0;
-  size_t sumArea = 0, outBytes;
+  int k, minX = gW, minY = gH, maxX = 0, maxY = 0, outW, outH;
+  size_t outBytes;
   unsigned char *rgba;
-  double gama, contraste;
-  float escF;
-  if (!f || f->count <= 16 || !f->images || frameW <= 0 || frameH <= 0) return 0;
-  escF = f->esc > 0.01f ? f->esc : 1.0f;
-  minX = frameW; minY = frameH; maxX = 0; maxY = 0;
-  for (i = 0; i < f->count; i++) {
-    const AssCpuImage *im = &f->images[i];
+  for (k = 0; k < n; k++) {
+    const AssCpuImage *im = &f->images[idx[k]];
     int x0, y0, x1, y1;
     float r, fx, fy;
-    if (im->rgba || !im->bitmap || im->w <= 0 || im->h <= 0) return 0;
-    if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) return 0;
-    if (ass_flat_reamostra(im, escF, &r, &fx, &fy)) {
-      if (im->esc > 0.01f && fabsf(im->esc - escF) >= 0.01f) dividido = 1;
+    if (ass_flat_reamostra(im, escG, &r, &fx, &fy)) {
       x0 = (int)floorf(fx) - 1; y0 = (int)floorf(fy) - 1;
       x1 = (int)ceilf(fx + (float)im->w * r) + 1; y1 = (int)ceilf(fy + (float)im->h * r) + 1;
-      sumArea += (size_t)((float)im->w * r * (float)im->h * r);
-    } else {
-      x0 = im->x; y0 = im->y; x1 = im->x + im->w; y1 = im->y + im->h;
-      sumArea += (size_t)im->w * (size_t)im->h;
-    }
+    } else { x0 = im->x; y0 = im->y; x1 = im->x + im->w; y1 = im->y + im->h; }
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (x1 > frameW) x1 = frameW;
-    if (y1 > frameH) y1 = frameH;
+    if (x1 > gW) x1 = gW;
+    if (y1 > gH) y1 = gH;
     if (x0 < x1 && y0 < y1) {
       if (x0 < minX) minX = x0;
       if (y0 < minY) minY = y0;
@@ -2127,22 +2159,18 @@ static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiv
     }
   }
   outW = maxX - minX; outH = maxY - minY;
-  if (outW <= 0 || outH <= 0) return 0;
+  if (outW <= 0 || outH <= 0) return NULL;
   outBytes = (size_t)outW * (size_t)outH * 4u;
-  if (outBytes > 3840u * 2160u * 4u) return 0;   /* 4K UI (k = 2): the text pass can be 3840x2160 */
-  int highOverdraw = f->count > 24 && sumArea > (size_t)frameW * (size_t)frameH;
-  int smallBatch = f->count > 16 && outBytes <= 512u * 1024u;
-  if (!highOverdraw && !smallBatch) return 0;
+  if (outBytes > 3840u * 2160u * 4u) return NULL;   /* 4K UI (k = 2): the text pass can be 3840x2160 */
   if (!invInit) {
     for (int a = 1; a < 255; a++)
       invAlpha[a] = (255u * 65536u + (unsigned)a / 2u) / (unsigned)a;
     invInit = 1;
   }
   rgba = (unsigned char *)calloc(outBytes, 1);
-  if (!rgba) return 0;
-  gama = assperf_gama(); contraste = assperf_contraste();
-  for (i = 0; i < f->count; i++) {
-    const AssCpuImage *im = &f->images[i];
+  if (!rgba) return NULL;
+  for (k = 0; k < n; k++) {
+    const AssCpuImage *im = &f->images[idx[k]];
     float rf, gf, bf, opf, r, fx, fy;
     unsigned lr, lg, lb, lop;
     int y;
@@ -2152,7 +2180,7 @@ static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiv
     lb = (unsigned)lroundf(bf * 255.0f);
     lop = (unsigned)lroundf(opf * 255.0f);
     if (lop == 0) continue;
-    if (ass_flat_reamostra(im, escF, &r, &fx, &fy)) {
+    if (ass_flat_reamostra(im, escG, &r, &fx, &fy)) {
       /* Bilinear, like the GL_LINEAR quad: destination pixel centre (u+0.5)
        * maps to source (u+0.5-fx)/r - 0.5. Outside the bitmap = 0. */
       int x0 = (int)floorf(fx) - 1, y0 = (int)floorf(fy) - 1;
@@ -2234,13 +2262,137 @@ static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiv
         px[2] = (unsigned char)(b > 255u ? 255u : b);
       }
     } }
+  *oX = minX; *oY = minY; *oW = outW; *oH = outH;
+  return rgba;
+}
+
+/* Split frames into layers (owner 22/11/2026, log 1: compositing the soft
+ * pass into the text pass's grid on the CPU was 45-77 % of every busy frame).
+ * Each layer holds images of one pass and is composited at that pass's own
+ * scale; the GPU scales the layers. An image may sink into an earlier layer
+ * of its pass only past layers it doesn't overlap (boxes on the text grid),
+ * so the stacking order is kept wherever images touch. -1 = more than
+ * ASS_FLAT_CAMADAS_CPU layers (the caller composites everything on one grid). */
+#define ASS_FLAT_CAMADAS_CPU 6
+static long assFlatCamadas, assFlatCamadasQ, assFlatCamadasFalha;   // [ass] cost (layers per split frame)
+static int ass_flat_camadas(const AssCpuFrame *f, float escF, int *camada, int *passe) {
+  int n = f->count, nC = 0, i, j, L;
+  int *bx = (int *)malloc((size_t)n * 4u * sizeof *bx);
+  if (!bx) return -1;
+  for (i = 0; i < n; i++) {
+    const AssCpuImage *im = &f->images[i];
+    float e = im->esc > 0.01f ? im->esc : escF, r = escF / e;
+    int mole = im->esc > 0.01f && fabsf(im->esc - escF) >= 0.01f;
+    int cand = -1;
+    bx[i * 4 + 0] = (int)floorf(((float)im->x + im->subX) * r) - 1;
+    bx[i * 4 + 1] = (int)floorf(((float)im->y + im->subY) * r) - 1;
+    bx[i * 4 + 2] = (int)ceilf(((float)im->x + im->subX + (float)im->w) * r) + 1;
+    bx[i * 4 + 3] = (int)ceilf(((float)im->y + im->subY + (float)im->h) * r) + 1;
+    for (L = nC - 1; L >= 0; L--) {
+      int toca = 0;
+      if (passe[L] == mole) cand = L;
+      for (j = 0; j < i && !toca; j++)
+        if (camada[j] == L && bx[j * 4] < bx[i * 4 + 2] && bx[i * 4] < bx[j * 4 + 2] &&
+            bx[j * 4 + 1] < bx[i * 4 + 3] && bx[i * 4 + 1] < bx[j * 4 + 3]) toca = 1;
+      if (toca) break;
+    }
+    if (cand >= 0) camada[i] = cand;
+    else {
+      if (nC >= ASS_FLAT_CAMADAS_CPU) { free(bx); return -1; }
+      passe[nC] = mole; camada[i] = nC++;
+    }
+  }
+  free(bx);
+  return nC;
+}
+
+static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiva) {
+  int i, minX, minY, maxX, maxY, outW, outH, dividido = 0, nC = 1;
+  size_t sumArea = 0, outBytes;
+  double gama, contraste;
+  float escF, escS = 0.0f;
+  AssCpuImage camadas[ASS_FLAT_CAMADAS_CPU];
+  if (!f || f->count <= 16 || !f->images || frameW <= 0 || frameH <= 0) return 0;
+  escF = f->esc > 0.01f ? f->esc : 1.0f;
+  minX = frameW; minY = frameH; maxX = 0; maxY = 0;
+  for (i = 0; i < f->count; i++) {
+    const AssCpuImage *im = &f->images[i];
+    int x0, y0, x1, y1;
+    float r, fx, fy;
+    if (im->rgba || !im->bitmap || im->w <= 0 || im->h <= 0) return 0;
+    if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) return 0;
+    if (ass_flat_reamostra(im, escF, &r, &fx, &fy)) {
+      if (im->esc > 0.01f && fabsf(im->esc - escF) >= 0.01f) { dividido = 1; escS = im->esc; }
+      x0 = (int)floorf(fx) - 1; y0 = (int)floorf(fy) - 1;
+      x1 = (int)ceilf(fx + (float)im->w * r) + 1; y1 = (int)ceilf(fy + (float)im->h * r) + 1;
+      sumArea += (size_t)((float)im->w * r * (float)im->h * r);
+    } else {
+      x0 = im->x; y0 = im->y; x1 = im->x + im->w; y1 = im->y + im->h;
+      sumArea += (size_t)im->w * (size_t)im->h;
+    }
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > frameW) x1 = frameW;
+    if (y1 > frameH) y1 = frameH;
+    if (x0 < x1 && y0 < y1) {
+      if (x0 < minX) minX = x0;
+      if (y0 < minY) minY = y0;
+      if (x1 > maxX) maxX = x1;
+      if (y1 > maxY) maxY = y1;
+    }
+  }
+  outW = maxX - minX; outH = maxY - minY;
+  if (outW <= 0 || outH <= 0) return 0;
+  outBytes = (size_t)outW * (size_t)outH * 4u;
+  if (outBytes > 3840u * 2160u * 4u) return 0;
+  int highOverdraw = f->count > 24 && sumArea > (size_t)frameW * (size_t)frameH;
+  int smallBatch = f->count > 16 && outBytes <= 512u * 1024u;
+  if (!highOverdraw && !smallBatch) return 0;
+  gama = assperf_gama(); contraste = assperf_contraste();
+  memset(camadas, 0, sizeof camadas);
+  {
+    int *idx = (int *)malloc((size_t)f->count * 2u * sizeof *idx), *camada, passe[ASS_FLAT_CAMADAS_CPU];
+    int c, feito = 0;
+    if (!idx) return 0;
+    camada = idx + f->count;
+    nC = dividido && escS > 0.01f ? ass_flat_camadas(f, escF, camada, passe) : -1;
+    if (nC > 0) {
+      /* Each layer on its own pass's grid: the soft one at escS, so nothing
+       * is resampled but sub-pixel offsets. */
+      int gWs = (int)ceilf((float)frameW * escS / escF) + 1, gHs = (int)ceilf((float)frameH * escS / escF) + 1;
+      feito = 1;
+      for (c = 0; c < nC && feito; c++) {
+        int n = 0;
+        AssCpuImage *o = &camadas[c];
+        for (i = 0; i < f->count; i++) if (camada[i] == c) idx[n++] = i;
+        o->bitmap = ass_flat_compor(f, idx, n, passe[c] ? escS : escF, passe[c] ? gWs : frameW, passe[c] ? gHs : frameH,
+                                    gama, contraste, &o->x, &o->y, &o->w, &o->h);
+        if (!o->bitmap) { feito = 0; break; }
+        o->stride = o->w * 4; o->rgba = 1; o->esc = passe[c] ? escS : 0.0f;
+      }
+      if (!feito) { for (c = 0; c < nC; c++) { free(camadas[c].bitmap); camadas[c].bitmap = NULL; } }
+      __atomic_add_fetch(feito ? &assFlatCamadas : &assFlatCamadasFalha, feito ? nC : 1, __ATOMIC_RELAXED);
+      if (feito) __atomic_add_fetch(&assFlatCamadasQ, 1, __ATOMIC_RELAXED);
+    } else if (dividido) __atomic_add_fetch(&assFlatCamadasFalha, 1, __ATOMIC_RELAXED);
+    if (!feito) {   // one grid (the text pass's), everything resampled into it
+      AssCpuImage *o = &camadas[0];
+      for (i = 0; i < f->count; i++) idx[i] = i;
+      o->bitmap = ass_flat_compor(f, idx, f->count, escF, frameW, frameH, gama, contraste, &o->x, &o->y, &o->w, &o->h);
+      if (o->bitmap) { o->stride = o->w * 4; o->rgba = 1; }
+      nC = 1;
+    }
+    free(idx);
+    if (!camadas[0].bitmap) return 0;
+  }
   for (i = 0; i < f->count; i++) free(f->images[i].bitmap);
-  { AssCpuImage *one = (AssCpuImage *)realloc(f->images, sizeof *one);
-    if (!one) one = f->images;
-    memset(one, 0, sizeof *one);
-    one->x = minX; one->y = minY; one->w = outW; one->h = outH;
-    one->stride = outW * 4; one->rgba = 1; one->bitmap = rgba;
-    f->images = one; f->count = 1; f->bytes = outBytes; }
+  { AssCpuImage *novo = (AssCpuImage *)realloc(f->images, (size_t)nC * sizeof *novo);
+    size_t bytes = 0;
+    if (!novo) {   // keep the old block (it holds at least one image) and only its first layer
+      for (i = 1; i < nC; i++) free(camadas[i].bitmap);
+      nC = 1; novo = f->images;
+    }
+    for (i = 0; i < nC; i++) { novo[i] = camadas[i]; bytes += (size_t)camadas[i].w * (size_t)camadas[i].h * 4u; }
+    f->images = novo; f->count = nC; f->bytes = bytes; }
   return dividido ? 2 : 1;
 }
 
@@ -2388,12 +2540,11 @@ static void *ass_worker_loop(void *unused) {
     AssCpuFrame frame;
     unsigned generation, serial, epoch;
     double ms, esc, resol, resolB = 0.0;
-    int dividir = 0, lwB = 0, lhB = 0, pularDialogo = 0;
+    int dividir = 0, lwB = 0, lhB = 0;
     ASS_Image *imagesB = NULL;
     double msPassA = 0.0, msPassB = 0.0;
     int divOk = 0;
     long divImgsA = 0, divImgsB = 0;
-    (void)pularDialogo;
     float ox, oy;
     int lw, lh, vw, vh, plainValid, k;
     PlainAssStyle plain;
@@ -2418,7 +2569,9 @@ static void *ass_worker_loop(void *unused) {
       int continua = assSeqEpoch == epoch && assSeqGeracao == generation && assSeqUltMs != LLONG_MIN;
       /* Cena pesada (dono 26/10): como o Render ahead de 100 ms era antes — so o
        * pedido mais novo, sem os quadros do meio. A leve faz todos. */
-      if (assperf_pesado()) prox = alvo;
+      /* Every frame (owner 22/11/2026): On, or Auto while the render peak
+       * fits, busy scenes render every grid frame like quiet ones. */
+      if (ass_so_o_mais_novo()) prox = alvo;
       /* Salto: o quadro de agora primeiro. Documento novo (lote do mkvass): do
        * PROXIMO quadro, o de agora ja esta na tela. */
       else if (!continua) prox = agoraUi;
@@ -2551,16 +2704,12 @@ static void *ass_worker_loop(void *unused) {
       if (!ass_estilo_autor_locked()) dividir = 0;
       if (dividir && !assRendererB) ass_b_criar_locked();
       if (!assRendererB) dividir = 0;
-      /* "Dialogue by libass" Off (owner 19/11/2026): the app draws it. */
-      pularDialogo = ASS_NOVO && ass_estilo_autor_locked() && assperf_get(AP_LIBASS) && !assperf_get(AP_DIALIB);
       ass_nv_set_split(assRenderer, dividir ? 1 : 0, 0);
-      ass_nv_set_skip_dialogue(assRenderer, pularDialogo);
       if (dividir) {
         if (lwB != layBW || lhB != layBH) { ass_set_frame_size(assRendererB, lwB, lhB); layBW = lwB; layBH = lhB; }
         ass_set_storage_size(assRendererB, vw, vh);
         ass_set_font_scale(assRendererB, esc);
         ass_set_selective_style_override_enabled(assRendererB, ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE);
-        ass_nv_set_skip_dialogue(assRendererB, pularDialogo);
       }
       clock_gettime(CLOCK_MONOTONIC, &cuT);
       if (ass_estilo_autor_locked()) ass_marcar_sinais_locked(generation, t);
@@ -3016,8 +3165,11 @@ static int *assMainIdx;          // e o indice dela em assTc
 static int assMainTexCap, assMainEnviado;
 static int assMainResetar;       // assrender_aplicar_invalidacao consumiu um assTexResetar
 #define ASS_FLAT_RING 3
-static GLuint assFlatTex[ASS_FLAT_RING];
-static int assFlatW[ASS_FLAT_RING], assFlatH[ASS_FLAT_RING];
+/* A split frame flattens into up to ASS_FLAT_CAMADAS layers, each at its own
+ * pass's scale (owner 22/11/2026, log 1): one texture per layer and ring slot. */
+#define ASS_FLAT_CAMADAS 6
+static GLuint assFlatTex[ASS_FLAT_RING][ASS_FLAT_CAMADAS];
+static int assFlatW[ASS_FLAT_RING][ASS_FLAT_CAMADAS], assFlatH[ASS_FLAT_RING][ASS_FLAT_CAMADAS];
 static int assFlatCur;
 
 static int ass_flat_bucket(int v) {
@@ -3034,9 +3186,9 @@ static void ass_tc_apagar(void) {
   for (i = 0; i < assTcN; i++)
     if (assTc[i].tex) { gfx_tex_esquecer(assTc[i].tex); glDeleteTextures(1, &assTc[i].tex); }
   free(assTc); assTc = NULL; assTcN = assTcCap = 0; assTcBytes = 0;
-  for (i = 0; i < ASS_FLAT_RING; i++) {
-    if (assFlatTex[i]) { gfx_tex_esquecer(assFlatTex[i]); glDeleteTextures(1, &assFlatTex[i]); assFlatTex[i] = 0; }
-    assFlatW[i] = assFlatH[i] = 0;
+  for (i = 0; i < ASS_FLAT_RING; i++) for (int c = 0; c < ASS_FLAT_CAMADAS; c++) {
+    if (assFlatTex[i][c]) { gfx_tex_esquecer(assFlatTex[i][c]); glDeleteTextures(1, &assFlatTex[i][c]); assFlatTex[i][c] = 0; }
+    assFlatW[i][c] = assFlatH[i][c] = 0;
   }
   assFlatCur = 0;
   assMainEnviado = 0;
@@ -3162,45 +3314,53 @@ static int ass_main_desenhar_corpo(float x, float y, float alpha, int corAtiva, 
   int i;
   float kk = assMain.k > 1 ? (float)assMain.k : 1.0f, esc = assMain.esc > 0.01f ? assMain.esc : kk;
   assGlQuadro++;
-  if (assMain.count == 1 && assMain.images[0].rgba) {
-    const AssCpuImage *im = &assMain.images[0];
+  /* Flattened frame: 1 RGBA image, or (a split frame) up to
+   * ASS_FLAT_CAMADAS layers in stacking order, each at its own scale. */
+  if (assMain.count >= 1 && assMain.count <= ASS_FLAT_CAMADAS && assMain.images[0].rgba) {
+    int c, nC = assMain.count;
     if (quadroNovo || !assMainEnviado) {
       struct timespec t0, t1;
       clock_gettime(CLOCK_MONOTONIC, &t0);
       if (quadroNovo) assFlatCur = (assFlatCur + 1) % ASS_FLAT_RING;
       int s = assFlatCur;
-      if (!assFlatTex[s]) glGenTextures(1, &assFlatTex[s]);
-      if (assFlatTex[s]) {
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      for (c = 0; c < nC; c++) {
+        const AssCpuImage *im = &assMain.images[c];
+        if (!im->rgba || !im->bitmap) continue;
+        if (!assFlatTex[s][c]) glGenTextures(1, &assFlatTex[s][c]);
+        if (!assFlatTex[s][c]) continue;
         int bw = ass_flat_bucket(im->w), bh = ass_flat_bucket(im->h);
-        if (bw < assFlatW[s]) bw = assFlatW[s];
-        if (bh < assFlatH[s]) bh = assFlatH[s];
-        glBindTexture(GL_TEXTURE_2D, assFlatTex[s]);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        if (bw != assFlatW[s] || bh != assFlatH[s]) {
+        if (bw < assFlatW[s][c]) bw = assFlatW[s][c];
+        if (bh < assFlatH[s][c]) bh = assFlatH[s][c];
+        glBindTexture(GL_TEXTURE_2D, assFlatTex[s][c]);
+        if (bw != assFlatW[s][c] || bh != assFlatH[s][c]) {
           glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bw, bh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-          assFlatW[s] = bw; assFlatH[s] = bh;
+          assFlatW[s][c] = bw; assFlatH[s][c] = bh;
         }
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, im->w, im->h, GL_RGBA, GL_UNSIGNED_BYTE, im->bitmap);
-        gfx_tex_esquecer(0);
       }
+      gfx_tex_esquecer(0);
       clock_gettime(CLOCK_MONOTONIC, &t1);
       assMainEnviado = 1;
       if (quadroNovo) assperf_carga_gl(ass_ms_entre(&t0, &t1));
     }
     int s = assFlatCur;
-    if (assFlatTex[s] && assFlatW[s] > 0 && assFlatH[s] > 0) {
-      float dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / esc;
-      float dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / esc;
-      float parx = (float)im->w / (float)assFlatW[s];
-      float pary = (float)im->h / (float)assFlatH[s];
-      int minDim = assFlatW[s] < assFlatH[s] ? assFlatW[s] : assFlatH[s];
+    gfx_tex_aspect_atual = 0.0f;
+    for (c = 0; c < nC; c++) {
+      const AssCpuImage *im = &assMain.images[c];
+      float e = im->esc > 0.01f ? im->esc : esc;   // a soft layer: its own pass's scale
+      if (!im->rgba || !assFlatTex[s][c] || assFlatW[s][c] <= 0 || assFlatH[s][c] <= 0) continue;
+      float dx = roundf((x + assMain.ox) * kk) / kk + (float)im->x / e;
+      float dy = roundf((y + assMain.oy) * kk) / kk + (float)im->y / e;
+      float parx = (float)im->w / (float)assFlatW[s][c];
+      float pary = (float)im->h / (float)assFlatH[s][c];
+      int minDim = assFlatW[s][c] < assFlatH[s][c] ? assFlatW[s][c] : assFlatH[s][c];
       float inset = 0.5f / (float)minDim;
-      gfx_tex_aspect_atual = 0.0f;
-      gfx_rect((GfxRect){ dx, dy, (float)im->w / esc, (float)im->h / esc }, assFlatTex[s], GFX_TEXTO,
+      gfx_rect((GfxRect){ dx, dy, (float)im->w / e, (float)im->h / e }, assFlatTex[s][c], GFX_TEXTO,
                0, parx, pary, inset, 1, 1, 1, alpha);
     }
     return 1;
@@ -4162,10 +4322,17 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
           o += snprintf(b + o, sizeof b - (size_t)o, "%s %s=%.1f/%.1f", ci ? "" : "", cuNome[ci],
                         cuSoma[ci] / (double)cuQuadros, cuMax[ci]);
         printf("[ass] cost (ms avg/max per frame, %ld frames):%s | events=%ld active avg=%.0f index rebuilds=%ld | "
-               "flat=%ld of %ld busy frames (split %ld) | sig cache hits=%ld parses=%ld\n",
+               "flat=%ld of %ld busy frames (split %ld: layered %ld, avg %.1f layers; one grid %ld) | sig cache hits=%ld parses=%ld\n",
                cuQuadros, b, cuEventos, (double)cuAtivos / (double)cuQuadros, idxReconstrucoes,
-               assFlatFeitos, assFlatQuadros, assFlatDivididos, assSigAcertos, assSigCalculos);
+               assFlatFeitos, assFlatQuadros, assFlatDivididos,
+               __atomic_load_n(&assFlatCamadasQ, __ATOMIC_RELAXED),
+               __atomic_load_n(&assFlatCamadasQ, __ATOMIC_RELAXED) ? (double)__atomic_load_n(&assFlatCamadas, __ATOMIC_RELAXED) /
+                 (double)__atomic_load_n(&assFlatCamadasQ, __ATOMIC_RELAXED) : 0.0,
+               __atomic_load_n(&assFlatCamadasFalha, __ATOMIC_RELAXED), assSigAcertos, assSigCalculos);
       }
+      __atomic_store_n(&assFlatCamadas, 0, __ATOMIC_RELAXED);
+      __atomic_store_n(&assFlatCamadasQ, 0, __ATOMIC_RELAXED);
+      __atomic_store_n(&assFlatCamadasFalha, 0, __ATOMIC_RELAXED);
       memset(cuSoma, 0, sizeof cuSoma); memset(cuMax, 0, sizeof cuMax);
       cuQuadros = 0; cuAtivos = 0; idxReconstrucoes = 0;
       assFlatFeitos = assFlatQuadros = assFlatDivididos = 0; assSigAcertos = assSigCalculos = 0;
@@ -4182,11 +4349,13 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
       video_tpk_leituras(&n, &fora, &somaMs, &maxMs);
       if (dt > 0.0)
         printf("[ass] 10s tv: position readings=%d (%.1f/s, %d dropped) query avg=%.1fms max=%dms | "
-               "free RAM=%ldMB | queue=%d frames %.1fMB | textures=%d %.1fMB | scale=%d%% busy=%d | "
-               "ahead up to %dms (Tizen 4-6 %s)\n",
+               "free RAM=%ldMB | queue=%d frames %.1fMB | textures=%d %.1fMB | scale=%d%% busy=%d "
+               "(every frame %s, now %s) | ahead up to %dms (Tizen 4-6 %s)\n",
                n, n / dt, fora, n ? (double)somaMs / n : 0.0, maxMs, memlog_livre_mb(),
                assFilaN, ass_fila_bytes_locked() / 1048576.0, assTcN, assTcBytes / 1048576.0,
                (int)(assperf_escala() * 100.0 + 0.5), assperf_pesado(),
+               assperf_get(AP_TODOS) == 2 ? "On" : assperf_get(AP_TODOS) == 1 ? "Auto" : "Off",
+               !assperf_pesado() ? "quiet" : ass_so_o_mais_novo() ? "newest only" : "every frame",
                __atomic_exchange_n(&assAdianteMax, 0, __ATOMIC_RELAXED), assperf_tv_lenta() ? "yes" : "no");
       /* Render resolution (owner 19/11/2026): the mode, the scales in use
        * now, and what each pass cost on the split (busy) frames. */
@@ -4194,13 +4363,11 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
         double bl = assperf_escala_blur();
         assperf_modo_texto(modo, (int)sizeof modo);
         printf("[ass] 10s res: mode=%s | now text %d%% blur %s%d%% | "
-               "split frames=%ld sharp avg=%.1fms max=%.1fms (%ld imgs) soft avg=%.1fms max=%.1fms (%ld imgs) | "
-               "dialogue by %s\n",
+               "split frames=%ld sharp avg=%.1fms max=%.1fms (%ld imgs) soft avg=%.1fms max=%.1fms (%ld imgs)\n",
                modo, (int)(assperf_escala() * 100.0 + 0.5),
                bl > 0.0 ? "" : "=", (int)((bl > 0.0 ? bl : assperf_escala()) * 100.0 + 0.5),
                assDiv.quadros, assDiv.quadros ? assDiv.msA / assDiv.quadros : 0.0, assDiv.maxA, assDiv.imgsA,
-               assDiv.quadros ? assDiv.msB / assDiv.quadros : 0.0, assDiv.maxB, assDiv.imgsB,
-               assperf_get(AP_DIALIB) ? "libass" : "the app (signs & songs by libass)");
+               assDiv.quadros ? assDiv.msB / assDiv.quadros : 0.0, assDiv.maxB, assDiv.imgsB);
         memset(&assDiv, 0, sizeof assDiv); }
       /* Signs & Songs matching (asssinais.h): how the lines were decided, and
        * the dialogue settings they protect the signs from. */
@@ -4209,10 +4376,10 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
         if (se.linhas || se.consultas || se.guardadas)
           printf("[ass] 10s signs: partner lines read=%d held=%d | lookups=%ld: sign by partner=%ld, "
                  "dialogue by partner=%ld, waiting (libass rule)=%ld | known stretches=%d, newest %.1f-%.1f s | "
-                 "dialogue size=%d%% opacity=%d%% by %s\n",
+                 "dialogue size=%d%% opacity=%d%%\n",
                  se.linhas, se.guardadas, se.consultas, se.sinais, se.dialogos, se.esperando,
                  se.trechos, se.conhecidoIni / 1000.0, se.conhecidoFim / 1000.0,
-                 assperf_get(AP_ASSTAM), assperf_get(AP_ASSOPAC), assperf_get(AP_DIALIB) ? "libass" : "the app"); }
+                 assperf_get(AP_ASSTAM), assperf_get(AP_ASSOPAC)); }
       /* Drawing the subtitles on the GL thread, and the local server feeding
        * the TV (Tizen 4-6 playback damage, 16/11): every window, also paused. */
       { long long us = __atomic_exchange_n(&glDesUs, 0, __ATOMIC_RELAXED),
@@ -4252,6 +4419,12 @@ void assrender_definir_fps(double fps) {
   __atomic_store(&assFps, &v, __ATOMIC_RELAXED);
 }
 static double ass_fps(void) { double v; __atomic_load(&assFps, &v, __ATOMIC_RELAXED); return v; }
+/* Busy scene that still renders only the newest frame (assperf.h AP_TODOS). */
+static int ass_so_o_mais_novo(void) {
+  double pico;
+  __atomic_load(&assRenderPico, &pico, __ATOMIC_RELAXED);
+  return assperf_so_o_mais_novo(pico, ass_fps());
+}
 static long long ass_na_grade(long long ms) {
   /* O meio do quadro que contem `ms`. Folga de 0,02 quadro (<1 ms: o PTS
    * arredondado ao ms). Era 0,1 (4 ms): o letreiro trocava um tico ANTES do
@@ -4304,7 +4477,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
      * 100..600 ms: the busy worker renders only the newest request, so signs
      * update less often but each one is on time. Hold-until-due keeps it off
      * the screen early. On a fast TV (peak ~40 ms) this stays at 100 ms. */
-    if (assperf_pesado()) {
+    if (ass_so_o_mais_novo()) {
       double pico, fps = ass_fps();
       __atomic_load(&assRenderPico, &pico, __ATOMIC_RELAXED);
       adiante = (int)lround(pico * 1.25 + (fps > 0 ? 1000.0 / fps : 42.0));
@@ -4320,7 +4493,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
   /* Quadros INTEIROS a frente: 100 ms = 2,4 quadros caia na borda e o pedido
    * pulava entre +2 e +3. */
   { double fps = ass_fps();
-    if (fps > 0 && adiante > 0 && !assperf_pesado()) {
+    if (fps > 0 && adiante > 0 && !ass_so_o_mais_novo()) {
       long long q = llround((double)adiante * fps / 1000.0);
       if (q < 1) q = 1;
       /* Cena leve com quadros caros (mascaras do polegar: 50-65 ms no log 15):
