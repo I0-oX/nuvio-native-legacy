@@ -6809,6 +6809,7 @@
   T("Preparando a imagem", "Ruošiamas vaizdas"),
   T("Preparando conexão segura…", "Preparing secure connection…"),
   T("Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Ruošiamas kodas…"),
   T("Preparando o início do vídeo", "Ruošiamasi vaizdo įrašo pradžiai"),
   T("Preparando o perfil…", "Ruošiamas profilis…"),

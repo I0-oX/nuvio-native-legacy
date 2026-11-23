@@ -6808,6 +6808,7 @@
   { "Preparando a imagem", "Preparing the picture" },
   { "Preparando conexão segura…", "Preparing secure connection…" },
   { "Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek" },
+  { "Preparando no TorBox…", "Getting ready in TorBox…" },
   { "Preparando o código…", "Preparing the code…" },
   { "Preparando o início do vídeo", "Preparing the start of the video" },
   { "Preparando o perfil…", "Preparing profile…" },

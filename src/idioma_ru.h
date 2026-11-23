@@ -6808,6 +6808,7 @@
   T("Preparando a imagem", "Готовим изображение"),
   T("Preparando conexão segura…", "Preparing secure connection…"),
   T("Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Подготовка кода…"),
   T("Preparando o início do vídeo", "Готовим начало видео"),
   T("Preparando o perfil…", "Готовим профиль…"),

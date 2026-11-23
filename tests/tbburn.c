@@ -25,6 +25,7 @@ static char ultRota[512];
 static int sumido500, criacoes;   // createstream: item 500 is gone (log 12)
 static int planoRecusa;           // createstream: TorBox refuses the plan
 static int pronto900;             // createstream for the re-added item 900 gives a playlist
+static int sumido900;             // ...or ITEM_NOT_FOUND while TorBox registers it
 char *debrid_tb_api_get(const char *r, int p, int *st) {
   (void)p; snprintf(ultRota, sizeof ultRota, "%s", r ? r : ""); if (st) *st = 0;
   if (r && strstr(r, "createstream")) criacoes++;
@@ -33,6 +34,10 @@ char *debrid_tb_api_get(const char *r, int p, int *st) {
     return strdup("{\"success\":false,\"error\":\"PLAN_RESTRICTED_FEATURE\"}");
   }
   if (sumido500 && r && strstr(r, "createstream?id=500&")) {
+    if (st) *st = 404;
+    return strdup("{\"success\":false,\"error\":\"ITEM_NOT_FOUND\",\"detail\":\"Item not found.\",\"data\":null}");
+  }
+  if (sumido900 && !pronto900 && r && strstr(r, "createstream?id=900&")) {
     if (st) *st = 404;
     return strdup("{\"success\":false,\"error\":\"ITEM_NOT_FOUND\",\"detail\":\"Item not found.\",\"data\":null}");
   }
@@ -388,24 +393,27 @@ int main(void) {
     tbburn_pedir("https://s/12r", 1, 1);
     CHECA(fimPedido() == TBB_FALHOU && frescoN == 1 && criacoes == 1 && adicoes == 1);
     // r) Re-added (torrent 900): TorBox needs a while; the request waits
-    //    (TBB_ESPERANDO), finds it in the fresh lists on the 3rd look (by the
-    //    hash) and gets a playlist.
+    //    (TBB_ESPERANDO) and asks with the torrent itself and the file index
+    //    of the old match (log 12, 23/11/2026): no fresh-list lookup needed.
     { char m[256];
       frescoItem = 900; frescoAPartir = 4; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 1;
       tbburn_fonte("https://s/12s", "", "B.S01E12.mkv", 2012);
       tbburn_pedir("https://s/12s", 1, 1);
-      CHECA(fimPedido() == TBB_PRONTO && viuEsperando && adicoes == 1 && frescoN == 4 &&
-            !strcmp(frescoHash, "abababababababababababababababababababab") && strstr(ultRota, "createstream?id=900&") != NULL);
+      CHECA(fimPedido() == TBB_PRONTO && viuEsperando && adicoes == 1 && frescoN == 1 &&
+            strstr(ultRota, "createstream?id=900&file_id=7") != NULL);
       CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
       // The next request for that file uses item 900 at once.
       frescoN = criacoes = adicoes = 0;
       tbburn_pedir("https://s/12s", 1, 1);
       CHECA(fimPedido() == TBB_PRONTO && adicoes == 0 && frescoN == 0 && criacoes == 1); }
-    // s) Never registered: gives up after the total time, Nuvio draws.
-    frescoItem = 0; frescoAPartir = 0; frescoN = criacoes = adicoes = 0; adicionarDa = 900;
+    // s) Never registered: gives up after the total time, Nuvio draws. The
+    //    torrent is asked directly each try; while TorBox says ITEM_NOT_FOUND
+    //    for it the 13 MB lists are not read again.
+    frescoItem = 0; frescoAPartir = 0; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 0; sumido900 = 1;
     tbburn_fonte("https://s/12t", "", "B.S01E13.mkv", 2013);
     tbburn_pedir("https://s/12t", 1, 1);
-    CHECA(fimPedido() == TBB_FALHOU && viuEsperando && adicoes == 1 && frescoN >= 3 && criacoes == 1);
+    CHECA(fimPedido() == TBB_FALHOU && viuEsperando && adicoes == 1 && frescoN == 1 && criacoes >= 3);
+    sumido900 = 0; pronto900 = 1;
     // t) Cancelled while waiting (another pick / the player left): stops asking.
     { int n0;
       frescoN = criacoes = adicoes = 0;
@@ -456,6 +464,26 @@ int main(void) {
             !strcmp(adicionouHash, "1212121212121212121212121212121212121212") && strstr(ultRota, "createstream?id=900&") != NULL);
       CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
       pronto900 = 0; frescoItem = 0; frescoAPartir = 0; partesHashItem[0] = 0; } }
+
+  // y) Log 12 (Married Couple CRUCiBLE): a Burn in press while the re-added
+  //    file is registering joins the wait: no second add, no list lookup, no
+  //    "not in your TorBox"; it asks with the re-added torrent at once.
+  { char m[256]; int n0, f0;
+    partesAchar = 1; sumido500 = 1; frescoItem = 0; frescoAPartir = 0; frescoN = criacoes = adicoes = 0;
+    adicionarDa = 900; sumido900 = 1; pronto900 = 0;
+    tbburn_fonte("https://s/13a", "", "C.S01E08.mkv", 3008);
+    tbburn_pedir("https://s/13a", 1, 1);
+    for (int k = 0; k < 200 && tbburn_resultado(NULL, 0, NULL, 0) != TBB_ESPERANDO; k++) dormir(5);
+    CHECA(tbburn_resultado(NULL, 0, NULL, 0) == TBB_ESPERANDO && adicoes == 1);
+    n0 = partesN; f0 = frescoN;
+    tbburn_pedir("https://s/13a", 2, 1);   // the press: another track, while registering
+    dormir(15);
+    CHECA(tbburn_resultado(NULL, 0, NULL, 0) == TBB_ESPERANDO);   // still waiting, not FALHOU
+    pronto900 = 1;   // TorBox registered it
+    CHECA(fimPedido() == TBB_PRONTO && adicoes == 1 && partesN == n0 && frescoN == f0 &&
+          strstr(ultRota, "createstream?id=900&file_id=7") != NULL && strstr(ultRota, "chosen_subtitle_index=2") != NULL);
+    CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
+    sumido500 = sumido900 = pronto900 = 0; }
 
   if (falhas) { printf("tbburn: %d falha(s)\n", falhas); return 1; }
   printf("tbburn: ok\n");

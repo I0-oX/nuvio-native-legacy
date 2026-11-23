@@ -6809,6 +6809,7 @@
   T("Preparando a imagem", "Προετοιμασία εικόνας"),
   T("Preparando conexão segura…", "Preparing secure connection…"),
   T("Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Προετοιμασία του κωδικού…"),
   T("Preparando o início do vídeo", "Προετοιμασία της έναρξης του βίντεο"),
   T("Preparando o perfil…", "Προετοιμασία προφίλ…"),

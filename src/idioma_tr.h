@@ -6809,6 +6809,7 @@
   T("Preparando a imagem", "Görüntü hazırlanıyor"),
   T("Preparando conexão segura…", "Preparing secure connection…"),
   T("Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Kod hazırlanıyor…"),
   T("Preparando o início do vídeo", "Videonun başlangıcını hazırlıyoruz"),
   T("Preparando o perfil…", "Profil hazırlanıyor…"),

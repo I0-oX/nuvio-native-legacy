@@ -2312,13 +2312,24 @@ static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int 
   return rgba;
 }
 
+/* Overload (owner 23/11/2026, log 12, Fate/strange Fake Kaleido-subs): ~600
+ * tiny images per frame filled the 2048-texture table and froze the GL thread
+ * 300-450 ms per frame uploading them. A frame with more images than this is
+ * flattened even when it is split: the soft pass is resampled into the text
+ * pass's grid (ass_flat_compor already does that, exact positions). Normal
+ * busy scenes (Kaguya ED: 12-57 images) never reach it, so their per-image
+ * path is unchanged. */
+#define ASS_FLAT_SOBRECARGA 300
+static long assSobreQuadros, assSobreImgsSoma, assSobreImgsMax;   // [ass] cost (under assFilaTrava when read)
+static long assTcFora;   // images left out: every texture slot was drawn in the last frames (GL thread, __atomic)
 static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiva) {
-  int i, minX, minY, maxX, maxY, outW, outH;
+  int i, minX, minY, maxX, maxY, outW, outH, sobrecarga;
   size_t sumArea = 0, outBytes;
   double gama, contraste;
   float escF;
   AssCpuImage plano;
   if (!f || f->count <= 16 || !f->images || frameW <= 0 || frameH <= 0) return 0;
+  sobrecarga = f->count > ASS_FLAT_SOBRECARGA;
   escF = f->esc > 0.01f ? f->esc : 1.0f;
   minX = frameW; minY = frameH; maxX = 0; maxY = 0;
   for (i = 0; i < f->count; i++) {
@@ -2327,8 +2338,8 @@ static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiv
     float r, fx, fy;
     if (im->rgba || !im->bitmap || im->w <= 0 || im->h <= 0) return 0;
     if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) return 0;
-    /* Split frames: per image, never flattened. */
-    if (im->esc > 0.01f && fabsf(im->esc - escF) >= 0.01f) return 0;
+    /* Split frames: per image, never flattened, unless overloaded. */
+    if (!sobrecarga && im->esc > 0.01f && fabsf(im->esc - escF) >= 0.01f) return 0;
     if (ass_flat_reamostra(im, escF, &r, &fx, &fy)) {
       x0 = (int)floorf(fx) - 1; y0 = (int)floorf(fy) - 1;
       x1 = (int)ceilf(fx + (float)im->w * r) + 1; y1 = (int)ceilf(fy + (float)im->h * r) + 1;
@@ -2354,7 +2365,7 @@ static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiv
   if (outBytes > 3840u * 2160u * 4u) return 0;
   int highOverdraw = f->count > 24 && sumArea > (size_t)frameW * (size_t)frameH;
   int smallBatch = f->count > 16 && outBytes <= 512u * 1024u;
-  if (!highOverdraw && !smallBatch) return 0;
+  if (!highOverdraw && !smallBatch && !sobrecarga) return 0;
   gama = assperf_gama(); contraste = assperf_contraste();
   memset(&plano, 0, sizeof plano);
   { int *idx = (int *)malloc((size_t)f->count * sizeof *idx);
@@ -2369,7 +2380,7 @@ static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiv
   f->images[0] = plano; f->count = 1; f->bytes = (size_t)plano.w * (size_t)plano.h * 4u;
   { AssCpuImage *novo = (AssCpuImage *)realloc(f->images, sizeof *novo);
     if (novo) f->images = novo; }
-  return 1;
+  return sobrecarga ? 2 : 1;
 }
 
 /* Texture keys only for frames that stay per image (22/11/2026): a flattened
@@ -2860,10 +2871,11 @@ static void *ass_worker_loop(void *unused) {
     pthread_mutex_unlock(&assTrava);
 #if ASS_NOVO
     /* Read atomically: the GL thread writes these when the viewer picks a color. */
-    int flatR = -1;
+    int flatR = -1, imgsAntes = 0;
     if (pronto) {
       clock_gettime(CLOCK_MONOTONIC, &cuT);
       frame.esc = frame.esc > 0.01f ? frame.esc : (float)((double)k * resol);
+      imgsAntes = frame.count;
       flatR = ass_frame_flatten(&frame, lw, lh, __atomic_load_n(&assCorAtiva, __ATOMIC_ACQUIRE));
       cu[CU_FLAT] = ass_ms_desde(&cuT);
       clock_gettime(CLOCK_MONOTONIC, &cuT);
@@ -2898,6 +2910,10 @@ static void *ass_worker_loop(void *unused) {
         cuQuadros++; cuEventos = cuEv; cuAtivos += cuAt;
         if (frame.count > 16 || flatR > 0) assFlatQuadros++;
         if (flatR > 0) assFlatFeitos++;
+        if (flatR == 2) {
+          assSobreQuadros++; assSobreImgsSoma += imgsAntes;
+          if (imgsAntes > assSobreImgsMax) assSobreImgsMax = imgsAntes;
+        }
       }
 #endif
       assUltimoRenderUs = us; }
@@ -3253,6 +3269,7 @@ static GLuint ass_tc_obter(const AssCpuImage *im, unsigned long long chave, int 
     *idx = velha;
     return t->tex;
   }
+  __atomic_add_fetch(&assTcFora, 1L, __ATOMIC_RELAXED);   // [ass] cost: images left out
   return 0;   // tudo em uso agora (raro): a imagem fica de fora deste quadro
 }
 
@@ -4383,13 +4400,17 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
           o += snprintf(b + o, sizeof b - (size_t)o, "%s %s=%.1f/%.1f", ci ? "" : "", cuNome[ci],
                         cuSoma[ci] / (double)cuQuadros, cuMax[ci]);
         printf("[ass] cost (ms avg/max per frame, %ld frames):%s | events=%ld active avg=%.0f index rebuilds=%ld | "
-               "flat=%ld of %ld busy frames | sig cache hits=%ld parses=%ld\n",
+               "flat=%ld of %ld busy frames | overload=%ld of %ld frames (images avg/max %ld/%ld) | "
+               "images left out=%ld | sig cache hits=%ld parses=%ld\n",
                cuQuadros, b, cuEventos, (double)cuAtivos / (double)cuQuadros, idxReconstrucoes,
-               assFlatFeitos, assFlatQuadros, assSigAcertos, assSigCalculos);
+               assFlatFeitos, assFlatQuadros, assSobreQuadros, cuQuadros,
+               assSobreQuadros ? assSobreImgsSoma / assSobreQuadros : 0L, assSobreImgsMax,
+               __atomic_exchange_n(&assTcFora, 0L, __ATOMIC_RELAXED), assSigAcertos, assSigCalculos);
       }
       memset(cuSoma, 0, sizeof cuSoma); memset(cuMax, 0, sizeof cuMax);
       cuQuadros = 0; cuAtivos = 0; idxReconstrucoes = 0;
       assFlatFeitos = assFlatQuadros = 0; assSigAcertos = assSigCalculos = 0;
+      assSobreQuadros = assSobreImgsSoma = assSobreImgsMax = 0;
 #endif
     }
 #if defined(NV_TPK) && ASS_NOVO

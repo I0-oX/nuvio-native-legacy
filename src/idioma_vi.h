@@ -6809,6 +6809,7 @@
   T("Preparando a imagem", "Đang chuẩn bị hình ảnh"),
   T("Preparando conexão segura…", "Preparing secure connection…"),
   T("Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Đang chuẩn bị mã…"),
   T("Preparando o início do vídeo", "Chuẩn bị bắt đầu video"),
   T("Preparando o perfil…", "Đang chuẩn bị hồ sơ…"),

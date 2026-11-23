@@ -784,6 +784,32 @@ static unsigned char *ler(Sess *s, int64_t ini, int64_t fim, long *n, int64_t *t
   return b;
 }
 
+/* A big element in pieces (log 12, 23/11/2026): rede_baixar_trecho64_vigiado
+ * refuses one Range of 4 MB or more, so Fate/strange Fake's 4.4 MB Tracks came
+ * back NULL and its ASS tracks were silently left to the TV ("nothing
+ * hidden"). Reads [ini, fim] in pieces of MF_PEDACO and joins them. */
+#define MF_PEDACO (2L * 1024 * 1024)
+static unsigned char *lerGrande(Sess *s, int64_t ini, int64_t fim, long *n, int *st, int *pedacos) {
+  unsigned char *tudo = NULL;
+  long tot = 0, quer = (long)(fim - ini + 1);
+  *n = 0; *pedacos = 0;
+  if (quer <= 0) return NULL;
+  tudo = (unsigned char *)malloc((size_t)quer);
+  if (!tudo) return NULL;
+  while (tot < quer) {
+    long m = 0, falta = quer - tot, pedir = falta > MF_PEDACO ? MF_PEDACO : falta;
+    unsigned char *p = ler(s, ini + tot, ini + tot + pedir - 1, &m, NULL, st);
+    (*pedacos)++;
+    if (s->cancelar || !p || m <= 0) { free(p); free(tudo); return NULL; }
+    if (m > pedir) m = pedir;
+    memcpy(tudo + tot, p, (size_t)m);
+    free(p);
+    tot += m;
+  }
+  *n = tot;
+  return tudo;
+}
+
 // A legenda de texto de um arquivo com ASS/SSA: le o Tracks e marca as
 // TrackEntry a esconder da TV (mkvfix.h). Antes do estado final.
 static void sondaLegendas(Sess *s, const unsigned char *b, long n, const MkvfixCab *c, int64_t total) {
@@ -807,8 +833,20 @@ static void sondaLegendas(Sess *s, const unsigned char *b, long n, const MkvfixC
       fflush(stdout); free(q); return;
     }
     free(q);
-    q = ler(s, tp, tp + ui + us + tam - 1, &m, NULL, &st);
-    if (s->cancelar || !q) { free(q); return; }
+    { int pedacos = 0;
+      uint64_t t0 = agoraMs();
+      q = lerGrande(s, tp, tp + ui + us + tam - 1, &m, &st, &pedacos);
+      if (s->cancelar) { free(q); return; }
+      if (!q) {
+        printf("[mkvfix] subtitles: Tracks (%lld bytes) not downloaded (HTTP %d, %d piece(s)), subtitle tracks left to the TV\n",
+               (long long)(ui + us + tam), st, pedacos);
+        fflush(stdout); return;
+      }
+      if (pedacos > 1) {
+        printf("[mkvfix] subtitles: Tracks of %lld bytes read in %d pieces (%u ms)\n",
+               (long long)(ui + us + tam), pedacos, (unsigned)(agoraMs() - t0));
+        fflush(stdout);
+      } }
     t = q;
   }
   { uint64_t num[MKVFIX_OCULTAS];

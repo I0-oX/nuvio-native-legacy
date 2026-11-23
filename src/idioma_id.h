@@ -6809,6 +6809,7 @@
   T("Preparando a imagem", "Menyiapkan gambar"),
   T("Preparando conexão segura…", "Preparing secure connection…"),
   T("Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Menyiapkan kode…"),
   T("Preparando o início do vídeo", "Mempersiapkan awal video"),
   T("Preparando o perfil…", "Menyiapkan profil…"),

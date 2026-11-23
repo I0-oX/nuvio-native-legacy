@@ -6809,6 +6809,7 @@
   T("Preparando a imagem", "正在準備畫面"),
   T("Preparando conexão segura…", "Preparing secure connection…"),
   T("Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "正在準備代碼…"),
   T("Preparando o início do vídeo", "準備影片的開頭"),
   T("Preparando o perfil…", "正在準備個人檔案…"),

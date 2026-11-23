@@ -6809,6 +6809,7 @@
   T("Preparando a imagem", "映像を準備中"),
   T("Preparando conexão segura…", "Preparing secure connection…"),
   T("Preparando miniaturas no OpenSeek", "Preparing previews on OpenSeek"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "コードを準備しています…"),
   T("Preparando o início do vídeo", "ビデオの開始を準備する"),
   T("Preparando o perfil…", "プロフィールを準備中…"),
