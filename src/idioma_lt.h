@@ -4316,6 +4316,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "Teikite pirmenybę 4K be pasikartojančių kanalų, rodykite tik 4K arba visas versijas. Rinkitės skiltis su pasiūlymais kanalams be kategorijos ir automatiniu atkūrimu po klaidų."),
   T("Prefira 720p ou 1080p leve.", "Teikti pirmenybę 720p arba lengvam 1080p."),
   T("Preparando a imagem", "Ruošiamas vaizdas"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Ruošiamas kodas…"),
   T("Preparando o perfil…", "Ruošiamas profilis…"),
   T("Preparando seu catálogo…", "Ruošiamas jūsų katalogas…"),

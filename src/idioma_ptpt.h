@@ -4316,6 +4316,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as secções, com sugestões para canais sem categoria e recuperação automática após falhas."),
   T("Prefira 720p ou 1080p leve.", "Prefere 720p ou 1080p leve."),
   T("Preparando a imagem", "A preparar a imagem"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "A preparar o código…"),
   T("Preparando o perfil…", "A preparar o perfil…"),
   T("Preparando seu catálogo…", "A preparar o teu catálogo…"),

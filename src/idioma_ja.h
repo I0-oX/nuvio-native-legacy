@@ -4316,6 +4316,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "重複なしで4Kを優先、4Kのみ、または全バージョンを表示。カテゴリのないチャンネルへの提案や障害後の自動復旧に対応し、セクションを選べます。"),
   T("Prefira 720p ou 1080p leve.", "720p か軽めの 1080p がおすすめです。"),
   T("Preparando a imagem", "映像を準備中"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "コードを準備しています…"),
   T("Preparando o perfil…", "プロフィールを準備中…"),
   T("Preparando seu catálogo…", "カタログを準備しています…"),

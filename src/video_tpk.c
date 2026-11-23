@@ -1554,6 +1554,7 @@ static void tbBombear(void) {
              "a notice asks for OK when TorBox's stream is ready\n", tb.pre ? "opening the original now" : "the original keeps playing");
       fflush(stdout);
       tb.pend = 0; tb.registrando = 1; tb.voltar = 2;
+      tb.aviso = 2;   // log 12 (owner 23/11/2026): say it's on its way, not "not in your TorBox"
       if (tb.pre) tbSoltar("TorBox is registering the re-added file");
       return;
     }

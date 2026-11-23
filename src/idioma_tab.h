@@ -4315,6 +4315,7 @@
   { "Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "Prefer 4K without duplicate channels, show only 4K or all versions. Choose sections, with suggestions for uncategorized channels and automatic recovery after failures." },
   { "Prefira 720p ou 1080p leve.", "Prefer 720p or light 1080p." },
   { "Preparando a imagem", "Preparing the picture" },
+  { "Preparando no TorBox…", "Getting ready in TorBox…" },
   { "Preparando o código…", "Preparing the code…" },
   { "Preparando o perfil…", "Preparing profile…" },
   { "Preparando seu catálogo…", "Getting your catalog ready…" },

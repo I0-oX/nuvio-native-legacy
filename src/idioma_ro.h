@@ -4315,6 +4315,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "Preferă 4K fără canale duplicate, afișează doar 4K sau toate versiunile. Alege secțiuni, cu sugestii pentru canale fără categorie și recuperare automată după erori."),
   T("Prefira 720p ou 1080p leve.", "Preferă 720p sau 1080p ușor."),
   T("Preparando a imagem", "Pregătim imaginea"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Se pregătește codul…"),
   T("Preparando o perfil…", "Se pregătește profilul…"),
   T("Preparando seu catálogo…", "Se pregătește catalogul tău…"),

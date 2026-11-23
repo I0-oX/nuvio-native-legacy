@@ -1586,7 +1586,10 @@ void faixas_atualizar(float dt, Uint32 agora) {
   /* Re-added file ready mid-episode (owner 19/11/2026): a notice; OK switches
    * (player.c). After the switch, Main leaves the ASS track TorBox now burns. */
   { int v = video_tpk_queimar_aviso();
-    if (v == 1) player_toast_ex(i18n("Legenda queimada pronta: aperte OK para trocar"), 20000, "pl_captions", 0); }
+    if (v == 1) player_toast_ex(i18n("Legenda queimada pronta: aperte OK para trocar"), 20000, "pl_captions", 0);
+    /* The file is being registered in TorBox after a re-add (log 12): Nuvio
+     * draws meanwhile and switches (with the notice) when it's ready. */
+    if (v == 2) player_toast_ex(i18n("Preparando no TorBox…"), 6000, "pl_captions", 0); }
   /* The burned picture is on (owner 22/11/2026): Nuvio stops drawing Main
    * whenever it is an embedded ASS track (burned or not); the automatic
    * pick then runs over the non-ASS tracks. */

@@ -4316,6 +4316,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "Utamakan 4K tanpa saluran ganda, tampilkan hanya 4K atau semua versi. Pilih bagian, dengan saran untuk saluran tanpa kategori dan pemulihan otomatis setelah kegagalan."),
   T("Prefira 720p ou 1080p leve.", "Utamakan 720p atau 1080p ringan."),
   T("Preparando a imagem", "Menyiapkan gambar"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Menyiapkan kode…"),
   T("Preparando o perfil…", "Menyiapkan profil…"),
   T("Preparando seu catálogo…", "Menyiapkan katalogmu…"),

@@ -274,12 +274,75 @@ static void teste_dividido(void) {
   ass_frame_liberar(&f);
 }
 
+/* [5] Overload (log 12, Fate Kaleido-subs ~600 images per frame): a split
+ * frame over ASS_FLAT_SOBRECARGA images is flattened, the soft pass resampled
+ * into the text grid, and matches the float composite. A busy normal frame
+ * (57 images, Kaguya ED) stays per image. */
+static void teste_sobrecarga(void) {
+  AssCpuFrame f; int i, x, y, n, maxErr = 0, maxErrA = 0, W, H, minX, minY;
+  AssCpuImage *copia;
+  const float escF = 1.0f;
+  /* 57 split images: unchanged path */
+  memset(&f, 0, sizeof f);
+  n = 57; f.count = n; f.images = calloc((size_t)n, sizeof *f.images); f.esc = escF;
+  for (i = 0; i < n; i++) {
+    AssCpuImage *m = &f.images[i];
+    m->w = 6 + aleat(20); m->h = 2 + aleat(6); m->stride = m->w;
+    m->x = 20 + aleat(600); m->y = 20 + aleat(400);
+    m->color = ((unsigned)aleat(256) << 24) | ((unsigned)aleat(256) << 16) | ((unsigned)aleat(256) << 8);
+    m->type = IMAGE_TYPE_OUTLINE;
+    if (i % 2) m->esc = 0.5f;
+    m->bitmap = malloc((size_t)m->w * (size_t)m->h);
+    memset(m->bitmap, 200, (size_t)m->w * (size_t)m->h);
+  }
+  ok(ass_frame_flatten(&f, 1920, 1080, 0) == 0 && f.count == n, "[5] 57 split images (normal busy scene) stay per image");
+  ass_frame_liberar(&f);
+  /* 600 split images: flattened */
+  memset(&f, 0, sizeof f);
+  n = 600; f.count = n; f.images = calloc((size_t)n, sizeof *f.images); f.esc = escF;
+  copia = calloc((size_t)n, sizeof *copia);
+  for (i = 0; i < n; i++) {
+    AssCpuImage *m = &f.images[i];
+    m->w = 4 + aleat(30); m->h = 1 + aleat(5); m->stride = m->w;
+    m->x = 100 + aleat(300); m->y = 100 + aleat(150);
+    m->color = ((unsigned)aleat(256) << 24) | ((unsigned)aleat(256) << 16) | ((unsigned)aleat(256) << 8) | (unsigned)(aleat(3) ? 0 : 90);
+    m->type = IMAGE_TYPE_OUTLINE;
+    if (i % 2) { m->esc = 0.5f; m->x /= 2; m->y /= 2; }   /* soft pass at 50 %, on its own grid */
+    m->bitmap = malloc((size_t)m->w * (size_t)m->h);
+    for (y = 0; y < m->h; y++) for (x = 0; x < m->w; x++)
+      m->bitmap[(size_t)y * (size_t)m->w + (size_t)x] = (unsigned char)(aleat(4) ? 255 : aleat(256));
+    copia[i] = *m;
+    copia[i].bitmap = malloc((size_t)m->w * (size_t)m->h); memcpy(copia[i].bitmap, m->bitmap, (size_t)m->w * (size_t)m->h);
+  }
+  ok(ass_frame_flatten(&f, 1920, 1080, 0) == 2 && f.count == 1 && f.images[0].rgba,
+     "[5] 600 split images (Fate) flattened to one RGBA image, reported as overload");
+  minX = f.images[0].x; minY = f.images[0].y; W = f.images[0].w; H = f.images[0].h;
+  { float *ref = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H), *got = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H);
+    referencia(copia, n, escF, minX, minY, W, H, ref);
+    compor_camadas(&f, escF, minX, minY, W, H, got);
+    for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+      const float *p = &got[((size_t)y * (size_t)W + (size_t)x) * 4];
+      const float *q = &ref[((size_t)y * (size_t)W + (size_t)x) * 4];
+      int ea = abs((int)lroundf(p[3] * 255.f) - (int)lroundf(q[3] * 255.f));
+      if (ea > maxErrA) maxErrA = ea;
+      if (q[3] > 0.25f && p[3] > 0.25f) for (i = 0; i < 3; i++) { int e = abs((int)lroundf(p[i] * 255.f) - (int)lroundf(q[i] * 255.f)); if (e > maxErr) maxErr = e; }
+    }
+    free(ref); free(got); }
+  { char m[200];
+    snprintf(m, sizeof m, "[5] the overload flatten matches the float composite (alpha off by %d, colour by %d; limit 4/5)", maxErrA, maxErr);
+    ok(maxErrA <= 4 && maxErr <= 5, m); }
+  for (i = 0; i < n; i++) free(copia[i].bitmap);
+  free(copia);
+  ass_frame_liberar(&f);
+}
+
 int main(void) {
   assperf_teste_definir(AP_ESCALA, AP_RES_BAIXO);
   teste_indice();
   teste_assinatura();
   teste_flatten();
   teste_dividido();
+  teste_sobrecarga();
   printf(falhas ? "ass_indice: %d FALHAS\n" : "ass_indice: ok\n", falhas);
   return falhas != 0;
 }

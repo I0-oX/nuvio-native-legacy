@@ -4316,6 +4316,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "4K előnyben ismétlődő csatornák nélkül, csak 4K vagy minden változat. Választható szakaszok, javaslatok a kategória nélküli csatornákhoz és automatikus helyreállítás hibák után."),
   T("Prefira 720p ou 1080p leve.", "A 720p vagy a könnyű 1080p az előnyben részesített."),
   T("Preparando a imagem", "A kép előkészítése"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "A kód előkészítése…"),
   T("Preparando o perfil…", "Profil előkészítése…"),
   T("Preparando seu catálogo…", "A katalógusod előkészítése…"),

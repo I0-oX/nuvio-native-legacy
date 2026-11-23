@@ -469,7 +469,7 @@ typedef struct {
   unsigned geracao;
   // tbburn_readicionar (owner 22/11/2026): straight to the re-add of item
   // readdItem (TorBox sent no video for it), with its hash from the list.
-  int readd, readdItem;
+  int readd, readdItem, readdArq;
   char readdHash[41];
 } Pedido;
 
@@ -626,17 +626,123 @@ static int dormirVivo(const Pedido *p, unsigned ms) {
   return pedidoVivo(p);
 }
 
+/* The file being registered after a re-add (log 12, owner 23/11/2026). A new
+ * Burn in press for the same file used to cancel the wait and look the file up
+ * in lists that didn't have the new torrent yet ("not in your TorBox"). Now a
+ * press joins the wait and asks createstream with the re-added torrent and the
+ * file index from the earlier match (a torrent re-added by its hash keeps its
+ * file list). Under trava. */
+static struct { char url[TBB_URL_MAX]; int torrent, arquivo, usenet; char hash[41]; unsigned em; } reAdd;
+static void reAddGuardar(const char *url, int torrent, int arquivo, int usenet, const char *h) {
+  pthread_mutex_lock(&trava);
+  snprintf(reAdd.url, sizeof reAdd.url, "%s", url);
+  reAdd.torrent = torrent; reAdd.arquivo = arquivo; reAdd.usenet = usenet; reAdd.em = msAgora();
+  snprintf(reAdd.hash, sizeof reAdd.hash, "%.40s", h ? h : "");
+  pthread_mutex_unlock(&trava);
+}
+static void reAddLimpar(void) {
+  pthread_mutex_lock(&trava); reAdd.url[0] = 0; reAdd.torrent = 0; pthread_mutex_unlock(&trava);
+}
+/* 1 = `url` is being registered (re-added less than the whole wait ago). */
+static int reAddPendente(const char *url, int *torrent, int *arquivo, int *usenet, char *h, unsigned *em) {
+  int v;
+  pthread_mutex_lock(&trava);
+  v = reAdd.torrent > 0 && reAdd.url[0] && !strcmp(reAdd.url, url) &&
+      msAgora() - reAdd.em < TBB_READD_TOTAL_MS + TBB_READD_PRIMEIRO_MS;
+  if (v) { *torrent = reAdd.torrent; *arquivo = reAdd.arquivo; *usenet = reAdd.usenet; *em = reAdd.em;
+           snprintf(h, 41, "%s", reAdd.hash); }
+  pthread_mutex_unlock(&trava);
+  return v;
+}
+
+/* Asks TorBox for the re-added file until it answers or the whole wait (since
+ * `desde`) is over: first createstream with the torrent itself (file `arq`),
+ * then the fresh lists by hash/name/size. `espera` = the first sleep (0: ask
+ * now, a press joined). Same results as readicionar. */
+static int esperarRegistro(Pedido *p, int tid, int arq, int us, const char *h, unsigned desde, unsigned espera,
+                           int *item, int *arquivo, int *usenet, char **r, int *st, char *motivo, unsigned mn) {
+  char como[72] = "", rota[512];
+  int tent;
+  *r = NULL; *st = 0;
+  if (!publicar(p->geracao, TBB_ESPERANDO, NULL, "TorBox is registering the re-added file")) return -1;
+  for (tent = 1; ; tent++, espera = TBB_READD_PASSO_MS) {
+    int i2 = 0, f2 = -1, u2 = 0;
+    if (espera && !dormirVivo(p, espera)) return -1;
+    if (!pedidoVivo(p)) return -1;
+    if (msAgora() - desde > TBB_READD_TOTAL_MS + TBB_READD_PRIMEIRO_MS) break;
+    if (arq >= 0) {   // the torrent itself: no list needed
+      tbburn_rota_criar(rota, sizeof rota, tid, arq, us, p->sub, p->audio);
+      *r = debrid_tb_api_get(rota, 30, st);
+      logCorpo("createstream", *st, 0, *r);
+      if (!pedidoVivo(p)) { free(*r); *r = NULL; return -1; }
+      if (*r && *st >= 200 && *st < 300 && !tbburn_eh_item_sumido(*st, *r)) {
+        i2 = tid; f2 = arq; u2 = us; snprintf(como, sizeof como, "re-added torrent");
+        printf("[tbburn] re-add try %d (%u s): asked with torrent %d, file %d: TorBox answered\n",
+               tent, (msAgora() - desde) / 1000u, tid, arq);
+        fflush(stdout);
+        goto achou;
+      }
+      if (tbburn_eh_recusa_plano(*st, *r)) return 1;   // the caller reports the plan refusal
+      { int sumido = tbburn_eh_item_sumido(*st, *r);
+        printf("[tbburn] re-add try %d (%u s): asked with torrent %d, file %d: %s (HTTP %d)\n",
+               tent, (msAgora() - desde) / 1000u, tid, arq,
+               sumido ? "not registered yet" : "no stream, looking in the fresh lists", *st);
+        fflush(stdout);
+        free(*r); *r = NULL;
+        /* Not registered yet: the lists (13 MB each) can't have it either. */
+        if (sumido) continue; }
+    }
+    if (!partes_achar_exato_fresco(p->url, h, p->arquivo, p->bytes, &i2, &f2, &u2, como, sizeof como)) {
+      printf("[tbburn] re-add try %d (%u s): not in your fresh TorBox lists yet\n", tent, (msAgora() - desde) / 1000u);
+      fflush(stdout);
+      continue;
+    }
+    tbburn_rota_criar(rota, sizeof rota, i2, f2, u2, p->sub, p->audio);
+    *r = debrid_tb_api_get(rota, 30, st);
+    logCorpo("createstream", *st, 0, *r);
+    if (!pedidoVivo(p)) { free(*r); *r = NULL; return -1; }
+    if (tbburn_eh_item_sumido(*st, *r) && !tbburn_eh_recusa_plano(*st, *r)) {
+      printf("[tbburn] re-add try %d (%u s): item %d is listed but TorBox still says ITEM_NOT_FOUND\n",
+             tent, (msAgora() - desde) / 1000u, i2);
+      fflush(stdout);
+      free(*r); *r = NULL;
+      continue;
+    }
+    printf("[tbburn] re-add try %d (%u s): TorBox answered for item %d, file %d (by %s)\n",
+           tent, (msAgora() - desde) / 1000u, i2, f2, como);
+    fflush(stdout);
+  achou:
+    *item = i2; *arquivo = f2; *usenet = u2;
+    reAddLimpar();
+    { char chave[TBB_CHAVE];
+      tbburn_chave(chave, sizeof chave, p->url, p->hash, p->arquivo, p->bytes);
+      pthread_mutex_lock(&trava);
+      snprintf(ids.url, sizeof ids.url, "%s", p->url);
+      ids.item = i2; ids.arquivo = f2; ids.usenet = u2; ids.achou = ids.procurou = 1;
+      snprintf(ids.como, sizeof ids.como, "re-added (%.40s)", como);
+      snprintf(ids.hash, sizeof ids.hash, "%.40s", h);
+      if (chave[0]) cedoGuardar(chave, 1, i2, f2, u2, ids.como, h);
+      pthread_mutex_unlock(&trava); }
+    return 1;
+  }
+  reAddLimpar();
+  printf("[tbburn] re-add: TorBox did not register the file in %u min: Nuvio draws the subtitle\n", TBB_READD_TOTAL_MS / 60000u);
+  fflush(stdout);
+  snprintf(motivo, mn, "TorBox did not register the re-added file");
+  return 0;
+}
+
 /* 1 = a createstream answer for the re-added file is in *r / *st (the caller
  * goes on as usual: plan, playlist...); 0 = no: `motivo` says why; -1 = the
  * request was cancelled (nothing to publish). `itemVelho` 0 = the file was in
  * no list at all (then only the add-on's hash can add it). */
-static int readicionar(Pedido *p, int itemVelho, const char *hashVelho, int *item, int *arquivo, int *usenet,
+static int readicionar(Pedido *p, int itemVelho, int arqVelho, const char *hashVelho, int *item, int *arquivo, int *usenet,
                        char **r, int *st, char *motivo, unsigned mn) {
-  char h[48] = "", como[72] = "", rota[512];
+  char h[48] = "", como[72] = "";
   // A file TorBox sent no video for is still listed: the first check waits a
   // full step, so TorBox has time to register it again (owner 22/11/2026).
   unsigned t0, espera = p->readd ? TBB_READD_PASSO_MS : TBB_READD_PRIMEIRO_MS;
-  int tid, tent;
+  int tid;
   *r = NULL; *st = 0;
   if (strlen(p->hash) == 40) {
     for (int i = 0; i <= 40; i++) h[i] = (char)tolower((unsigned char)p->hash[i]);
@@ -673,47 +779,12 @@ static int readicionar(Pedido *p, int itemVelho, const char *hashVelho, int *ite
          "stream every %u s for up to %u min; the original plays with Nuvio's subtitles meanwhile\n",
          tid, TBB_READD_PASSO_MS / 1000u, TBB_READD_TOTAL_MS / 60000u);
   fflush(stdout);
-  if (!publicar(p->geracao, TBB_ESPERANDO, NULL, "TorBox is registering the re-added file")) return -1;
   t0 = msAgora();
-  for (tent = 1; ; tent++, espera = TBB_READD_PASSO_MS) {
-    int i2 = 0, f2 = -1, u2 = 0;
-    if (!dormirVivo(p, espera)) return -1;
-    if (msAgora() - t0 > TBB_READD_TOTAL_MS + TBB_READD_PRIMEIRO_MS) break;
-    if (!partes_achar_exato_fresco(p->url, h, p->arquivo, p->bytes, &i2, &f2, &u2, como, sizeof como)) {
-      printf("[tbburn] re-add try %d (%u s): not in your fresh TorBox lists yet\n", tent, (msAgora() - t0) / 1000u);
-      fflush(stdout);
-      continue;
-    }
-    tbburn_rota_criar(rota, sizeof rota, i2, f2, u2, p->sub, p->audio);
-    *r = debrid_tb_api_get(rota, 30, st);
-    logCorpo("createstream", *st, 0, *r);
-    if (!pedidoVivo(p)) { free(*r); *r = NULL; return -1; }
-    if (tbburn_eh_item_sumido(*st, *r) && !tbburn_eh_recusa_plano(*st, *r)) {
-      printf("[tbburn] re-add try %d (%u s): item %d is listed but TorBox still says ITEM_NOT_FOUND\n",
-             tent, (msAgora() - t0) / 1000u, i2);
-      fflush(stdout);
-      free(*r); *r = NULL;
-      continue;
-    }
-    printf("[tbburn] re-add try %d (%u s): TorBox answered for item %d, file %d (by %s)\n",
-           tent, (msAgora() - t0) / 1000u, i2, f2, como);
-    fflush(stdout);
-    *item = i2; *arquivo = f2; *usenet = u2;
-    { char chave[TBB_CHAVE];
-      tbburn_chave(chave, sizeof chave, p->url, p->hash, p->arquivo, p->bytes);
-      pthread_mutex_lock(&trava);
-      snprintf(ids.url, sizeof ids.url, "%s", p->url);
-      ids.item = i2; ids.arquivo = f2; ids.usenet = u2; ids.achou = ids.procurou = 1;
-      snprintf(ids.como, sizeof ids.como, "re-added (%.40s)", como);
-      snprintf(ids.hash, sizeof ids.hash, "%.40s", h);
-      if (chave[0]) cedoGuardar(chave, 1, i2, f2, u2, ids.como, h);
-      pthread_mutex_unlock(&trava); }
-    return 1;
-  }
-  printf("[tbburn] re-add: TorBox did not register the file in %u min: Nuvio draws the subtitle\n", TBB_READD_TOTAL_MS / 60000u);
-  fflush(stdout);
-  snprintf(motivo, mn, "TorBox did not register the re-added file");
-  return 0;
+  /* The re-added torrent keeps the file list of the item that left: the
+   * file index from that match asks for it directly (no list lag). */
+  reAddGuardar(p->url, tid, itemVelho > 0 ? arqVelho : -1, *usenet, h);
+  return esperarRegistro(p, tid, itemVelho > 0 ? arqVelho : -1, *usenet, h, t0, espera,
+                         item, arquivo, usenet, r, st, motivo, mn);
 }
 
 static void *trabalhar(void *arg) {
@@ -727,7 +798,7 @@ static void *trabalhar(void *arg) {
     printf("[tbburn] TorBox sent no video for item %d: re-adding it to your TorBox (hash %s)\n", p->readdItem,
            strlen(p->hash) == 40 ? "from the add-on" : p->readdHash[0] ? "from TorBox's list" : "looked up");
     fflush(stdout);
-    v = readicionar(p, p->readdItem, p->readdHash, &item, &arquivo, &usenet, &r, &st, motivo, sizeof motivo);
+    v = readicionar(p, p->readdItem, p->readdArq, p->readdHash, &item, &arquivo, &usenet, &r, &st, motivo, sizeof motivo);
     if (v <= 0) {
       if (!v) publicar(p->geracao, TBB_FALHOU, NULL, motivo);
       free(r); free(p);
@@ -735,6 +806,21 @@ static void *trabalhar(void *arg) {
     }
     goto resposta;
   }
+  { int tid = 0, arq = -1, us = 0; char h[41] = ""; unsigned desde = 0;
+    if (reAddPendente(p->url, &tid, &arq, &us, h, &desde)) {
+      char motivo[96] = "TorBox is registering the re-added file";
+      int v;
+      printf("[tbburn] press during registering: joined the wait for torrent %d (re-added %u s ago); asking with it now\n",
+             tid, (msAgora() - desde) / 1000u);
+      fflush(stdout);
+      v = esperarRegistro(p, tid, arq, us, h, desde, 0, &item, &arquivo, &usenet, &r, &st, motivo, sizeof motivo);
+      if (v <= 0) {
+        if (!v) publicar(p->geracao, TBB_FALHOU, NULL, motivo);
+        free(r); free(p);
+        return NULL;
+      }
+      goto resposta;
+    } }
   if (!pegarIds(p, &item, &arquivo, &usenet, como, sizeof como)) {
     char motivo[96] = "file not in your TorBox";
     int v;
@@ -743,7 +829,7 @@ static void *trabalhar(void *arg) {
     fflush(stdout);
     /* Owner 19/11/2026: the add-on side adds and removes the torrent; with
      * its hash Nuvio adds it back (cached only). */
-    v = strlen(p->hash) == 40 ? readicionar(p, 0, NULL, &item, &arquivo, &usenet, &r, &st, motivo, sizeof motivo) : 0;
+    v = strlen(p->hash) == 40 ? readicionar(p, 0, -1, NULL, &item, &arquivo, &usenet, &r, &st, motivo, sizeof motivo) : 0;
     if (v <= 0) {
       if (!v) publicar(p->geracao, TBB_FALHOU, NULL, motivo);
       free(p);
@@ -782,7 +868,7 @@ static void *trabalhar(void *arg) {
              achou2 ? "the fresh list has the same item TorBox just refused" : "not in your TorBox's fresh lists either", msAgora() - t2);
       fflush(stdout);
       free(r); r = NULL;
-      v = readicionar(p, item, hVelho, &item, &arquivo, &usenet, &r, &st, motivo, sizeof motivo);
+      v = readicionar(p, item, arquivo, hVelho, &item, &arquivo, &usenet, &r, &st, motivo, sizeof motivo);
       if (v <= 0) {
         if (!v) publicar(p->geracao, TBB_FALHOU, NULL, motivo);
         free(r); free(p);
@@ -900,7 +986,7 @@ void tbburn_readicionar(const char *url, int sub, int audio) {
   }
   p->readd = 1;
   if (ids.achou && !strcmp(ids.url, url)) {
-    p->readdItem = ids.item;
+    p->readdItem = ids.item; p->readdArq = ids.arquivo;
     snprintf(p->readdHash, sizeof p->readdHash, "%s", ids.hash);
   }
   { char chave[TBB_CHAVE];   // the next request looks the file up again

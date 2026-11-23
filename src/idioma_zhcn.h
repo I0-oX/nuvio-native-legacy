@@ -4316,6 +4316,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "优先4K且不重复频道，只显示4K或所有版本。可选择分区，为未分类频道提供建议，并在故障后自动恢复。"),
   T("Prefira 720p ou 1080p leve.", "建议选 720p 或较轻的 1080p。"),
   T("Preparando a imagem", "正在准备画面"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "正在准备代码…"),
   T("Preparando o perfil…", "正在准备个人资料…"),
   T("Preparando seu catálogo…", "正在准备你的片库…"),

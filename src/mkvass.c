@@ -1453,6 +1453,70 @@ static const char *linhaCache(const char **p, size_t *n) {
 // Nenhum Range, renderer ou lock da UI e chamado dentro desta trava.
 static pthread_mutex_t cacheTrava = PTHREAD_MUTEX_INITIALIZER;
 
+/* The attached fonts of the last file, in memory (log 12, owner 23/11/2026).
+ * A second pick on the same file (another track, or the same one again)
+ * downloaded the fonts again and loaded its document twice: once before the
+ * fonts (Arial) and once after, 300-500 ms of frozen app each. With the fonts
+ * already here, the first delivery has them: one load. One file at a time
+ * (cleared by the next file), at most MKVASS_MEMFONTES_MAX. Under cacheTrava. */
+#ifndef MKVASS_MEMFONTES_MAX
+#define MKVASS_MEMFONTES_MAX (32L * 1024 * 1024)
+#endif
+static struct { unsigned long long chave; FonteMkv *f; int n; long bytes; } memFontes;
+static unsigned long long chaveArquivo(const char *url) {
+  unsigned long long h = 1469598103934665603ULL;
+  const unsigned char *p = (const unsigned char *)(url ? url : "");
+  while (*p) { h ^= *p++; h *= 1099511628211ULL; }
+  return h ? h : 1;
+}
+static void memFontesSoltar_locked(void) {
+  for (int i = 0; i < memFontes.n; i++) { free(memFontes.f[i].nome); free(memFontes.f[i].dados); }
+  free(memFontes.f); memFontes.f = NULL; memFontes.n = 0; memFontes.bytes = 0; memFontes.chave = 0;
+}
+/* Keeps a copy of `f`'s fonts for its file. */
+static void memFontesGuardar(const Fio *f, const char *url) {
+  long tot = 0; int i;
+  FonteMkv *c;
+  if (!f->fontesCompletas || f->nFontes <= 0) return;
+  for (i = 0; i < f->nFontes; i++) tot += f->fontes[i].tam;
+  if (tot > MKVASS_MEMFONTES_MAX) return;
+  c = calloc((size_t)f->nFontes, sizeof *c);
+  if (!c) return;
+  for (i = 0; i < f->nFontes; i++) {
+    c[i].nome = strdup(f->fontes[i].nome); c[i].dados = malloc((size_t)f->fontes[i].tam); c[i].tam = f->fontes[i].tam;
+    if (!c[i].nome || !c[i].dados) {
+      for (int k = 0; k <= i; k++) { free(c[k].nome); free(c[k].dados); }
+      free(c); return;
+    }
+    memcpy(c[i].dados, f->fontes[i].dados, (size_t)f->fontes[i].tam);
+  }
+  pthread_mutex_lock(&cacheTrava);
+  memFontesSoltar_locked();
+  memFontes.chave = chaveArquivo(url); memFontes.f = c; memFontes.n = f->nFontes; memFontes.bytes = tot;
+  pthread_mutex_unlock(&cacheTrava);
+}
+/* 1 = `f` got the fonts of its file from memory (no download). */
+static int memFontesPegar(Fio *f, const char *url) {
+  int ok = 0, i;
+  pthread_mutex_lock(&cacheTrava);
+  if (memFontes.n > 0 && memFontes.chave == chaveArquivo(url)) {
+    FonteMkv *c = calloc((size_t)memFontes.n, sizeof *c);
+    if (c) {
+      for (i = 0; i < memFontes.n; i++) {
+        c[i].nome = strdup(memFontes.f[i].nome); c[i].dados = malloc((size_t)memFontes.f[i].tam); c[i].tam = memFontes.f[i].tam;
+        if (!c[i].nome || !c[i].dados) break;
+        memcpy(c[i].dados, memFontes.f[i].dados, (size_t)c[i].tam);
+      }
+      if (i == memFontes.n) {
+        liberarFontes(f);
+        f->fontes = c; f->nFontes = memFontes.n; ok = 1;
+      } else { for (int k = 0; k <= i && k < memFontes.n; k++) { free(c[k].nome); free(c[k].dados); } free(c); }
+    }
+  }
+  pthread_mutex_unlock(&cacheTrava);
+  return ok;
+}
+
 static int lerFontesSidecar(Fio *f) {
   char *cache = dados_ler(f->sidecarFontes);
   const char *p; size_t linhaN, cacheN; long count, i, total = 0;
@@ -1894,6 +1958,7 @@ static int lerCabecalho(Fio *f) {
       achouAttachments = lerAttachments(f, p + o, tam);
       if (!achouAttachments) { free(p); return MKVASS_NOGO_REDE; }
       f->fontesCompletas = 1;
+      memFontesGuardar(f, f->urlOrig);
     }
     else if (id == ID_CLUSTER) { f->primeiroCluster = o - ui - ut; break; }
     o += tam;
@@ -1921,6 +1986,11 @@ static int lerCabecalho(Fio *f) {
   // o anexo inteiro (#92, v1.4.7: 5,6 MB cortados em 11929 bytes, quatro vezes).
   // Na pre-busca com o video ainda fechado sai em paralelo mesmo assim: nao ha
   // video para disputar a conexao, e depois dele e que o CDN do relato cortava.
+  if (!achouAttachments && !f->fontesCompletas && f->posAttachments >= 0 && memFontesPegar(f, f->urlOrig)) {
+    f->fontesCompletas = 1; f->fontesPasso = 3;
+    printf("[mkvass] fonts of this file already here: %d, no download (one load)\n", f->nFontes);
+    fflush(stdout);
+  }
   if (!achouAttachments && !f->fontesCompletas && f->posAttachments >= 0) {
     if (foraDoTeto(f)) {
       f->jobFontes = submeter(f, f->posAttachments, 64);
@@ -2047,6 +2117,7 @@ static int avancarFontes(Fio *f, int esperar) {
     if (!ok) goto falhou;
   }
   f->fontesCompletas = 1;
+  memFontesGuardar(f, f->urlOrig);
   // A proxima entrega e "primeira" de novo: limpa, passa as fontes, recarrega.
   // Tambem numa retomada (herdar): o fio anterior pode ter caido antes das
   // fontes. Orfao (entregas < 0) continua orfao.
@@ -3487,6 +3558,41 @@ static void entregarImagens(Fio *f) {
   soltarPendentes(f);
 }
 
+/* A big first document waits for the attached fonts (log 12, owner
+ * 23/11/2026): a 7231-event partial sidecar was loaded before the fonts and
+ * again after them, freezing the app 510 + 353 ms. Waits at most
+ * MKVASS_ESPERA_FONTES_MS (then delivers as before); small first deliveries
+ * still go at once so the first lines show fast. Fio thread. */
+#ifndef MKVASS_GRANDE_EVENTOS
+#define MKVASS_GRANDE_EVENTOS 1000
+#endif
+#ifndef MKVASS_ESPERA_FONTES_MS
+#define MKVASS_ESPERA_FONTES_MS 1500L
+#endif
+static void esperarFontesGrande(Fio *f) {
+  long t0;
+  if (f->fontesCompletas || f->fontesFalharam || f->primeiraFala || f->eventosEntregues > 0 || f->prebusca) return;
+  if (f->nColhidos < MKVASS_GRANDE_EVENTOS) return;
+  if (f->fontesPasso != 1 && f->fontesPasso != 2 && f->fontesPasso != 4 && f->fontesPasso != 5) return;
+  t0 = agoraMs();
+  while (!f->fontesCompletas && !f->fontesFalharam && agoraMs() - t0 < MKVASS_ESPERA_FONTES_MS && minhaVez(f)) {
+    if (f->fontesPasso == 4 || f->fontesPasso == 5) {   // deferred: ask now (one connection: nothing else in flight)
+      if (f->fontesPasso == 4) { f->jobFontes = submeter(f, f->posAttachments, 64); f->fontesPasso = 1; }
+      else { f->jobFontes = submeter(f, f->fontesDadosIni, f->fontesCabN); f->fontesPasso = 2; }
+      if (!f->jobFontes) { f->fontesPasso = 3; break; }
+    }
+    if ((f->fontesPasso == 1 || f->fontesPasso == 2) && f->jobFontes && jobPronto(f->jobFontes)) {
+      (void)avancarFontes(f, 1);
+      continue;
+    }
+    if (f->fontesPasso != 1 && f->fontesPasso != 2) break;
+    { struct timespec t = { 0, 20000000L }; nanosleep(&t, NULL); }
+  }
+  printf("[mkvass] big document (%d blocks) waited %ld ms for the attached fonts: %s\n", f->nColhidos, agoraMs() - t0,
+         f->fontesCompletas ? "one load" : "not here yet, loading without them (a second load follows)");
+  fflush(stdout);
+}
+
 static void entregar(Fio *f) {
   int n;
   // O snapshot independe da adocao/dono do overlay, inclusive na pre-busca.
@@ -3506,6 +3612,7 @@ static void entregar(Fio *f) {
   // Orfao (a legenda trocou de dono): nem reparseia. A colheita segue para o
   // sidecar, que a proxima escolha desta faixa aproveita.
   if (f->entregas < 0) { f->sujo = 0; return; }
+  esperarFontesGrande(f);
   if (!entregarCorpoSeAtual(f, f->corpo)) return;
   f->sujo = 0; f->ultEntrega = agoraMs();
   n = contarEventos(f);

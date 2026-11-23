@@ -4316,6 +4316,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "Προτιμήστε 4K χωρίς διπλά κανάλια, δείτε μόνο 4K ή όλες τις εκδόσεις. Επιλέξτε ενότητες, με προτάσεις για κανάλια χωρίς κατηγορία και αυτόματη ανάκτηση μετά από σφάλματα."),
   T("Prefira 720p ou 1080p leve.", "Προτίμησε 720p ή ελαφρύ 1080p."),
   T("Preparando a imagem", "Προετοιμασία εικόνας"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Προετοιμασία του κωδικού…"),
   T("Preparando o perfil…", "Προετοιμασία προφίλ…"),
   T("Preparando seu catálogo…", "Προετοιμασία του καταλόγου σου…"),

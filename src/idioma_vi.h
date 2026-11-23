@@ -4316,6 +4316,7 @@
   T("Prefira 4K sem repetir canais, mostre só 4K ou todas as versões. Escolha as seções, com sugestões para canais sem categoria e recuperação automática após falhas.", "Ưu tiên 4K không trùng kênh, chỉ hiện 4K hoặc mọi phiên bản. Chọn mục, với gợi ý cho kênh chưa có danh mục và tự động khôi phục sau lỗi."),
   T("Prefira 720p ou 1080p leve.", "Nên chọn 720p hoặc 1080p nhẹ."),
   T("Preparando a imagem", "Đang chuẩn bị hình ảnh"),
+  T("Preparando no TorBox…", "Getting ready in TorBox…"),
   T("Preparando o código…", "Đang chuẩn bị mã…"),
   T("Preparando o perfil…", "Đang chuẩn bị hồ sơ…"),
   T("Preparando seu catálogo…", "Đang chuẩn bị danh mục của bạn…"),
