@@ -50,8 +50,21 @@ enum {
    * update less often, each on time); 1 Auto = every frame while the render
    * peak fits in 80 % of a video frame; 2 On = every frame always. (0) */
   AP_TODOS,
+  /* KeijoMika's ass-minimal (owner 23/11/2026): each renderer difference of
+   * ours as a row, so his build can be reproduced here. 0 = ours (default),
+   * 1 = his, except AP_PEQ100 (1 = ours). The "Renderer preset" row of the
+   * Style sheet sets them all at once (assperf_preset). */
+  AP_DIVIDIDO,     // busy split frames: 0 composited into per-pass layers; 1 per image (texture cache)
+  AP_POSINT,       // merged frames: 0 sub-pixel offsets exact (resampled); 1 whole pixel
+  AP_HINT,         // authored ASS hinting: 0 none; 1 light
+  AP_CACHEP,       // caches: 0 large (22/11); 1 small (libass 32/24 MB, rigid 384 / 32 MB, textures 768 / 24 MB, queue 24 MB)
+  AP_PEQ100,       // scripts of 540 lines or fewer at 100 % text in the Autos: 1 on; 0 off
   AP_N
 };
+/* The Renderer preset (owner 23/11/2026): 0 Nuvio (ours), 1 KeijoMika (his),
+ * 2 Custom (the rows mixed). assperf_preset_definir takes 0 or 1. */
+int  assperf_preset(void);
+void assperf_preset_definir(int p);
 
 /* AP_ESCALA values (owner 22/11/2026): three Autos and Custom auto, all at
  * 100 % in quiet scenes; while busy the text and the blur are drawn at their

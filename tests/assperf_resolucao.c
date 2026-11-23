@@ -57,6 +57,20 @@ int main(void) {
   assperf_grade_definir(1080, 480);
   modo(AP_RES_ALTO, &tx, &bl, &d);
   OK(d && tx == 1.0 && PERTO(bl, 480.0 * 2.0 / 1080.0), "High, 1080 UI, 480p: text 100, blur 88.9 (f 2)");
+  /* Small scripts at 100 % Off (owner 23/11/2026, KeijoMika's build): the Auto's own text scale. */
+  assperf_teste_definir(AP_PEQ100, 0);
+  modo(AP_RES_ALTO, &tx, &bl, &d);
+  OK(d && PERTO(tx, AP_ALTO_TEXTO), "High, 480p, Small scripts at 100 % Off: text 90");
+  assperf_teste_definir(AP_PEQ100, 1);
+  /* Renderer preset: Nuvio (defaults) / KeijoMika (his rows) / Custom (mixed). */
+  OK(assperf_preset() == 0, "preset: the defaults are Nuvio");
+  assperf_preset_definir(1);
+  OK(assperf_preset() == 1 && assperf_get(AP_DIVIDIDO) == 1 && assperf_get(AP_POSINT) == 1 && assperf_get(AP_HINT) == 1 &&
+     assperf_get(AP_CACHEP) == 1 && assperf_get(AP_PEQ100) == 0, "preset KeijoMika: his rows");
+  assperf_teste_definir(AP_HINT, 0);
+  OK(assperf_preset() == 2, "preset: one row changed reads Custom");
+  assperf_preset_definir(0);
+  OK(assperf_preset() == 0 && assperf_get(AP_DIVIDIDO) == 0 && assperf_get(AP_PEQ100) == 1, "preset Nuvio: our rows back");
 
   /* Custom auto: the rows, a clean pick follows the script. */
   assperf_grade_definir(2160, 1080);

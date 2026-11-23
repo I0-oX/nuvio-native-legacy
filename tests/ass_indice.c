@@ -278,11 +278,70 @@ static void teste_flatten(void) {
   }
 }
 
+/* [4] The KeijoMika rows (owner 23/11/2026). Split frames = Per image: a split
+ * frame is never flattened. Merged positions = Whole pixel: a sub-pixel image
+ * lands where its whole-pixel copy would. */
+static void teste_linhas(void) {
+  AssCpuFrame f; int i, x, y;
+  for (int caso = 0; caso < 2; caso++) {
+    AssCpuImage copia[24];
+    float escF = 0.5f;
+    memset(&f, 0, sizeof f);
+    f.count = 24; f.images = calloc(24, sizeof *f.images); f.esc = escF;
+    for (i = 0; i < 24; i++) {
+      AssCpuImage *m = &f.images[i];
+      m->w = 20 + aleat(60); m->h = 8 + aleat(40); m->stride = m->w;
+      m->x = 20 + aleat(300); m->y = 20 + aleat(200);
+      m->color = ((unsigned)aleat(256) << 24) | ((unsigned)aleat(256) << 16) | ((unsigned)aleat(256) << 8);
+      m->type = IMAGE_TYPE_OUTLINE;
+      if (caso == 0 && i % 3 == 0) m->esc = 0.4f;
+      if (caso == 1 && i % 2 == 1) { m->subX = 0.37f; m->subY = 0.61f; }
+      m->bitmap = malloc((size_t)m->w * (size_t)m->h);
+      for (y = 0; y < m->h; y++) for (x = 0; x < m->w; x++)
+        m->bitmap[(size_t)y * (size_t)m->w + (size_t)x] = (unsigned char)((x == 0 || y == 0 || x == m->w - 1 || y == m->h - 1) ? 0 : aleat(4) ? 255 : aleat(256));
+      copia[i] = *m; copia[i].subX = copia[i].subY = 0.0f;
+      copia[i].bitmap = malloc((size_t)m->w * (size_t)m->h); memcpy(copia[i].bitmap, m->bitmap, (size_t)m->w * (size_t)m->h);
+    }
+    if (caso == 0) {
+      assperf_teste_definir(AP_DIVIDIDO, 1);
+      ok(ass_frame_flatten(&f, 960, 540, 0) == 0 && f.count == 24 && !f.images[0].rgba, "[4] Split frames Per image: a split frame stays per image");
+      assperf_teste_definir(AP_DIVIDIDO, 0);
+    } else {
+      int maxE = 0, res, W, H, minX = 1 << 30, minY = 1 << 30, x1 = 0, y1 = 0;
+      assperf_teste_definir(AP_POSINT, 1);
+      res = ass_frame_flatten(&f, 960, 540, 0);
+      assperf_teste_definir(AP_POSINT, 0);
+      ok(res == 1 && f.count == 1 && f.images[0].rgba, "[4] Merged positions Whole pixel: flattened to one image");
+      for (i = 0; i < 24; i++) {
+        if (copia[i].x < minX) minX = copia[i].x;
+        if (copia[i].y < minY) minY = copia[i].y;
+        if (copia[i].x + copia[i].w > x1) x1 = copia[i].x + copia[i].w;
+        if (copia[i].y + copia[i].h > y1) y1 = copia[i].y + copia[i].h;
+      }
+      W = x1 - minX; H = y1 - minY;
+      { float *ref = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H), *got = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H);
+        referencia(copia, 24, escF, minX, minY, W, H, ref);
+        compor_camadas(&f, escF, minX, minY, W, H, got);
+        for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+          int e = abs((int)lroundf(got[((size_t)y * (size_t)W + (size_t)x) * 4 + 3] * 255.f) -
+                      (int)lroundf(ref[((size_t)y * (size_t)W + (size_t)x) * 4 + 3] * 255.f));
+          if (e > maxE) maxE = e;
+        }
+        free(ref); free(got); }
+      { char m[160]; snprintf(m, sizeof m, "[4] Merged positions Whole pixel: matches the whole-pixel composite (alpha off by %d, limit 4)", maxE);
+        ok(maxE <= 4, m); }
+    }
+    for (i = 0; i < 24; i++) free(copia[i].bitmap);
+    ass_frame_liberar(&f);
+  }
+}
+
 int main(void) {
   assperf_teste_definir(AP_ESCALA, AP_RES_BAIXO);
   teste_indice();
   teste_assinatura();
   teste_flatten();
+  teste_linhas();
   printf(falhas ? "ass_indice: %d FALHAS\n" : "ass_indice: ok\n", falhas);
   return falhas != 0;
 }

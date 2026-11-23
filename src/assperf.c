@@ -21,7 +21,15 @@ static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
   [AP_TXTRES] = { "txtres", 25, 100, 100 }, [AP_BLURRES] = { "blurres", 25, AP_LIMPO_BASE + AP_LIMPO_N, 50 },
   [AP_TODOS] = { "todos_quadros", 0, 2, 0 },
+  [AP_DIVIDIDO] = { "divididos", 0, 1, 0 }, [AP_POSINT] = { "pos_inteira", 0, 1, 0 },
+  [AP_HINT] = { "hinting", 0, 1, 0 }, [AP_CACHEP] = { "caches_pequenos", 0, 1, 0 },
+  [AP_PEQ100] = { "pequenos_100", 0, 1, 1 },
 };
+/* The rows the Renderer preset sets: ours / KeijoMika's ass-minimal (23/11). */
+static const struct { int id, nosso, dele; } PRESET[] = {
+  { AP_DIVIDIDO, 0, 1 }, { AP_POSINT, 0, 1 }, { AP_HINT, 0, 1 }, { AP_CACHEP, 0, 1 }, { AP_PEQ100, 1, 0 },
+};
+#define PRESET_N ((int)(sizeof PRESET / sizeof PRESET[0]))
 
 static int val[AP_N] __attribute__((unused));   // read off the .tpk only by the tests
 static int iniciado;
@@ -102,6 +110,9 @@ void assperf_iniciar(void) {
 #ifdef NV_ASSPERF_TESTE
 /* Tests on the computer (no NV_TPK): set the person's options without a file. */
 void assperf_teste_definir(int id, int v) {
+  /* The first call starts from the defaults, like the file-less .tpk
+   * (23/11/2026: AP_PEQ100's default is 1). */
+  if (!__atomic_load_n(&iniciado, __ATOMIC_ACQUIRE)) { int i; for (i = 0; i < AP_N; i++) val[i] = PESSOA[i].padrao; }
   __atomic_store_n(&iniciado, 1, __ATOMIC_RELEASE);
   if (id >= 0 && id < AP_N) { val[id] = v; __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL); }
 }
@@ -147,6 +158,34 @@ void assperf_restaurar(void) {
   gravar();
   pthread_mutex_unlock(&trava);
   __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
+#endif
+}
+
+int assperf_preset(void) {
+  int i, nosso = 1, dele = 1;
+  for (i = 0; i < PRESET_N; i++) {
+    int v = assperf_get(PRESET[i].id);
+    if (v != PRESET[i].nosso) nosso = 0;
+    if (v != PRESET[i].dele) dele = 0;
+  }
+  return nosso ? 0 : dele ? 1 : 2;
+}
+void assperf_preset_definir(int p) {
+#if defined(NV_TPK) || defined(NV_ASSPERF_TESTE)
+  int i;
+  if (p != 0 && p != 1) return;
+#ifdef NV_TPK
+  assperf_iniciar();
+  pthread_mutex_lock(&trava);
+  for (i = 0; i < PRESET_N; i++) __atomic_store_n(&val[PRESET[i].id], p ? PRESET[i].dele : PRESET[i].nosso, __ATOMIC_RELAXED);
+  gravar();
+  pthread_mutex_unlock(&trava);
+  __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
+#else
+  for (i = 0; i < PRESET_N; i++) assperf_teste_definir(PRESET[i].id, p ? PRESET[i].dele : PRESET[i].nosso);
+#endif
+#else
+  (void)p;
 #endif
 }
 
@@ -348,7 +387,7 @@ static void escalas_reduzidas(int v, double *texto, double *blur) {
     *blur = assperf_blurres_escala(assperf_get(AP_BLURRES));
     return;
   }
-  if (pry <= 540) { *texto = 1.0; *blur = blur_limpo(1.0 + 1e-6, 1.0); return; }
+  if (pry <= 540 && assperf_get(AP_PEQ100)) { *texto = 1.0; *blur = blur_limpo(1.0 + 1e-6, 1.0); return; }
   if (v == AP_RES_ALTO) { *texto = AP_ALTO_TEXTO; *blur = blur_limpo(AP_ALTO_BLUR, AP_BLUR_TETO); }
   else if (v == AP_RES_MEDIO) { *texto = AP_MEDIO_TEXTO; *blur = blur_limpo(AP_MEDIO_BLUR, AP_BLUR_TETO); }
   else {

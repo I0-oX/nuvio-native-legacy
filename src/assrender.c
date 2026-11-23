@@ -227,7 +227,9 @@ static unsigned assEpoch;
  * Sem hold a fila tem teto 1 e e o comportamento de sempre. Sob assFilaTrava,
  * em ordem de pedido (ms crescente dentro de um epoch). */
 #define ASS_FILA_MAX 4
-#define ASS_FILA_BYTES (64u * 1024u * 1024u)   /* 22/11: was 24 MB (RAM has headroom; 4K-UI flattened frames) */
+/* 22/11: 64 MB (was 24; RAM has headroom, 4K-UI flattened frames). Caches row
+ * Small (owner 23/11/2026, KeijoMika's ass-minimal): 24 MB again. */
+#define ASS_FILA_BYTES (assperf_get(AP_CACHEP) ? 24u * 1024u * 1024u : 64u * 1024u * 1024u)
 static AssCpuFrame assFila[ASS_FILA_MAX];
 static int assFilaN;
 static int assFilaTeto = 1;      // 1 = como antes; ASS_FILA_MAX com hold
@@ -880,6 +882,12 @@ static void ass_plain_style_locked(const PlainAssStyle *p) {
 }
 
 #define ASS_RIGID_CACHE_MAX 1024   /* 22/11: was 384 (RAM has headroom) */
+/* Caches row Small (owner 23/11/2026): his 384 entries / 32 MB. The array stays
+ * 1024 long; only the first assRigidCap entries are used. */
+#define ASS_RIGID_CACHE_PEQ 384
+#define ASS_RIGID_BYTES_PEQ (32u * 1024u * 1024u)
+static int assRigidCap = ASS_RIGID_CACHE_MAX;
+static size_t assRigidBytesMax = 96u * 1024u * 1024u;
 #define ASS_RIGID_FRAME_MAX 128
 #define ASS_RIGID_MISS_MAX 8
 #define ASS_RIGID_BYTES_MAX (96u * 1024u * 1024u)   /* 22/11: was 32 MB */
@@ -957,6 +965,27 @@ static void ass_rigid_entry_free(AssRigidEntry *e) {
   memset(e, 0, sizeof *e);
 }
 
+/* Caches row (owner 23/11/2026): Large = 1024 entries / 96 MB, Small = his
+ * 384 / 32 MB. Shrinking frees the entries past the new cap and the oldest
+ * ones over the byte limit. */
+static void ass_rigid_limites(int pequeno) {
+  int i, cap = pequeno ? ASS_RIGID_CACHE_PEQ : ASS_RIGID_CACHE_MAX;
+  size_t bytes = pequeno ? ASS_RIGID_BYTES_PEQ : ASS_RIGID_BYTES_MAX;
+  pthread_mutex_lock(&assRigidTrava);
+  if (cap != assRigidCap || bytes != assRigidBytesMax) {
+    for (i = cap; i < ASS_RIGID_CACHE_MAX; i++) ass_rigid_entry_free(&assRigid[i]);
+    assRigidCap = cap; assRigidBytesMax = bytes;
+    while (assRigidBytes > assRigidBytesMax) {
+      int oldest = -1;
+      for (i = 0; i < assRigidCap; i++)
+        if (assRigid[i].imgs && (oldest < 0 || assRigid[i].tick < assRigid[oldest].tick)) oldest = i;
+      if (oldest < 0) break;
+      ass_rigid_entry_free(&assRigid[oldest]);
+    }
+  }
+  pthread_mutex_unlock(&assRigidTrava);
+}
+
 static void ass_rigid_clear(void) {
   int i;
   pthread_mutex_lock(&assRigidTrava);
@@ -1013,7 +1042,7 @@ static const AssRigidEntry *ass_rigid_lookup_locked(uint64_t sig, unsigned gen, 
                                                     int lw, int lh, int lwB, int lhB,
                                                     int vw, int vh, int dividir, double esc) {
   int i;
-  for (i = 0; i < ASS_RIGID_CACHE_MAX; i++) {
+  for (i = 0; i < assRigidCap; i++) {
     AssRigidEntry *e = &assRigid[i];
     if (e->sig == sig && e->imgs && e->generation == gen && e->styleVer == styleVer &&
         e->lw == lw && e->lh == lh && e->lwB == lwB && e->lhB == lhB &&
@@ -1100,14 +1129,14 @@ static void ass_rigid_store(uint64_t sig, unsigned gen, unsigned styleVer,
     free(imgs);
     return;
   }
-  while (assRigidBytes + bytes > ASS_RIGID_BYTES_MAX) {
+  while (assRigidBytes + bytes > assRigidBytesMax) {
     int oldest = -1;
-    for (i = 0; i < ASS_RIGID_CACHE_MAX; i++)
+    for (i = 0; i < assRigidCap; i++)
       if (assRigid[i].imgs && (oldest < 0 || assRigid[i].tick < assRigid[oldest].tick)) oldest = i;
     if (oldest < 0) break;
     ass_rigid_entry_free(&assRigid[oldest]);
   }
-  for (i = 0; i < ASS_RIGID_CACHE_MAX; i++) {
+  for (i = 0; i < assRigidCap; i++) {
     if (!assRigid[i].imgs) { slot = i; break; }
     if (slot < 0 || assRigid[i].tick < assRigid[slot].tick) slot = i;
   }
@@ -1188,14 +1217,32 @@ static void ass_aplicar_assperf_locked(void) {
    * autohinter, and frame-by-frame \fs/\fscx animation makes new sizes every
    * frame. Plain text (SRT) keeps light. Only on a change: it clears caches. */
   { static int hint = -1;
-    int h2 = simples ? ASS_HINTING_LIGHT : ASS_HINTING_NONE;
+    /* Hinting row (owner 23/11/2026): Light = KeijoMika's ass-minimal. */
+    int h2 = simples || assperf_get(AP_HINT) ? ASS_HINTING_LIGHT : ASS_HINTING_NONE;
     if (h2 != hint) {
+      if (hint != -1) assTrackStyleVer++;   /* cached rigid layers were drawn with the old hinting */
       hint = h2;
       ass_set_hinting(assRenderer, (ASS_Hinting)h2);
 #if ASS_DIVIDIR
       if (assRendererB) ass_set_hinting(assRendererB, (ASS_Hinting)h2);
 #endif
       printf("[ass] hinting %s (%s)\n", h2 == ASS_HINTING_NONE ? "none" : "light", simples ? "plain text" : "authored ASS");
+    } }
+  /* Caches row (owner 23/11/2026): Large (22/11) or Small (KeijoMika's
+   * ass-minimal): libass 96 / 32 MB (soft pass 64 / 24), the rigid cache
+   * 1024 / 384 entries. The texture cache and the frame queue read the row
+   * where they check their limits. */
+  { static int peq = -1;
+    int p2 = assperf_get(AP_CACHEP) ? 1 : 0;
+    if (p2 != peq) {
+      peq = p2;
+      ass_set_cache_limits(assRenderer, 0, p2 ? 32 : 96);
+#if ASS_DIVIDIR
+      if (assRendererB) ass_set_cache_limits(assRendererB, 0, p2 ? 24 : 64);
+#endif
+      ass_rigid_limites(p2);
+      printf("[ass] caches %s\n", p2 ? "small (libass 32 MB, rigid 384 / 32 MB, textures 768 / 24 MB, queue 24 MB)"
+                                       : "large (libass 96 MB, rigid 1024 / 96 MB, textures 2048 / 64 MB, queue 64 MB)");
     } }
 #if defined(NV_TPK) && defined(ASS_NV_API)
   { static int feito;
@@ -1424,8 +1471,8 @@ static void ass_b_criar_locked(void) {
   ass_set_shaper(assRendererB, ASS_SHAPING_COMPLEX);
   ass_set_fonts(assRendererB, assFallbackFont[0] ? assFallbackFont : NULL, "Arial",
                 ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
-  ass_set_cache_limits(assRendererB, 0, 64);   /* 22/11: was 24 */
-  ass_set_hinting(assRendererB, ASS_HINTING_NONE);   /* authored ASS only (22/11) */
+  ass_set_cache_limits(assRendererB, 0, assperf_get(AP_CACHEP) ? 24 : 64);   /* 22/11: was 24; Caches row 23/11 */
+  ass_set_hinting(assRendererB, assperf_get(AP_HINT) ? ASS_HINTING_LIGHT : ASS_HINTING_NONE);   /* authored ASS only (22/11); Hinting row 23/11 */
   ass_set_font_scale(assRendererB, 1.0);
 #ifdef ASS_NV_API
   ass_nv_set_engine(assRendererB, 1);
@@ -2107,13 +2154,22 @@ static void ass_cor_final(const AssCpuImage *im, int corAtiva, int cr, int cg, i
  * pass's pixel grid while compositing, in the same stacking order. Rigid-cache
  * images with a sub-pixel offset (subX/subY) go the same way (ratio 1), so a
  * flattened frame keeps their exact position like the per-image path's
- * GL_LINEAR quads. Returns 1 when the frame was flattened. */
+ * GL_LINEAR quads. Returns 1 when the frame was flattened, 2 for a split one.
+ *
+ * Owner 23/11/2026 (LOG 2 vs KeijoMika's ass-minimal: his busy frames 13-25 ms,
+ * ours 31-70), two rows to find what costs and what jumps:
+ *   Split frames (AP_DIVIDIDO): Layers (above) or Per image = his: a split
+ *     frame is never flattened, it goes per image through the texture cache.
+ *   Merged positions (AP_POSINT): Exact (above) or Whole pixel = his: the
+ *     sub-pixel offset is dropped when flattening (the per-image path keeps
+ *     it), so only another pass's scale is resampled. */
 static long assFlatQuadros, assFlatFeitos, assFlatDivididos;   // [ass] cost (under assFilaTrava when read)
 static int ass_flat_reamostra(const AssCpuImage *im, float escF, float *r, float *ox, float *oy) {
   float e = im->esc > 0.01f ? im->esc : escF;
   *r = escF / e;
   *ox = ((float)im->x + im->subX) * *r;
   *oy = ((float)im->y + im->subY) * *r;
+  if (assperf_get(AP_POSINT)) return fabsf(*r - 1.0f) >= 0.001f;   // Merged positions: Whole pixel
   return fabsf(*r - 1.0f) >= 0.001f || fabsf(im->subX) >= 0.001f || fabsf(im->subY) >= 0.001f;
 }
 static inline void ass_flat_px(unsigned char *dst, unsigned lr, unsigned lg, unsigned lb, unsigned sa) {
@@ -2321,6 +2377,8 @@ static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiv
     float r, fx, fy;
     if (im->rgba || !im->bitmap || im->w <= 0 || im->h <= 0) return 0;
     if (corAtiva && im->type == IMAGE_TYPE_CHARACTER) return 0;
+    /* Split frames: Per image -> never flattened. */
+    if (im->esc > 0.01f && fabsf(im->esc - escF) >= 0.01f && assperf_get(AP_DIVIDIDO)) return 0;
     if (ass_flat_reamostra(im, escF, &r, &fx, &fy)) {
       if (im->esc > 0.01f && fabsf(im->esc - escF) >= 0.01f) { dividido = 1; escS = im->esc; }
       x0 = (int)floorf(fx) - 1; y0 = (int)floorf(fy) - 1;
@@ -3151,8 +3209,11 @@ typedef struct {
   unsigned long long chave;
   unsigned uso;          // assGlQuadro do ultimo desenho
 } AssTc;
-#define ASS_TC_TETO 2048   /* 22/11: was 768 (the busy ED hit it) */
-#define ASS_TC_BYTES (64u * 1024u * 1024u)   /* 22/11: was 24 MB */
+/* 22/11: 2048 / 64 MB (was 768 / 24 MB: the busy ED hit it). Caches row Small
+ * (owner 23/11/2026, KeijoMika's ass-minimal): 768 / 24 MB again; textures
+ * past the cap leave through the usual recycling. */
+#define ASS_TC_TETO (assperf_get(AP_CACHEP) ? 768 : 2048)
+#define ASS_TC_BYTES (assperf_get(AP_CACHEP) ? 24u * 1024u * 1024u : 64u * 1024u * 1024u)
 #define ASS_TC_RECICLA 2u
 static AssTc *assTc;
 static int assTcN, assTcCap;
@@ -4362,6 +4423,12 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
       { char modo[200];
         double bl = assperf_escala_blur();
         assperf_modo_texto(modo, (int)sizeof modo);
+        /* Which renderer rows were on (owner 23/11/2026: the KeijoMika rows). */
+        printf("[ass] 10s rows: preset %s | split frames %s | merged positions %s | hinting %s | caches %s | small scripts at 100%% %s\n",
+               assperf_preset() == 0 ? "Nuvio" : assperf_preset() == 1 ? "KeijoMika" : "Custom",
+               assperf_get(AP_DIVIDIDO) ? "per image" : "layers", assperf_get(AP_POSINT) ? "whole pixel" : "exact",
+               assperf_get(AP_HINT) ? "light" : "none", assperf_get(AP_CACHEP) ? "small" : "large",
+               assperf_get(AP_PEQ100) ? "on" : "off");
         printf("[ass] 10s res: mode=%s | now text %d%% blur %s%d%% | "
                "split frames=%ld sharp avg=%.1fms max=%.1fms (%ld imgs) soft avg=%.1fms max=%.1fms (%ld imgs)\n",
                modo, (int)(assperf_escala() * 100.0 + 0.5),

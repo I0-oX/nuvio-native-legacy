@@ -638,6 +638,10 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
        /* Every frame (owner 22/11/2026): busy scenes render every frame
         * (Off / Auto / On; assperf.h AP_TODOS). */
        EST_TODOS,
+       /* KeijoMika's ass-minimal (owner 23/11/2026): Renderer preset (Nuvio /
+        * KeijoMika / Custom) and each renderer difference as a row
+        * (assperf.h AP_DIVIDIDO..AP_PEQ100). */
+       EST_PRESET, EST_DIVIDIDO, EST_POSINT, EST_HINT, EST_CACHES, EST_PEQ100,
 #endif
        /* MAIN / SECOND (owner 12/11): "Edit" switches the column between the
         * main subtitle and the second one (shown only while a second subtitle
@@ -654,6 +658,7 @@ static const char *const EST_ROT[EST_TOTAL] = {
 #ifdef NV_TPK
   , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
   , "Resolução do texto (teste)", "Resolução do desfoque (teste)", "Todos os quadros"
+  , "Predefinição do renderizador", "Quadros divididos", "Posições achatadas", "Hinting", "Caches", "Roteiros pequenos a 100%"
 #endif
   , "Editar",
   "Tamanho", "Fonte da legenda", "Cor", "Opacidade", "Fundo", "Posição", "Posição da segunda legenda",
@@ -713,7 +718,9 @@ static void estMapa(void) {
     if (assperf_get(AP_LIBASS)) {
       /* libass's dialogue Size/Opacity, then the engine rows. */
       static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA,
-                               EST_TXTRES, EST_BLURRES, EST_TODOS, EST_SINC, EST_LIBASS, EST_RESTAURAR };
+                               EST_TXTRES, EST_BLURRES, EST_TODOS,
+                               EST_PRESET, EST_DIVIDIDO, EST_POSINT, EST_HINT, EST_CACHES, EST_PEQ100,
+                               EST_SINC, EST_LIBASS, EST_RESTAURAR };
       int nL = (int)(sizeof L / sizeof L[0]);
       for (i = 0; i < nL; i++) {
         if ((L[i] == EST_TXTRES || L[i] == EST_BLURRES) && assperf_get(AP_ESCALA) != AP_RES_CUSTOM) continue;
@@ -818,6 +825,14 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
     case EST_TODOS: { int t = assperf_get(AP_TODOS);
       snprintf(dst, tam, "%s", t == 2 ? i18n("Ligado") : t == 1 ? "Auto" : i18n("Desligado"));
       break; }
+    case EST_PRESET: { int p = assperf_preset();
+      snprintf(dst, tam, "%s", p == 0 ? "Nuvio" : p == 1 ? "KeijoMika" : i18n("Personalizado"));
+      break; }
+    case EST_DIVIDIDO: snprintf(dst, tam, "%s", i18n(assperf_get(AP_DIVIDIDO) ? "Por imagem" : "Camadas")); break;
+    case EST_POSINT: snprintf(dst, tam, "%s", i18n(assperf_get(AP_POSINT) ? "Pixel inteiro" : "Exatas")); break;
+    case EST_HINT: snprintf(dst, tam, "%s", i18n(assperf_get(AP_HINT) ? "Hinting leve" : "Nenhum")); break;
+    case EST_CACHES: snprintf(dst, tam, "%s", i18n(assperf_get(AP_CACHEP) ? "Pequenos" : "Grandes")); break;
+    case EST_PEQ100: snprintf(dst, tam, "%s", i18n(assperf_get(AP_PEQ100) ? "Ligado" : "Desligado")); break;
     case EST_BLURRES: { int p10 = estBlurLer(), limpo = estBlurLimpo();
       if (p10 % 10) snprintf(dst, tam, "%d.%d%%%s%s", p10 / 10, p10 % 10, limpo ? " · " : "", limpo ? i18n("limpo") : "");
       else snprintf(dst, tam, "%d%%%s%s", p10 / 10, limpo ? " · " : "", limpo ? i18n("limpo") : "");
@@ -881,6 +896,24 @@ static void ciclarEstilo(int linha) {
       printf("[ass] Every frame: %s\n", t == 0 ? "Auto" : t == 1 ? "On" : "Off");
       fflush(stdout);
       foco[FX_COL_ESTILO] = estPos(EST_TODOS);
+      return; }
+    /* KeijoMika's ass-minimal rows (owner 23/11/2026). The preset: Nuvio ->
+     * KeijoMika; KeijoMika or Custom -> Nuvio. */
+    case EST_PRESET: {
+      int p = assperf_preset() == 0 ? 1 : 0;
+      assperf_preset_definir(p);
+      printf("[ass] Renderer preset: %s\n", p ? "KeijoMika" : "Nuvio");
+      fflush(stdout);
+      foco[FX_COL_ESTILO] = estPos(EST_PRESET);
+      return; }
+    case EST_DIVIDIDO: case EST_POSINT: case EST_HINT: case EST_CACHES: case EST_PEQ100: {
+      int id = linha == EST_DIVIDIDO ? AP_DIVIDIDO : linha == EST_POSINT ? AP_POSINT : linha == EST_HINT ? AP_HINT : linha == EST_CACHES ? AP_CACHEP : AP_PEQ100;
+      assperf_definir(id, !assperf_get(id));
+      printf("[ass] %s: %d (preset %s)\n", linha == EST_DIVIDIDO ? "Split frames per image" : linha == EST_POSINT ? "Merged positions whole pixel" : linha == EST_HINT ? "Hinting light" :
+             linha == EST_CACHES ? "Caches small" : "Small scripts at 100%", assperf_get(id),
+             assperf_preset() == 0 ? "Nuvio" : assperf_preset() == 1 ? "KeijoMika" : "Custom");
+      fflush(stdout);
+      foco[FX_COL_ESTILO] = estPos(linha);
       return; }
     case EST_LIBASS:
       /* The same track again, so libass takes it (or lets it go). */
@@ -1381,6 +1414,18 @@ static void legendaAutomatica(Uint32 agora) {
   if (origem == LEGMEM_DE_TITULO && mt->tipo) {
     r = legendaExata(mt, nEmb, nAdd);
     if (r < 0 && !(mt->tipo == 'e' ? embFechado : addFechado)) return;
+#ifdef NV_TPK
+    /* Burned in (owner 23/11/2026, LOG 2: Kaguya and Married Couple): the
+     * exact track of this title skipped the burned-in mask below, so Nuvio
+     * drew an embedded ASS track over TorBox's burned picture. While burned
+     * the remembered track counts only if it is not an ASS track; else the
+     * usual pick runs over the other tracks. */
+    if (r >= 0 && r < nEmb && video_tpk_leg_oculta(r)) {
+      printf("[legenda] automatica: faixa exata deste titulo (embutida %d) e ASS com a queima ligada: fora; escolha normal sobre as outras\n", r);
+      fflush(stdout);
+      r = -1;
+    }
+#endif
     if (r >= 0) {
       legAuto = 0;
       printf("[legenda] automatica: ultima escolha '%s' -> %s %d (faixa exata deste titulo) aos %u ms\n",
