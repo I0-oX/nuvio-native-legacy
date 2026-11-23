@@ -1209,17 +1209,41 @@ static char tbPreUrl[sizeof urlAtual], tbPreCab[sizeof cabecalhos];
 static void guardarMkv(const MkvFaixa *fx, int n);
 // The header mkvass's prefetch already read (no network), now rather than at
 // sondaMkv's next 500 ms look.
+/* Called every frame while the header is awaited (tbBombear, tbCabEsperar).
+ * Log 9 (Fate E01, 17 MB Tracks): the prefetch kept the same 64 KB prefix and
+ * this parsed it again every frame, two log lines each time (1,471x). Now the
+ * prefix is parsed only when it grew for this URL, and an incomplete one is
+ * logged once. */
 static void tbCabecalhoJa(void) {
+  static unsigned urlVista;
+  static long nVisto;
   unsigned char *cab = NULL;
   long cabN = 0;
+  unsigned h = 2166136261u;
   if (mkvEstado != 1 || !urlAtual[0] || !mkvass_cabecalho(urlAtual, &cab, &cabN)) return;
+  for (const char *p = urlAtual; *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+  if (h != urlVista) { urlVista = h; nVisto = 0; }
+  if (cabN <= nVisto) { free(cab); return; }   // the same prefix as last time: nothing new to read
   { MkvFaixa *fx = calloc(MKV_MAX_FAIXAS, sizeof *fx);
     int n = fx ? mkv_faixas_do_trecho(cab, cabN, fx, MKV_MAX_FAIXAS, NULL, 0, NULL) : 0;
-    printf("[mkv] sonda pelo trecho da pre-busca (%ld bytes, sem rede, TorBox first): %d faixa(s)\n", cabN, n);
-    fflush(stdout);
+    if (n > 0 || !nVisto) {
+      printf("[mkv] sonda pelo trecho da pre-busca (%ld bytes, sem rede, TorBox first): %d faixa(s)%s\n", cabN, n,
+             n > 0 ? "" : "; read again only when more of the header arrives");
+      fflush(stdout);
+    }
+    nVisto = cabN;
     if (n > 0) { guardarMkv(fx, n); mkvEstado = 3; }
     free(fx); }
   free(cab);
+}
+/* The held URL. Log 6 (CRUCiBLE): the header arrived during the hold, so
+ * tbCabEsperar called abrirHost(tbPreUrl, tbPreCab), which came back here with
+ * url == tbPreUrl. snprintf onto its own source is undefined, and glibc writes
+ * the terminator first: the URL became "" and the host refused the source
+ * (InvalidUri), blaming a good source. Same buffer = already held. */
+static void tbGuardarPre(const char *url, const char *cab) {
+  if (url != tbPreUrl) snprintf(tbPreUrl, sizeof tbPreUrl, "%s", url ? url : "");
+  if (cab != tbPreCab) snprintf(tbPreCab, sizeof tbPreCab, "%s", cab ? cab : "");
 }
 static int tbSegurarAntes(const char *url, const char *cab) {
   static VideoFaixa a[MAX_FAIXAS], l[MAX_FAIXAS];
@@ -1235,8 +1259,7 @@ static int tbSegurarAntes(const char *url, const char *cab) {
     if (!tb.cabEspera) {
       int fase = mkvass_prebusca_fase();
       tb.cabEspera = 1; tb.cabDesde = SDL_GetTicks();
-      snprintf(tbPreUrl, sizeof tbPreUrl, "%s", url);
-      snprintf(tbPreCab, sizeof tbPreCab, "%s", cab ? cab : "");
+      tbGuardarPre(url, cab);
       printf("[tbburn] TorBox first: the file's header is not read yet; holding the player up to %u ms for it "
              "(header prefetch %s)\n", TB_CAB_ESPERA_MS, fase == 1 ? "running" : fase == 2 ? "ended" : "not started yet");
       fflush(stdout);
@@ -1272,8 +1295,7 @@ static int tbSegurarAntes(const char *url, const char *cab) {
     return 0;
   }
   tb.pre = 1; tb.preDesde = SDL_GetTicks();
-  snprintf(tbPreUrl, sizeof tbPreUrl, "%s", url);
-  snprintf(tbPreCab, sizeof tbPreCab, "%s", cab ? cab : "");
+  tbGuardarPre(url, cab);
   printf("[tbburn] TorBox first: holding the player; the file has %d audio, %d subtitle(s) (audio %d chosen)\n",
          na, nl, audioAtual);
   fflush(stdout);
@@ -1286,6 +1308,16 @@ static void tbSoltar(const char *porque) {
   tb.pre = 0;
   printf("[tbburn] TorBox first: opening the original after %u ms (%s)\n", (unsigned)(SDL_GetTicks() - tb.preDesde), porque);
   fflush(stdout);
+  if (!tbPreUrl[0] && hostUrl[0]) {
+    /* Never hand the host an empty URL (log 6). abrirHost copies its argument
+     * into hostUrl, so pass copies, not hostUrl itself. */
+    static char u[sizeof hostUrl], c[sizeof hostCab];
+    snprintf(u, sizeof u, "%s", hostUrl); snprintf(c, sizeof c, "%s", hostCab);
+    printf("[tbburn] the held URL was empty: opening the last URL given to the player instead\n");
+    fflush(stdout);
+    abrirHost(u, c);
+    return;
+  }
   abrirHost(tbPreUrl, tbPreCab);
 }
 // Every frame while the player is held for the header (tbSegurarAntes): the

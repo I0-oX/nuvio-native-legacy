@@ -80,3 +80,9 @@ __attribute__((weak)) void tbburn_procurar_cedo(const char *u, const char *h, co
 }
 // TorBox first's hold for the file's header (owner 18/11): no prefetch here.
 __attribute__((weak)) int mkvass_prebusca_fase(void) { return 0; }
+
+/* queda.h worker-thread breadcrumbs (mkvfix.c relay threads, NV_TPK). */
+void queda_fio_iniciar(void) {}
+void queda_fio_fim(void) {}
+void queda_passo(const char *passo, long long a, long long b) { (void)passo; (void)a; (void)b; }
+void queda_vigiar_fio(void) {}

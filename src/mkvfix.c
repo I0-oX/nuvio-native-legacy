@@ -609,6 +609,21 @@ void mkvfix_memoria_soltar(const char *porque) { (void)porque; }
 #else
 #define MF_NOMEAR(n) ((void)0)
 #endif
+#ifdef NV_TPK
+/* Crash breadcrumbs (queda.h, owner 23/11/2026): the previous session died
+ * in an nv-relay thread with nothing recorded. Each relay thread gets its own
+ * signal stack and says what it is doing; the crash record carries it. */
+#include "queda.h"
+#define MF_FIO_INI()       queda_fio_iniciar()
+#define MF_FIO_FIM()       queda_fio_fim()
+#define MF_PASSO(p, a, b)  queda_passo((p), (long long)(a), (long long)(b))
+#define MF_VIGIAR()        queda_vigiar_fio()
+#else
+#define MF_FIO_INI()       ((void)0)
+#define MF_FIO_FIM()       ((void)0)
+#define MF_PASSO(p, a, b)  ((void)0)
+#define MF_VIGIAR()        ((void)0)
+#endif
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -812,6 +827,8 @@ static void sondaLegendas(Sess *s, const unsigned char *b, long n, const MkvfixC
 static void *fioSonda(void *u) {
   Sess *s = u;
   MF_NOMEAR("nv-relaysonda");
+  MF_FIO_INI();
+  MF_PASSO("probe: reading the header", 0, 0);
   MkvfixCab c;
   long n = 0, m = 0;
   int st = 0, nSh2, nTodas = 0, entrou = 0, est = MKVFIX_NORMAL;
@@ -880,6 +897,7 @@ static void *fioSonda(void *u) {
            (unsigned)(agoraMs() - t0));
   est = MKVFIX_PRECISA;
 legendas:
+  MF_PASSO("probe: subtitle tracks", n, total);
   sondaLegendas(s, b, n, &c, total);
   if (s->cancelar) goto fim;
   s->total = total;
@@ -896,6 +914,7 @@ legendas:
 fim:
   free(b); free(q);
   sessSoltar(s);
+  MF_FIO_FIM();
   return NULL;
 }
 
@@ -1078,8 +1097,10 @@ static void mtAlimentar(MfTap *t, int64_t pos, const unsigned char *b, size_t n)
   int faixa = mkvass_relay_faixa(), faixaS = asssinais_relay_faixa();
   if (faixaS == faixa) faixaS = 0;
   if (!faixa) { t->ligado = 0; t->pos = pos + (int64_t)n; return; }
+  MF_PASSO("tap: walking the stream", pos, (long long)n);
   if (!t->ligado || t->pos != pos || faixa != t->faixa || faixaS != t->faixaS) {
     // Ligou agora, pulou bytes ou trocou de faixa: procura o proximo Cluster.
+    MF_PASSO("tap: started or track changed", faixa, faixaS);
     t->ligado = 1; t->faixa = faixa; t->faixaS = faixaS; t->pos = pos; t->bufN = 0; mtProcurar(t);
   }
   while (i < n) {
@@ -1164,12 +1185,15 @@ static void mtAlimentar(MfTap *t, int64_t pos, const unsigned char *b, size_t n)
         unsigned long v = 0;
         for (long q = 0; q < t->bufN; q++) v = (v << 8) | t->buf[q];
         t->clTs = v; t->temTs = 1; t->precisaTs = 0;
-        if (t->faixaS) asssinais_cluster(t, v);   // the partner: this stretch of the file is passing
+        if (t->faixaS) { MF_PASSO("tap: Signs & Songs cluster", t->pos, (long long)v); asssinais_cluster(t, v); }   // the partner: this stretch of the file is passing
       } else if (t->faixaS && mtFaixaDo(t, t->buf[0]) == t->faixaS) {
+        MF_PASSO("tap: Signs & Songs block", t->elPos, t->bufN);
         asssinais_bloco(t->clTs, t->buf, t->bufN);   // the Signs & Songs partner: only for matching
       } else {
+        MF_PASSO("tap: subtitle block to mkvass", t->elPos, t->bufN);
         mkvass_relay_bloco(t->clPos, t->clHdr, t->clTs, t->temTs, t->elPos, t->buf, t->bufN);
       }
+      MF_PASSO("tap: walking the stream", t->pos, t->estado);
       t->bufN = 0; t->estado = MT_CAB;
       break; }
     }
@@ -1502,14 +1526,17 @@ static int ralo(void *u, const char *dados, size_t n) {
   unsigned char tmp[16384], vzOut[sizeof tmp + MKVFIX_VOID_HB];
   uint64_t t0 = agoraUs();
   if (e->fimRalo) atomic_fetch_add(&mdCdnUs, (long long)(t0 - e->fimRalo));
+  MF_VIGIAR();
   if (e->s->cancelar) return 0;
   if (!e->cabFeito && !enviarCab(e)) { e->falhouEnvio = 1; return 0; }
   while (n && e->prox <= e->fim) {
     size_t k = n > sizeof tmp ? sizeof tmp : n;
     int64_t sobra = e->fim - e->prox + 1, a, z;
     if ((int64_t)k > sobra) k = (size_t)sobra;
+    MF_PASSO("ralo: copying the chunk", e->prox, (long long)k);
     memcpy(tmp, dados, k);
-    if (e->cap) memcpy(e->cap + (e->prox - e->ini), dados, k);
+    if (e->cap) { MF_PASSO("ralo: copying into the short-request cache", e->prox - e->ini, (long long)k); memcpy(e->cap + (e->prox - e->ini), dados, k); }
+    MF_PASSO("ralo: SeekHead / hidden tracks", e->prox, e->s->nOculta);
     a = e->prox > e->s->regiao ? e->prox : e->s->regiao;
     z = e->prox + (int64_t)k < e->s->regiao + e->s->regiaoN ? e->prox + (int64_t)k : e->s->regiao + e->s->regiaoN;
     if (a < z) memcpy(tmp + (a - e->prox), e->s->conserto + (a - e->s->regiao), (size_t)(z - a));
@@ -1521,10 +1548,12 @@ static int ralo(void *u, const char *dados, size_t n) {
       // Void mode (mkvfix.h): the walker rewrites the subtitle blocks' IDs; a
       // block header still being read waits in it for the next bytes.
       MkvfixVoid antes = e->vz;
-      long w = mkvfix_void_passar(&e->vz, tmp, (long)k, vzOut);
+      long w;
+      MF_PASSO("ralo: Void walker", e->prox, (long long)k);
+      w = mkvfix_void_passar(&e->vz, tmp, (long)k, vzOut);
       vzContar(e, &antes);
       if (w > 0 && !enviarMedido(e, vzOut, (size_t)w)) { e->falhouEnvio = 1; return 0; }
-    } else if (!enviarMedido(e, tmp, k)) { e->falhouEnvio = 1; return 0; }
+    } else { MF_PASSO("ralo: sending to the TV", e->prox, (long long)k); if (!enviarMedido(e, tmp, k)) { e->falhouEnvio = 1; return 0; } }
 #ifdef NV_TPK
     mtAlimentar(&e->tap, e->prox, tmp, k);   // the subtitle harvest reads the blocks as they were
 #endif
@@ -1538,6 +1567,7 @@ static int ralo(void *u, const char *dados, size_t n) {
     if (w > 0 && !enviarMedido(e, resto, (size_t)w)) { e->falhouEnvio = 1; return 0; }
   }
   e->fimRalo = agoraUs();
+  MF_PASSO("relay: waiting for the CDN (curl)", e->prox, e->fim);
   return e->prox <= e->fim;
 }
 
@@ -1594,6 +1624,8 @@ typedef struct { int sock; } Conexao;
 static void *atender(void *u) {
   Conexao *cx = u;
   MF_NOMEAR("nv-relay");
+  MF_FIO_INI();
+  MF_PASSO("relay: reading the request", 0, 0);
   int sock = cx->sock;
   char b[MF_CAB], met[8] = "", alvo[256] = "", range[96] = "";
   size_t tot = 0;
@@ -1641,7 +1673,9 @@ static void *atender(void *u) {
   if (e.head) { enviarCab(&e); goto sai; }
   t0 = agoraMs();
   if (e.parcial && e.ini > 0 && e.fim - e.ini + 1 <= MF_CACHE_MAX && s->total >= MF_CACHE_MIN_TOTAL) {
-    unsigned char *c = cachePegar(s->total, e.ini, e.fim);
+    unsigned char *c;
+    MF_PASSO("relay: short-request cache", e.ini, e.fim);
+    c = cachePegar(s->total, e.ini, e.fim);
     if (c) {
       ralo(&e, (const char *)c, (size_t)(e.fim - e.ini + 1));
       free(c);
@@ -1655,7 +1689,9 @@ static void *atender(void *u) {
   // O seek da reabertura depois da saida do app: o comeco veio adiantado.
   if (e.parcial && e.ini > 0 && !e.cap) {
     long n = 0;
-    unsigned char *c = adiPegar(s->total, e.ini, &n);
+    unsigned char *c;
+    MF_PASSO("relay: reopen prefetch", e.ini, e.fim);
+    c = adiPegar(s->total, e.ini, &n);
     if (c) {
       if ((int64_t)n > e.fim - e.ini + 1) n = (long)(e.fim - e.ini + 1);
       ralo(&e, (const char *)c, (size_t)n);
@@ -1673,6 +1709,7 @@ static void *atender(void *u) {
     pthread_mutex_lock(&s->m);
     snprintf(up, sizeof up, "%s", s->up); semCab = s->upSemCab;
     pthread_mutex_unlock(&s->m);
+    MF_PASSO("relay: opening the CDN stream (curl)", e.prox, e.fim);
     r = rede_fluxo64(up, semCab ? "" : s->cab, e.prox, ralo, &e, &total, &st,
                      &s->cancelar, NULL, &cross, MF_PARADO_MS, &veio);
     if (e.prox > e.fim || e.falhouEnvio || s->cancelar) break;
@@ -1685,6 +1722,7 @@ static void *atender(void *u) {
     }
     break;
   }
+  MF_PASSO("relay: finishing the request", e.prox, e.fim);
   if (e.cap) {
     if (e.prox > e.fim && !e.falhouEnvio && !s->cancelar) cacheGuardar(s->total, e.ini, e.fim, e.cap);
     else free(e.cap);
@@ -1704,6 +1742,7 @@ static void *atender(void *u) {
              tocou == 2 ? " (subtitle tracks hidden)" : tocou ? " (SeekHead rewritten)" : e.falhouEnvio ? " (player closed)" : "");
     fflush(stdout); }
 sai:
+  MF_PASSO("relay: closing", e.prox, 0);
 #ifdef NV_TPK
   free(e.tap.buf);
 #endif
@@ -1711,6 +1750,7 @@ sai:
   close(sock);
   if (s) sessSoltar(s);
   atomic_fetch_sub(&vivos, 1);
+  MF_FIO_FIM();
   return NULL;
 }
 
