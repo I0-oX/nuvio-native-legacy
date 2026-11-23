@@ -3738,19 +3738,85 @@ static void relayLimpar(void) {
   pthread_mutex_unlock(&relayTrava);
 }
 
+/* BLOCKS SEEN BEFORE THE PICK (owner 23/11/2026, log 11: "after I select a
+ * track, the subtitles don't show up until I seek forward"). The relay used
+ * to read the stream only while a harvest was on, so the blocks already in
+ * the TV player's buffer when a track was picked (tens of seconds ahead of
+ * the playhead) had gone by unread: they could only come by Range, late, and
+ * a seek (the TV reading those bytes again) was what made them appear. Now
+ * mkvfix hands over every block of the hidden ASS tracks; with no harvest on
+ * that track they wait here (the newest RELAY_ANTES_BYTES), and a harvest
+ * that starts takes its track's blocks into the queue at once. */
+#define RELAY_ANTES_MAX   4096
+#define RELAY_ANTES_BYTES (4L << 20)
+typedef struct { RelayBloco r; long trk; } RelayAntes;
+static RelayAntes relayAntes[RELAY_ANTES_MAX];   // sob relayTrava
+static int relayAntesIni, relayAntesN;
+static long relayAntesBytes;
+static void relayAntesSair_locked(void) {
+  RelayAntes *a = &relayAntes[relayAntesIni];
+  relayAntesBytes -= a->r.n; free(a->r.b); a->r.b = NULL;
+  relayAntesIni = (relayAntesIni + 1) % RELAY_ANTES_MAX; relayAntesN--;
+}
+static int relayTempoRel(const unsigned char *b, long n, long *trk, int *rel);
+void mkvass_relay_antes(long long clPos, int clHdr, unsigned long clTs, int temTs,
+                        long long blkPos, const unsigned char *b, long n) {
+  long trk = -1; int rel = 0;
+  RelayAntes *a;
+  if (!ASS_NOVO || !b || n <= 0 || n > RELAY_ANTES_BYTES / 8 || !temTs || !relayTempoRel(b, n, &trk, &rel)) return;
+  pthread_mutex_lock(&relayTrava);
+  /* Full: the oldest goes (the newest are the ones ahead of the playhead). */
+  while (relayAntesN && (relayAntesN >= RELAY_ANTES_MAX || relayAntesBytes + n > RELAY_ANTES_BYTES)) relayAntesSair_locked();
+  a = &relayAntes[(relayAntesIni + relayAntesN) % RELAY_ANTES_MAX];
+  a->r.b = malloc((size_t)n);
+  if (a->r.b) {
+    memcpy(a->r.b, b, (size_t)n); a->r.n = n; a->trk = trk;
+    a->r.clPos = clPos; a->r.clHdr = clHdr; a->r.clTs = clTs; a->r.temTs = temTs; a->r.blkPos = blkPos; a->r.t = 0;
+    relayAntesN++; relayAntesBytes += n;
+  }
+  pthread_mutex_unlock(&relayTrava);
+}
+void mkvass_relay_antes_limpar(void) {
+  pthread_mutex_lock(&relayTrava);
+  while (relayAntesN) relayAntesSair_locked();
+  relayAntesIni = 0; relayAntesBytes = 0;
+  pthread_mutex_unlock(&relayTrava);
+}
+
 static void relayLigar(Fio *f, int ligar) {
+  int antes = 0;
   pthread_mutex_lock(&relayTrava);
   if (ligar) {
+    int k;
     if (relayDono) soltarEstado(relayDono);
     relayDono = reterEstado(estadoDoFio(f));
     __atomic_store_n(&relayFaixa, f->faixa, __ATOMIC_RELEASE);
+    /* The queue starts with what the relay already saw of this track (above);
+     * the rest of the old queue was another harvest's. */
+    while (relayN) { free(relayFila[relayIni].b); relayFila[relayIni].b = NULL; relayIni = (relayIni + 1) % RELAY_MAX; relayN--; }
+    relayBytes = 0;
+    relayParqueLimpar();
+    for (k = 0; k < relayAntesN && relayN < RELAY_MAX; k++) {
+      RelayAntes *a = &relayAntes[(relayAntesIni + k) % RELAY_ANTES_MAX];
+      RelayBloco *r;
+      if (a->trk != f->faixa || !a->r.b || relayBytes + a->r.n > RELAY_BYTES) continue;
+      r = &relayFila[(relayIni + relayN) % RELAY_MAX];
+      *r = a->r;
+      r->b = malloc((size_t)a->r.n);
+      if (!r->b) break;
+      memcpy(r->b, a->r.b, (size_t)a->r.n);
+      relayN++; relayBytes += r->n; antes++;
+    }
   } else if (relayDono == estadoDoFio(f)) {
     soltarEstado(relayDono); relayDono = NULL;
     __atomic_store_n(&relayFaixa, 0, __ATOMIC_RELEASE);
     relayParqueLimpar();   // a colheita parou (troca, aviso de memoria): os estacionados saem
   }
   pthread_mutex_unlock(&relayTrava);
-  if (ligar) relayLimpar();
+  if (ligar && antes) {
+    printf("[mkvass] relay: %d block(s) of track %d the TV had already read, taken without a Range\n", antes, f->faixa);
+    fflush(stdout);
+  }
 }
 
 // Track number e relativo de tempo de um bloco (elemento inteiro em b).

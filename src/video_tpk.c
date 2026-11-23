@@ -589,6 +589,10 @@ static struct {
   // quando o cabecalho ja mostrou ASS/SSA; senao, uma reabertura cedo.
   int esperando; Uint32 esperaDesde;
   int reabriuLeg;
+  /* The last seek asked (owner 23/11/2026, log 11): the early reopen for the
+   * hidden tracks came right after the resume seek, before it landed, and
+   * reopened at posReal() = 0.0 - every resume restarted the episode. */
+  double buscaAlvo; Uint32 buscaEm;   // buscaEm 0 = none
 } mf;
 static char mfEspUrl[sizeof urlAtual], mfEspCab[sizeof cabecalhos];
 static int mfEsperarAntes(const char *url, const char *cab);
@@ -1695,8 +1699,16 @@ static void mfBombear(void) {
   // Cabecalho sem ASS conhecido antes de abrir: a sonda de depois do pronto
   // achou legenda a esconder. Reabre cedo, uma vez, no ponto atual.
   if (mkvfix_ocultas() > 0 && !mf.ativo && !mf.reabriuLeg && !cv.ativo && ativo && !parado && pronto) {
+    double alvo = posReal();
     mf.reabriuLeg = 1;
-    mfLigar(posReal(), "subtitle tracks hidden from the TV player (it hangs on some ASS drawings)");
+    /* A seek asked in the last 10 s that hasn't landed (the resume point):
+     * the reopen goes there, not to where the TV still is. */
+    if (mf.buscaEm && SDL_GetTicks() - mf.buscaEm < 10000u && fabs(alvo - mf.buscaAlvo) > 2.0) {
+      printf("[mkvfix] reopening at %.1f s (the pending seek, not the current %.1f s)\n", mf.buscaAlvo, alvo);
+      fflush(stdout);
+      alvo = mf.buscaAlvo;
+    }
+    mfLigar(alvo, "subtitle tracks hidden from the TV player (it hangs on some ASS drawings)");
     return;
   }
   // A TV recusou seek e nao ha o que consertar: diz uma vez, em vez do nada.
@@ -3302,6 +3314,7 @@ int video_pausa_confirmada(void) {
 }
 void video_volume(int pct) { if (hVolume) hVolume(pct); }
 void video_buscar(double s) {
+  mf.buscaAlvo = s; mf.buscaEm = SDL_GetTicks() | 1u;
   if (suspenso || retDesistiu) { retAlvo = s; retDe = "seek while suspended"; return; }
   if (retomando) {
     // O alvo da volta passa a ser este; com o seek dela ja enviado, outro exato.
@@ -3619,6 +3632,7 @@ int video_busca_em_voo(void) {
          (cv.ativo && cv.seekPend) || mf.pend;
 }
 unsigned video_busca_falhas(void) { return atomic_load(&buscaFalhas); }
+int video_tpk_reabrindo(void) { return cv.reabrindo || reconFaixasPend; }
 int video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsigned *seq) {
   int ms; unsigned sq;
   if (!pronto || cv.reabrindo || (cv.ativo && cv.prog && !cv.deslocOk)) return 0;

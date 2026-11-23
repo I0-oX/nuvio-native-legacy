@@ -253,6 +253,9 @@ static SaltoEst scrubSalto;   // rajada do teclado (salto.h)
 // remembered step; the memory lives until the seek commits (terminarSalto).
 static SeekGesto gesto;
 static const SeekParams seekPar = SEEKG_PADRAO;
+/* One "[seek] scrub:" line per committed scrub (owner 23/11/2026): how many
+ * presses, whether the glide ran and how fast, and the largest jump. */
+static float scrubPicoVel, scrubMaiorSalto;
 // SEEK IN FLIGHT. The host only updates its position cache once
 // SetPlayPositionAsync finishes, so for a while after a seek video_pos() is
 // the OLD position. Copying it into posSeg made the bar slide back to where
@@ -4301,13 +4304,19 @@ static void iniciarSalto(int toque) {
   scrubToque = toque;
   scrubbing = 1;
   scrubPassos = 0;
+#ifdef NV_TPK
+  scrubPicoVel = scrubMaiorSalto = 0.0f;
+#endif
   scrubTocava = tocando || retomandoSalto;
   pausao_fechar();
   if (tocando && comVideo) { video_pausar(1); tocando = 0; }
   posplay_busca_usuario();
 }
 
-static void saltar(int dir, int repeticao) {
+/* `quando`: the key event's own SDL timestamp (0 = unknown). A press handled
+ * after a main-thread stall keeps the time it was pressed, so the queued
+ * repeats don't read as a fast remote (seekgesto.h, owner 23/11/2026). */
+static void saltar(int dir, int repeticao, Uint32 quando) {
   int novo = 0;
   if (!scrubbing) {
     iniciarSalto(0);
@@ -4321,17 +4330,21 @@ static void saltar(int dir, int repeticao) {
   Uint32 agora = SDL_GetTicks();
 #ifdef NV_TPK
   { const SeekParams *sp = &seekPar;
-    float s = seekgesto_tecla(&gesto, sp, dir, agora, duracaoSeg, NULL);
+    /* Older than 2 s or ahead of the clock: not a usable stamp. */
+    Uint32 t = quando && (Sint32)(agora - quando) >= 0 && agora - quando < 2000u ? quando : agora;
+    float s = seekgesto_tecla(&gesto, sp, dir, t, duracaoSeg, NULL);
     (void)novo; (void)repeticao;
     scrubUltimo = agora;
     if (s != 0.0f) {
       double de = posSeg;
+      if (fabsf(s) > scrubMaiorSalto) scrubMaiorSalto = fabsf(s);
       scrubPassos++;
       posSeg = anim_clamp(posSeg + s, 0.0f, duracaoSeg);
       recuarAutomatico(de, posSeg);
     }
     return; }
 #endif
+  (void)quando;
   // Repeticao de tecla segurada entre dois passos: so mantem o avanco vivo (scrubUltimo), nao anda.
   float passo = salto_tecla(&scrubSalto, novo, repeticao, agora, duracaoSeg);
   scrubUltimo = agora;
@@ -4355,6 +4368,10 @@ static void terminarSalto(void) {
   pausao_fechar();
   seekr_ocioso();   // solta a folha decodificada (~22 MB), fica o JPEG
 #ifdef NV_TPK
+  printf("[seek] scrub: %d presses (%d jumps), glide %s (peak %.0f s/s), largest jump %.1f s, from %.1f to %.1f s\n",
+         gesto.contadas, scrubPassos, scrubPicoVel > 0.0f ? "yes" : "no", scrubPicoVel, scrubMaiorSalto,
+         scrubInicio, (double)posSeg);
+  fflush(stdout);
   seekgesto_zerar(&gesto);   // the memory lives until the commit
 #endif
   if (comVideo) {
@@ -4644,7 +4661,7 @@ void player_evento(const SDL_Event *e) {
       acordar();
       barraFoco = 1; skipFoco = 0; soBarra = 1;
       if (anim < 0.05f) cheio = 0.0f;   // de tudo apagado: o resto nem comeca a subir
-      saltar(k == SDLK_RIGHT ? 1 : -1, e->key.repeat);
+      saltar(k == SDLK_RIGHT ? 1 : -1, e->key.repeat, e->key.timestamp);
       return;
     }
     if (k == SDLK_UP || k == SDLK_DOWN || k == SDLK_LEFT || k == SDLK_RIGHT) {
@@ -4710,8 +4727,8 @@ void player_evento(const SDL_Event *e) {
   }
   if (barraFoco) {
     // Na barra, ESQUERDA e DIREITA procuram no filme em vez de trocar de botao.
-    if (k == SDLK_LEFT)       saltar(-1, e->key.repeat);
-    else if (k == SDLK_RIGHT) saltar(1, e->key.repeat);
+    if (k == SDLK_LEFT)       saltar(-1, e->key.repeat, e->key.timestamp);
+    else if (k == SDLK_RIGHT) saltar(1, e->key.repeat, e->key.timestamp);
     else if (k == SDLK_DOWN)  barraFoco = 0;
     acordar();
     return;
@@ -5121,6 +5138,7 @@ void player_atualizar(float dt, Uint32 agora) {
     double de = posSeg;
 #ifdef NV_TPK
     posSeg = anim_clamp(posSeg + seekgesto_quadro(&gesto, &seekPar, agora, dt), 0.0f, duracaoSeg);
+    { float v = seekgesto_vel(&gesto, &seekPar); if (v > scrubPicoVel) scrubPicoVel = v; }
 #else
     posSeg = anim_clamp(posSeg + salto_quadro(&scrubSalto, scrubDir, agora, dt, duracaoSeg),
                         0.0f, duracaoSeg);

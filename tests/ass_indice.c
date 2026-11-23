@@ -205,8 +205,9 @@ static void compor_camadas(const AssCpuFrame *f, float escF, int minX, int minY,
 
 static void teste_flatten(void) {
   AssCpuFrame f; int i, x, y, r;
-  assperf_teste_definir(AP_DIVIDIDO, 0);   /* the Layers row: split frames flattened into per-pass layers */
-  for (r = 0; r < 3; r++) {
+  /* r 0: one scale; r 1: rigid-cache images with sub-pixel offsets (Exact:
+   * resampled into place, owner 23/11/2026). */
+  for (r = 0; r < 2; r++) {
     float escF = 0.5f;
     int maxErr = 0, maxErrA = 0, W, H, minX, minY;
     AssCpuImage copia[24];
@@ -218,14 +219,7 @@ static void teste_flatten(void) {
       m->x = 20 + aleat(300); m->y = 20 + aleat(200);
       m->color = ((unsigned)aleat(256) << 24) | ((unsigned)aleat(256) << 16) | ((unsigned)aleat(256) << 8) | (unsigned)(aleat(3) ? 0 : 100);
       m->type = IMAGE_TYPE_OUTLINE;
-      if (r == 1 && i % 3 == 0) m->esc = 0.4f;                       /* soft pass at its own scale */
       if (r == 1 && i % 3 == 1) { m->subX = 0.37f; m->subY = 0.61f; } /* rigid cache, sub-pixel */
-      if (r == 2) {   /* signs side by side: soft glow, then sharp text, per sign (no overlap between signs) */
-        int sinal = i / 2;
-        m->w = 30; m->h = 20;
-        m->x = 10 + (sinal % 4) * 60; m->y = 10 + (sinal / 4) * 40;
-        if (i % 2 == 0) { m->esc = 0.4f; m->x = (int)lroundf(m->x * 0.8f); m->y = (int)lroundf(m->y * 0.8f); }
-      }
       m->stride = m->w;
       m->bitmap = malloc((size_t)m->w * (size_t)m->h);
       for (y = 0; y < m->h; y++) for (x = 0; x < m->w; x++) {
@@ -235,27 +229,10 @@ static void teste_flatten(void) {
       copia[i] = *m;
       copia[i].bitmap = malloc((size_t)m->w * (size_t)m->h); memcpy(copia[i].bitmap, m->bitmap, (size_t)m->w * (size_t)m->h);
     }
-    { int res = ass_frame_flatten(&f, 960, 540, 0);
-      ok(r ? res == 2 : res == 1, r ? "[3] split frame flattened" : "[3] one-scale frame flattened"); }
-    if (r == 0) ok(f.count == 1 && f.images[0].rgba, "[3] one-scale frame: one RGBA image");
-    if (r == 1) ok(f.count >= 1 && f.count <= ASS_FLAT_CAMADAS_CPU && f.images[0].rgba, "[3] split frame, overlapping: RGBA layers (or one grid)");
-    if (r == 2) {
-      char m[120];
-      snprintf(m, sizeof m, "[3] split frame, signs apart: 2 layers (soft, then text), got %d", f.count);
-      ok(f.count == 2 && f.images[0].rgba && f.images[1].rgba && fabsf(f.images[0].esc - 0.4f) < 1e-6f && f.images[1].esc == 0.0f, m);
-    }
-    /* Box of the result on the text grid. */
-    { int c, x0 = 1 << 30, y0 = 1 << 30, x1 = 0, y1 = 0;
-      for (c = 0; c < f.count; c++) {
-        const AssCpuImage *m = &f.images[c];
-        float e = m->esc > 0.01f ? m->esc : escF, rr = escF / e;
-        int a0 = (int)floorf(m->x * rr), b0 = (int)floorf(m->y * rr), a1 = (int)ceilf((m->x + m->w) * rr), b1 = (int)ceilf((m->y + m->h) * rr);
-        if (a0 < x0) x0 = a0;
-        if (b0 < y0) y0 = b0;
-        if (a1 > x1) x1 = a1;
-        if (b1 > y1) y1 = b1;
-      }
-      minX = x0; minY = y0; W = x1 - x0; H = y1 - y0; }
+    ok(ass_frame_flatten(&f, 960, 540, 0) == 1 && f.count == 1 && f.images[0].rgba,
+       r ? "[3] sub-pixel frame flattened to one RGBA image" : "[3] one-scale frame flattened to one RGBA image");
+    { const AssCpuImage *m = &f.images[0];
+      minX = m->x; minY = m->y; W = m->w; H = m->h; }
     { float *ref = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H), *got = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H);
       referencia(copia, 24, escF, minX, minY, W, H, ref);
       compor_camadas(&f, escF, minX, minY, W, H, got);
@@ -268,74 +245,33 @@ static void teste_flatten(void) {
       }
       free(ref); free(got); }
     { char m[200];
-      /* One grid: exact as before. Layers: the soft layer is resampled after
-       * compositing (as on the GPU), so its edges may differ a little. */
-      int lim = f.count > 1 ? 24 : 4;
-      snprintf(m, sizeof m, "[3] %s: the drawn layers match the float composite (alpha off by %d, colour by %d; limit %d)",
-               r == 0 ? "one-scale frame" : r == 1 ? "split frame, overlapping" : "split frame, signs apart", maxErrA, maxErr, lim);
-      ok(maxErrA <= lim && maxErr <= lim + 1, m); }
+      snprintf(m, sizeof m, "[3] %s: the flattened image matches the float composite (alpha off by %d, colour by %d; limit 4)",
+               r == 0 ? "one-scale frame" : "sub-pixel frame (Exact)", maxErrA, maxErr);
+      ok(maxErrA <= 4 && maxErr <= 5, m); }
     for (i = 0; i < 24; i++) free(copia[i].bitmap);
     ass_frame_liberar(&f);
   }
-  assperf_teste_definir(AP_DIVIDIDO, 1);   /* back to the default (Per image) */
 }
 
-/* [4] The KeijoMika rows (owner 23/11/2026). Split frames = Per image: a split
- * frame is never flattened. Merged positions = Whole pixel: a sub-pixel image
- * lands where its whole-pixel copy would. */
-static void teste_linhas(void) {
+/* [4] A split frame (a soft pass at its own scale) is never flattened: it
+ * stays per image through the texture cache (owner 23/11/2026: Per image). */
+static void teste_dividido(void) {
   AssCpuFrame f; int i, x, y;
-  for (int caso = 0; caso < 2; caso++) {
-    AssCpuImage copia[24];
-    float escF = 0.5f;
-    memset(&f, 0, sizeof f);
-    f.count = 24; f.images = calloc(24, sizeof *f.images); f.esc = escF;
-    for (i = 0; i < 24; i++) {
-      AssCpuImage *m = &f.images[i];
-      m->w = 20 + aleat(60); m->h = 8 + aleat(40); m->stride = m->w;
-      m->x = 20 + aleat(300); m->y = 20 + aleat(200);
-      m->color = ((unsigned)aleat(256) << 24) | ((unsigned)aleat(256) << 16) | ((unsigned)aleat(256) << 8);
-      m->type = IMAGE_TYPE_OUTLINE;
-      if (caso == 0 && i % 3 == 0) m->esc = 0.4f;
-      if (caso == 1 && i % 2 == 1) { m->subX = 0.37f; m->subY = 0.61f; }
-      m->bitmap = malloc((size_t)m->w * (size_t)m->h);
-      for (y = 0; y < m->h; y++) for (x = 0; x < m->w; x++)
-        m->bitmap[(size_t)y * (size_t)m->w + (size_t)x] = (unsigned char)((x == 0 || y == 0 || x == m->w - 1 || y == m->h - 1) ? 0 : aleat(4) ? 255 : aleat(256));
-      copia[i] = *m; copia[i].subX = copia[i].subY = 0.0f;
-      copia[i].bitmap = malloc((size_t)m->w * (size_t)m->h); memcpy(copia[i].bitmap, m->bitmap, (size_t)m->w * (size_t)m->h);
-    }
-    if (caso == 0) {
-      assperf_teste_definir(AP_DIVIDIDO, 1);
-      ok(ass_frame_flatten(&f, 960, 540, 0) == 0 && f.count == 24 && !f.images[0].rgba, "[4] Split frames Per image: a split frame stays per image");
-      assperf_teste_definir(AP_DIVIDIDO, 0);
-    } else {
-      int maxE = 0, res, W, H, minX = 1 << 30, minY = 1 << 30, x1 = 0, y1 = 0;
-      assperf_teste_definir(AP_POSINT, 1);
-      res = ass_frame_flatten(&f, 960, 540, 0);
-      assperf_teste_definir(AP_POSINT, 0);
-      ok(res == 1 && f.count == 1 && f.images[0].rgba, "[4] Merged positions Whole pixel: flattened to one image");
-      for (i = 0; i < 24; i++) {
-        if (copia[i].x < minX) minX = copia[i].x;
-        if (copia[i].y < minY) minY = copia[i].y;
-        if (copia[i].x + copia[i].w > x1) x1 = copia[i].x + copia[i].w;
-        if (copia[i].y + copia[i].h > y1) y1 = copia[i].y + copia[i].h;
-      }
-      W = x1 - minX; H = y1 - minY;
-      { float *ref = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H), *got = malloc(sizeof(float) * 4 * (size_t)W * (size_t)H);
-        referencia(copia, 24, escF, minX, minY, W, H, ref);
-        compor_camadas(&f, escF, minX, minY, W, H, got);
-        for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
-          int e = abs((int)lroundf(got[((size_t)y * (size_t)W + (size_t)x) * 4 + 3] * 255.f) -
-                      (int)lroundf(ref[((size_t)y * (size_t)W + (size_t)x) * 4 + 3] * 255.f));
-          if (e > maxE) maxE = e;
-        }
-        free(ref); free(got); }
-      { char m[160]; snprintf(m, sizeof m, "[4] Merged positions Whole pixel: matches the whole-pixel composite (alpha off by %d, limit 4)", maxE);
-        ok(maxE <= 4, m); }
-    }
-    for (i = 0; i < 24; i++) free(copia[i].bitmap);
-    ass_frame_liberar(&f);
+  memset(&f, 0, sizeof f);
+  f.count = 24; f.images = calloc(24, sizeof *f.images); f.esc = 0.5f;
+  for (i = 0; i < 24; i++) {
+    AssCpuImage *m = &f.images[i];
+    m->w = 20 + aleat(60); m->h = 8 + aleat(40); m->stride = m->w;
+    m->x = 20 + aleat(300); m->y = 20 + aleat(200);
+    m->color = ((unsigned)aleat(256) << 24) | ((unsigned)aleat(256) << 16) | ((unsigned)aleat(256) << 8);
+    m->type = IMAGE_TYPE_OUTLINE;
+    if (i % 3 == 0) m->esc = 0.4f;
+    m->bitmap = malloc((size_t)m->w * (size_t)m->h);
+    for (y = 0; y < m->h; y++) for (x = 0; x < m->w; x++)
+      m->bitmap[(size_t)y * (size_t)m->w + (size_t)x] = (unsigned char)(aleat(4) ? 255 : aleat(256));
   }
+  ok(ass_frame_flatten(&f, 960, 540, 0) == 0 && f.count == 24 && !f.images[0].rgba, "[4] a split frame stays per image");
+  ass_frame_liberar(&f);
 }
 
 int main(void) {
@@ -343,7 +279,7 @@ int main(void) {
   teste_indice();
   teste_assinatura();
   teste_flatten();
-  teste_linhas();
+  teste_dividido();
   printf(falhas ? "ass_indice: %d FALHAS\n" : "ass_indice: ok\n", falhas);
   return falhas != 0;
 }

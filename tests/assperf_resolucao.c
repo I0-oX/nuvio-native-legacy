@@ -1,5 +1,5 @@
 // Render resolution modes (src/assperf.c, owner 22/11/2026): Low / Medium /
-// High auto and Custom auto, 100 % in quiet scenes. While busy: text 50 / 75 /
+// High auto, 100 % in quiet scenes (Custom auto removed 23/11/2026). While busy: text 50 / 75 /
 // 90 %, blur the clean value (no lines on strip gradients) nearest above
 // 40 / 50 / 55 % up to 75 %, worked out from the frame height (layout x k, k =
 // 2 on a 4K UI) and the script's PlayResY. Scripts of 540 lines or fewer:
@@ -57,52 +57,14 @@ int main(void) {
   assperf_grade_definir(1080, 480);
   modo(AP_RES_ALTO, &tx, &bl, &d);
   OK(d && tx == 1.0 && PERTO(bl, 480.0 * 2.0 / 1080.0), "High, 1080 UI, 480p: text 100, blur 88.9 (f 2)");
-  /* Small scripts at 100 % Off (owner 23/11/2026, KeijoMika's build): the Auto's own text scale. */
-  assperf_teste_definir(AP_PEQ100, 0);
-  modo(AP_RES_ALTO, &tx, &bl, &d);
-  OK(d && PERTO(tx, AP_ALTO_TEXTO), "High, 480p, Small scripts at 100 % Off: text 100 (High is 100 anyway)");
-  assperf_teste_definir(AP_PEQ100, 1);
-  /* Renderer preset: Nuvio (defaults) / KeijoMika (his rows) / Custom (mixed). */
-  OK(assperf_preset() == 0, "preset: the defaults are Nuvio");
-  assperf_preset_definir(1);
-  OK(assperf_preset() == 1 && assperf_get(AP_DIVIDIDO) == 1 && assperf_get(AP_POSINT) == 1 && assperf_get(AP_HINT) == 1 &&
-     assperf_get(AP_CACHEP) == 1 && assperf_get(AP_PEQ100) == 0, "preset KeijoMika: his rows");
-  assperf_teste_definir(AP_HINT, 0);
-  OK(assperf_preset() == 2, "preset: one row changed reads Custom");
-  assperf_preset_definir(0);
-  OK(assperf_preset() == 0 && assperf_get(AP_DIVIDIDO) == 1 && assperf_get(AP_POSINT) == 0 && assperf_get(AP_PEQ100) == 1, "preset Nuvio: our rows back (Per image, Exact)");
-
-  /* Custom auto: the rows, a clean pick follows the script. */
-  assperf_grade_definir(2160, 1080);
-  assperf_teste_definir(AP_TXTRES, 80);
-  assperf_teste_definir(AP_BLURRES, 45);
-  modo(AP_RES_CUSTOM, &tx, &bl, &d);
-  OK(d && PERTO(tx, 0.80) && PERTO(bl, 0.45), "Custom: text 80, blur 45 as set");
-  { int p10[AP_LIMPO_N], cod[AP_LIMPO_N], n = assperf_blur_limpos(p10, cod, AP_LIMPO_N), i, tem50 = 0, codigo50 = 0;
-    for (i = 0; i < n; i++) if (p10[i] == 500) { tem50 = 1; codigo50 = cod[i]; }
-    OK(n == 3 && tem50, "4K UI, 1080p: the clean values are 25, 50 and 100 %");
-    assperf_teste_definir(AP_BLURRES, codigo50);
-    modo(AP_RES_CUSTOM, &tx, &bl, &d);
-    OK(PERTO(bl, 0.50), "Custom: the clean 50 % pick");
-    assperf_grade_definir(2160, 720);
-    modo(AP_RES_CUSTOM, &tx, &bl, &d);
-    OK(PERTO(bl, 1.0 / 3.0), "the same clean pick on a 720p script: 33.3 % (still f 1)"); }
-  assperf_teste_definir(AP_TXTRES, 300);
-  assperf_teste_definir(AP_BLURRES, 3);
-  modo(AP_RES_CUSTOM, &tx, &bl, &d);
-  OK(tx == 1.0 && PERTO(bl, 0.5), "Custom: bad values fall back (text 100, blur 50)");
-
   /* Saved files. */
   OK(assperf_teste_lido(AP_ESCALA, 0) == AP_RES_ALTO, "a saved fixed 100 % reads as High auto");
   OK(assperf_teste_lido(AP_ESCALA, 2) == AP_RES_MEDIO, "a saved fixed 75 % reads as Medium auto");
-  OK(assperf_teste_lido(AP_ESCALA, 6) == AP_RES_CUSTOM, "a saved 6 is Custom auto again");
+  OK(assperf_teste_lido(AP_ESCALA, AP_RES_CUSTOM_VELHO) == -1, "a saved Custom auto (6, removed) is refused: the TV's default stays");
   OK(assperf_teste_lido(AP_ESCALA, AP_RES_BAIXO) == AP_RES_BAIXO && assperf_teste_lido(AP_ESCALA, AP_RES_MEDIO) == AP_RES_MEDIO &&
      assperf_teste_lido(AP_ESCALA, AP_RES_ALTO) == AP_RES_ALTO, "the Autos read back as saved");
   OK(assperf_teste_lido(AP_ESCALA, 4) == -1 && assperf_teste_lido(AP_ESCALA, 8) == -1, "unknown modes refused (default kept)");
-  OK(assperf_teste_lido(AP_TXTRES, 72) == -1 && assperf_teste_lido(AP_TXTRES, 70) == 70, "text resolution: steps of 5");
-  OK(assperf_teste_lido(AP_BLURRES, AP_LIMPO_BASE + 4) == AP_LIMPO_BASE + 4 && assperf_teste_lido(AP_BLURRES, AP_LIMPO_BASE + 9) == -1,
-     "blur resolution: clean codes 1..8 kept");
-  /* Default mode by the TV (owner 23/11/2026), nothing saved: 7+ High, 6 Medium, 4/5 Low, unknown Medium. */
+  /* Default mode by the TV (owner 23/11/2026), nothing saved (or a saved Custom): 7+ High, 6 Medium, 4/5 Low, unknown Medium. */
   assperf_tizen_definir(9); OK(assperf_get(AP_ESCALA) == AP_RES_ALTO, "Tizen 9, nothing saved: High auto");
   assperf_tizen_definir(6); OK(assperf_get(AP_ESCALA) == AP_RES_MEDIO, "Tizen 6, nothing saved: Medium auto");
   assperf_tizen_definir(5); OK(assperf_get(AP_ESCALA) == AP_RES_BAIXO, "Tizen 5, nothing saved: Low auto");

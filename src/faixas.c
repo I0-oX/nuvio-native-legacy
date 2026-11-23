@@ -122,6 +122,11 @@ static int legOverlay = -1, legOverlayNoGo = -1;
 // sonda corre (disparada na hora); quando ela volta, faixas_atualizar decide
 // e diz no log por que ficou onde ficou.
 static int legOverlayEsperando = -1;
+// The probe came back while the player was being reopened on the same source
+// (owner 23/11/2026, log 11): the TV's track list was empty or reset, so the
+// decision waits for it - from that moment, at most LEG_ESPERA_REAB_MS.
+#define LEG_ESPERA_REAB_MS 6000u
+static Uint32 legOverlayEsperaReab;   // 0 = not waiting
 
 // LEGENDA AUTOMATICA DA SESSAO (#129): 1 do inicio de uma reproducao ate a
 // decisao (ligou, nao havia o que ligar, ou a pessoa escolheu na folha).
@@ -450,7 +455,7 @@ static int autoTrocaUrl(const char *url, char *nome, unsigned tamNome) {
 static void reiniciarFaixas(int preservarPrebusca) {
   legsync_definir_trocador(autoTroca);
   legsync_definir_trocador_url(autoTrocaUrl);
-  legExterna = -1; legExternaId[0] = 0; legOverlay = legOverlayNoGo = legOverlayEsperando = -1; aberta = 0;
+  legExterna = -1; legExternaId[0] = 0; legOverlay = legOverlayNoGo = legOverlayEsperando = -1; legOverlayEsperaReab = 0; aberta = 0;
   legOverlayFalhas = legOverlayRecusas = legOverlayNoGoEstado = 0; legOverlayRetomar = 0;
   legOverlayTV = legOverlayColhidos = 0;
   if (!preservarPrebusca) mkvass_parar();
@@ -632,16 +637,9 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
         * defaults (always the last cell). With libass off it is the ordinary
         * column plus the libass row, Restore defaults last. */
        EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
-       /* Custom auto (owner 22/11/2026): text and blur resolution of busy
-        * scenes, shown only on Custom auto. */
-       EST_TXTRES, EST_BLURRES,
-       /* Every frame (owner 22/11/2026): busy scenes render every frame
-        * (Off / Auto / On; assperf.h AP_TODOS). */
-       EST_TODOS,
-       /* KeijoMika's ass-minimal (owner 23/11/2026): Renderer preset (Nuvio /
-        * KeijoMika / Custom) and each renderer difference as a row
-        * (assperf.h AP_DIVIDIDO..AP_PEQ100). */
-       EST_PRESET, EST_DIVIDIDO, EST_POSINT, EST_HINT, EST_CACHES, EST_PEQ100,
+       /* The renderer test rows (Custom auto's text / blur, Every frame,
+        * Renderer preset and the KeijoMika rows) are gone: fixed values
+        * since 23/11/2026 (assperf.h). */
 #endif
        /* MAIN / SECOND (owner 12/11): "Edit" switches the column between the
         * main subtitle and the second one (shown only while a second subtitle
@@ -657,17 +655,11 @@ static const char *const EST_ROT[EST_TOTAL] = {
   "Negrito", "Restaurar padrão", "Cor da borda"
 #ifdef NV_TPK
   , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
-  , "Resolução do texto (teste)", "Resolução do desfoque (teste)", "Todos os quadros"
-  , "Predefinição do renderizador", "Quadros divididos", "Posições achatadas", "Hinting", "Caches", "Roteiros pequenos a 100%"
 #endif
   , "Editar",
   "Tamanho", "Fonte da legenda", "Cor", "Opacidade", "Fundo", "Posição", "Posição da segunda legenda",
   "Borda", "Cor da borda", "Negrito", "Atraso", "Restaurar padrão"
 };
-#ifdef NV_TPK
-static int estBlurLer(void);
-static int estBlurLimpo(void);
-#endif
 /* The second subtitle's setting behind each EST2_ cell (ajustes.h AJ2_*); -1 for
  * Delay (legenda2's manual offset, like the selector's Delay row) and Restore. */
 static int est2Op(int i) {
@@ -718,14 +710,9 @@ static void estMapa(void) {
     if (assperf_get(AP_LIBASS)) {
       /* libass's dialogue Size/Opacity, then the engine rows. */
       static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA,
-                               EST_TXTRES, EST_BLURRES, EST_TODOS,
-                               EST_PRESET, EST_DIVIDIDO, EST_POSINT, EST_HINT, EST_CACHES, EST_PEQ100,
                                EST_SINC, EST_LIBASS, EST_RESTAURAR };
       int nL = (int)(sizeof L / sizeof L[0]);
-      for (i = 0; i < nL; i++) {
-        if ((L[i] == EST_TXTRES || L[i] == EST_BLURRES) && assperf_get(AP_ESCALA) != AP_RES_CUSTOM) continue;
-        estLinhas[estNLinhas++] = L[i];
-      }
+      for (i = 0; i < nL; i++) estLinhas[estNLinhas++] = L[i];
       return;
     }
     /* Restore defaults stays the last cell (owner 27/10), after libass. */
@@ -818,24 +805,7 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       if (g) snprintf(dst, tam, "%+d", g); else snprintf(dst, tam, "%s", i18n("Desligado"));
       break; }
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
-      snprintf(dst, tam, "%s", i18n(v == AP_RES_MEDIO ? "Auto médio" : v == AP_RES_ALTO ? "Auto alto" :
-                                    v == AP_RES_CUSTOM ? "Auto personalizado" : "Auto baixo"));
-      break; }
-    case EST_TXTRES: snprintf(dst, tam, "%d%%", assperf_get(AP_TXTRES)); break;
-    case EST_TODOS: { int t = assperf_get(AP_TODOS);
-      snprintf(dst, tam, "%s", t == 2 ? i18n("Ligado") : t == 1 ? "Auto" : i18n("Desligado"));
-      break; }
-    case EST_PRESET: { int p = assperf_preset();
-      snprintf(dst, tam, "%s", p == 0 ? "Nuvio" : p == 1 ? "KeijoMika" : i18n("Personalizado"));
-      break; }
-    case EST_DIVIDIDO: snprintf(dst, tam, "%s", i18n(assperf_get(AP_DIVIDIDO) ? "Por imagem" : "Camadas")); break;
-    case EST_POSINT: snprintf(dst, tam, "%s", i18n(assperf_get(AP_POSINT) ? "Pixel inteiro" : "Exatas")); break;
-    case EST_HINT: snprintf(dst, tam, "%s", i18n(assperf_get(AP_HINT) ? "Hinting leve" : "Nenhum")); break;
-    case EST_CACHES: snprintf(dst, tam, "%s", i18n(assperf_get(AP_CACHEP) ? "Pequenos" : "Grandes")); break;
-    case EST_PEQ100: snprintf(dst, tam, "%s", i18n(assperf_get(AP_PEQ100) ? "Ligado" : "Desligado")); break;
-    case EST_BLURRES: { int p10 = estBlurLer(), limpo = estBlurLimpo();
-      if (p10 % 10) snprintf(dst, tam, "%d.%d%%%s%s", p10 / 10, p10 % 10, limpo ? " · " : "", limpo ? i18n("limpo") : "");
-      else snprintf(dst, tam, "%d%%%s%s", p10 / 10, limpo ? " · " : "", limpo ? i18n("limpo") : "");
+      snprintf(dst, tam, "%s", i18n(v == AP_RES_MEDIO ? "Auto médio" : v == AP_RES_ALTO ? "Auto alto" : "Auto baixo"));
       break; }
     case EST_SINC: { int lv, ps, ag;
       legimagem_valores(&lv, &ps, &ag);
@@ -884,36 +854,10 @@ static void ciclarEstilo(int linha) {
       player_leg_estilo_restaurar();
       return;
 #ifdef NV_TPK
-    case EST_ESCALA: {   // Low -> Medium -> High -> Custom auto (owner 22/11/2026)
+    case EST_ESCALA: {   // Low -> Medium -> High auto (owner 23/11/2026: Custom auto gone)
       int v = assperf_get(AP_ESCALA);
-      assperf_definir(AP_ESCALA, v == AP_RES_BAIXO ? AP_RES_MEDIO : v == AP_RES_MEDIO ? AP_RES_ALTO :
-                                 v == AP_RES_ALTO ? AP_RES_CUSTOM : AP_RES_BAIXO);
+      assperf_definir(AP_ESCALA, v == AP_RES_BAIXO ? AP_RES_MEDIO : v == AP_RES_MEDIO ? AP_RES_ALTO : AP_RES_BAIXO);
       foco[FX_COL_ESTILO] = estPos(EST_ESCALA);
-      return; }
-    case EST_TODOS: {   // Off -> Auto -> On (owner 22/11/2026)
-      int t = assperf_get(AP_TODOS);
-      assperf_definir(AP_TODOS, t == 0 ? 1 : t == 1 ? 2 : 0);
-      printf("[ass] Every frame: %s\n", t == 0 ? "Auto" : t == 1 ? "On" : "Off");
-      fflush(stdout);
-      foco[FX_COL_ESTILO] = estPos(EST_TODOS);
-      return; }
-    /* KeijoMika's ass-minimal rows (owner 23/11/2026). The preset: Nuvio ->
-     * KeijoMika; KeijoMika or Custom -> Nuvio. */
-    case EST_PRESET: {
-      int p = assperf_preset() == 0 ? 1 : 0;
-      assperf_preset_definir(p);
-      printf("[ass] Renderer preset: %s\n", p ? "KeijoMika" : "Nuvio");
-      fflush(stdout);
-      foco[FX_COL_ESTILO] = estPos(EST_PRESET);
-      return; }
-    case EST_DIVIDIDO: case EST_POSINT: case EST_HINT: case EST_CACHES: case EST_PEQ100: {
-      int id = linha == EST_DIVIDIDO ? AP_DIVIDIDO : linha == EST_POSINT ? AP_POSINT : linha == EST_HINT ? AP_HINT : linha == EST_CACHES ? AP_CACHEP : AP_PEQ100;
-      assperf_definir(id, !assperf_get(id));
-      printf("[ass] %s: %d (preset %s)\n", linha == EST_DIVIDIDO ? "Split frames per image" : linha == EST_POSINT ? "Merged positions whole pixel" : linha == EST_HINT ? "Hinting light" :
-             linha == EST_CACHES ? "Caches small" : "Small scripts at 100%", assperf_get(id),
-             assperf_preset() == 0 ? "Nuvio" : assperf_preset() == 1 ? "KeijoMika" : "Custom");
-      fflush(stdout);
-      foco[FX_COL_ESTILO] = estPos(linha);
       return; }
     case EST_LIBASS:
       /* The same track again, so libass takes it (or lets it go). */
@@ -946,8 +890,6 @@ static const EstSlider EST_SL[EST_TOTAL] = {
   [EST_ASS_OPAC] = { 20, 100, 5, 10, 1 },                         // dialogue opacity %
   [EST_CONTRASTE] = { 0, 50, 1, 5, 2 },                           // the TV's numbers, its whole range
   [EST_GAMA] = { -20, 20, 1, 5, 2 },                              // past the TV's -5..+5 (owner 16/11/2026)
-  [EST_TXTRES] = { 25, 100, 5, 5, 1 },                            // Custom auto: text %, steps of 5
-  [EST_BLURRES] = { 250, 1000, 1, 1, 1 },                         // Custom auto: blur % x 10 (5 % steps + the clean values)
 #endif
   // The second subtitle: steps through the choices of its setting (the value
   // shown is the setting's own text); Delay in ms like the main.
@@ -973,38 +915,6 @@ static float ctlAnim;      // 0..1: grade -> controle (mola)
 static float ctlFrac;      // posicao mostrada do marcador (mola: segurar desliza)
 static float ctlAmostra[VIDEO_LEG_NCORES];   // 0..1: a amostra em foco cresce
 
-#ifdef NV_TPK
-/* Custom auto's Blur row (owner 22/11/2026): 5 % steps plus the clean values
- * of the playing file (no lines on strip gradients), marked "clean". A clean
- * pick is saved as the grid step, so it stays clean on other files. Values in
- * % x 10. */
-static int estBlurLista(int *p10, int *cod) {
-  int lp[AP_LIMPO_N], lc[AP_LIMPO_N], nl = assperf_blur_limpos(lp, lc, AP_LIMPO_N), n = 0, v, j;
-  for (v = 25; v <= 100; v += 5) {
-    int achou = 0;
-    for (j = 0; j < nl; j++) if (lp[j] == v * 10) achou = 1;
-    if (!achou) { p10[n] = v * 10; cod[n] = v; n++; }
-  }
-  for (j = 0; j < nl; j++) { p10[n] = lp[j]; cod[n] = lc[j]; n++; }
-  for (v = 1; v < n; v++)   /* sorted by % */
-    for (j = v; j > 0 && p10[j - 1] > p10[j]; j--) {
-      int a = p10[j]; p10[j] = p10[j - 1]; p10[j - 1] = a;
-      a = cod[j]; cod[j] = cod[j - 1]; cod[j - 1] = a;
-    }
-  return n;
-}
-static int estBlurLer(void) { return (int)lround(assperf_blurres_escala(assperf_get(AP_BLURRES)) * 1000.0); }
-static int estBlurLimpo(void) { return assperf_get(AP_BLURRES) > AP_LIMPO_BASE; }
-/* Nearest entry to p10 (d = 0), or the next one above / below (d = +1 / -1). */
-static void estBlurGravar(int p10, int d) {
-  int lp[16 + AP_LIMPO_N], lc[16 + AP_LIMPO_N], n = estBlurLista(lp, lc), j, melhor = 0;
-  if (n <= 0) return;
-  if (d > 0) { for (j = 0; j < n && lp[j] <= p10; j++) {} melhor = j < n ? j : n - 1; }
-  else if (d < 0) { for (j = n - 1; j >= 0 && lp[j] >= p10; j--) {} melhor = j >= 0 ? j : 0; }
-  else for (j = 1; j < n; j++) if (abs(lp[j] - p10) < abs(lp[melhor] - p10)) melhor = j;
-  assperf_definir(AP_BLURRES, lc[melhor]);
-}
-#endif
 static int estLer(int i) {
   const VideoLegendaEstilo *e = player_leg_estilo();
   if (i == EST2_ATRASO) return legenda2_offset_manual();
@@ -1015,8 +925,6 @@ static int estLer(int i) {
     case EST_ASS_OPAC: return assperf_get(AP_ASSOPAC);
     case EST_CONTRASTE: return 30 + assperf_get(AP_CONTRASTE);
     case EST_GAMA: return assperf_get(AP_GAMA);
-    case EST_TXTRES: return assperf_get(AP_TXTRES);
-    case EST_BLURRES: return estBlurLer();
 #endif
     case 0: return e->tamanho;
     case 3: return (int)lroundf(video_legenda_opacidade(e) * 100.0f);
@@ -1041,8 +949,6 @@ static void estGravar(int i, int v) {
     case EST_ASS_OPAC: assperf_definir(AP_ASSOPAC, v); return;
     case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, v - 30); return;
     case EST_GAMA: assperf_definir(AP_GAMA, v); return;
-    case EST_TXTRES: assperf_definir(AP_TXTRES, v / 5 * 5); return;
-    case EST_BLURRES: estBlurGravar(v, 0); return;
 #endif
     case 0: e->tamanho = v; break;
     case 3: e->opacidade = v / 10 * 10; break;
@@ -1057,9 +963,6 @@ static void estPasso(int i, int d, int rep) {
   const EstSlider *s = &EST_SL[i];
   int mult = 1 + ctlRep / 12;
   if (mult > s->teto) mult = s->teto;
-#ifdef NV_TPK
-  if (i == EST_BLURRES) { (void)rep; estBlurGravar(estLer(i), d < 0 ? -1 : 1); return; }
-#endif
   estGravar(i, estLer(i) + d * (rep ? s->segura * mult : s->toque));
 }
 static void estDeFrac(int i, float f) {
@@ -1168,7 +1071,7 @@ static void escolherLegenda(int i) {
     // v1.4.7), adota o fio vivo com o que ele ja leu antes do video — parar
     // aqui jogaria isso fora.
     if (!vaiAoApp) mkvass_parar();
-    legOverlay = -1; legOverlayEsperando = -1; legOverlayRetomar = 0; legOverlayTV = 0;
+    legOverlay = -1; legOverlayEsperando = -1; legOverlayEsperaReab = 0; legOverlayRetomar = 0; legOverlayTV = 0;
     if (i < 0)        { pilZerar(); pil.espera = 0; video_escolher_legenda(-1); legenda_desligar(); legExterna = -1; legExternaId[0] = 0;
                         legsync_primaria_outra(0); }   // F05: sem externa, sem AutoSync
     else if (i < emb) {
@@ -1197,7 +1100,7 @@ static void escolherLegenda(int i) {
       else {
         const char *motivo = motivoTV(i);
         if (f && i != legOverlayNoGo && video_url_atual()[0] && video_mkv_sondado() == 0) {
-          legOverlayEsperando = i;
+          legOverlayEsperando = i; legOverlayEsperaReab = 0;
           video_sondar_mkv_agora();
         }
         printf("[legenda] faixa %d (%s, codec=%s) -> TV: %s\n", i, f ? f->rotulo : "?",
@@ -1824,8 +1727,28 @@ void faixas_atualizar(float dt, Uint32 agora) {
     video_sondar_mkv_agora();          // se o sourceInfo chegou depois da escolha
     if (video_mkv_sondado() != 0) {
       int ord = video_legenda_ordinal_mkv(i);
-      legOverlayEsperando = -1;
-      if (f && vaiOverlay(f) && ord >= 0 && video_legenda_atual() == i && video_url_atual()[0]) {
+      int reab = 0;
+#ifdef NV_TPK
+      reab = video_tpk_reabrindo();
+#endif
+      /* A reopen in progress (the local fix hides the ASS tracks from the TV,
+       * a CDN renewal): the list is empty or about to change. Wait for the
+       * track, once said in the log. The wait ends the frame the track is
+       * there; it gives up LEG_ESPERA_REAB_MS after the reopen finished
+       * (log 11: the reopen alone took 4.2-4.8 s). */
+      if (!f || (reab && !(vaiOverlay(f) && ord >= 0))) {
+        if (!legOverlayEsperaReab) {
+          printf("[legenda] sonda voltou during a reopen: waiting for the track list (faixa %d)\n", i);
+          fflush(stdout);
+        }
+        if (!legOverlayEsperaReab || reab) legOverlayEsperaReab = agora | 1u;
+        if (agora - legOverlayEsperaReab < LEG_ESPERA_REAB_MS) return;
+      }
+      legOverlayEsperando = -1; legOverlayEsperaReab = 0;
+      /* Decided by the app's own pick: any newer pick has already cleared
+       * legOverlayEsperando. The TV's selection is not asked: after a reopen
+       * with the ASS tracks hidden it is -1 by design (log 11, session 2). */
+      if (f && vaiOverlay(f) && ord >= 0 && video_url_atual()[0]) {
         printf("[legenda] sonda voltou: faixa %d (%s), o app assume\n", i, f->codec);
         overlayAssumir(i, ord);
       } else {
@@ -2377,7 +2300,6 @@ static void sliderCtl(int i, GfxRect r, float a, int ativo) {
 #ifdef NV_TPK
     else if (i == EST_CONTRASTE) { snprintf(lo, sizeof lo, "0"); snprintf(hi, sizeof hi, "50"); }
     else if (i == EST_GAMA) { snprintf(lo, sizeof lo, "-20"); snprintf(hi, sizeof hi, "+20"); }
-    else if (i == EST_BLURRES) { snprintf(lo, sizeof lo, "25%%"); snprintf(hi, sizeof hi, "100%%"); }
 #endif
     else { snprintf(lo, sizeof lo, "%d%%", i == 3 ? 25 : EST_SL[i].min); snprintf(hi, sizeof hi, "%d%%", i == 3 ? 100 : EST_SL[i].max); }
     { TxtLinha tl = txt_linha(TXT_G16B, lo, 243, 242, 239, 150), th = txt_linha(TXT_G16B, hi, 243, 242, 239, 150);
@@ -2611,7 +2533,7 @@ void faixas_escolher_externa(const Legenda *l) {
   if (!l || !l->url[0]) return;
   legAuto = 0;
   mkvass_parar();
-  legOverlay = -1; legOverlayEsperando = -1; legOverlayRetomar = 0; legOverlayTV = 0;
+  legOverlay = -1; legOverlayEsperando = -1; legOverlayEsperaReab = 0; legOverlayRetomar = 0; legOverlayTV = 0;
   video_escolher_legenda(-1);
   legsync_primaria_externa(l->url, legenda_idioma(l->idioma, l->arquivo), l->provedor);   // F05: carrega e vira documento do AutoSync
   // emTroca = o AutoSync trocando sozinho: nao e escolha da pessoa.

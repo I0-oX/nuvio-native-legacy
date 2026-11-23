@@ -207,6 +207,12 @@ void mkvass_estatisticas(long *pedidos, long *bytes, int *colhidos, int *total);
 int  mkvass_relay_faixa(void);
 void mkvass_relay_bloco(long long clPos, int clHdr, unsigned long clTs, int temTs,
                         long long blkPos, const unsigned char *b, long n);
+// A block of a hidden ASS track with no harvest on it now (owner 23/11/2026):
+// kept (the newest 4 MB) so a track picked later starts with what the TV's
+// buffer already holds. _limpar: a new file.
+void mkvass_relay_antes(long long clPos, int clHdr, unsigned long clTs, int temTs,
+                        long long blkPos, const unsigned char *b, long n);
+void mkvass_relay_antes_limpar(void);
 
 // TorBox burn-in: the reader's connections in total (own read + prefetches)
 // while TorBox's stream plays; 0 = no cap. video_tpk.c sets it every frame.

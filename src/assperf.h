@@ -38,37 +38,25 @@
 
 // The person's options (Subtitles > Style on an ASS/SSA track, .tpk):
 enum {
-  AP_ESCALA,       // render resolution (AP_RES_*): Low / Medium / High auto (default by Tizen version), Custom auto
+  AP_ESCALA,       // render resolution (AP_RES_*): Low / Medium / High auto (default by Tizen version)
   AP_GAMA,         // gamma like the TV's slider, signed: -20..+20 (0 off; the TV stops at 5)
   AP_CONTRASTE,    // contrast as the TV's number minus 30: -30..+20 (0 = TV default 30, gain 1.0)
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
   AP_ASSTAM,       // dialogue size, %: 50..200 (100)
   AP_ASSOPAC,      // dialogue opacity, %: 20..100 (100)
-  AP_TXTRES,       // Custom auto, busy: text resolution %, 25..100 in 5s (100)
-  AP_BLURRES,      // Custom auto, busy: blur resolution % 25..100 in 5s, or AP_LIMPO_BASE+c = clean step c (50)
-  /* Busy scenes (owner 22/11/2026): 0 Off = only the newest frame (signs
-   * update less often, each on time); 1 Auto = every frame while the render
-   * peak fits in 80 % of a video frame; 2 On = every frame always. (0) */
-  AP_TODOS,
-  /* KeijoMika's ass-minimal (owner 23/11/2026): each renderer difference of
-   * ours as a row, so his build can be reproduced here. 0 = ours (default),
-   * 1 = his, except AP_PEQ100 (1 = ours). The "Renderer preset" row of the
-   * Style sheet sets them all at once (assperf_preset). */
-  AP_DIVIDIDO,     // busy split frames: 1 per image through the texture cache (default since 23/11, LOG 3); 0 per-pass layers
-  AP_POSINT,       // merged frames: 0 sub-pixel offsets exact (resampled); 1 whole pixel
-  AP_HINT,         // authored ASS hinting: 0 none; 1 light
-  AP_CACHEP,       // caches: 0 large (22/11); 1 small (libass 32/24 MB, rigid 384 / 32 MB, textures 768 / 24 MB, queue 24 MB)
-  AP_PEQ100,       // scripts of 540 lines or fewer at 100 % text in the Autos: 1 on; 0 off
   AP_N
 };
-/* The Renderer preset (owner 23/11/2026): 0 Nuvio (ours), 1 KeijoMika (his),
- * 2 Custom (the rows mixed). assperf_preset_definir takes 0 or 1. */
-int  assperf_preset(void);
+/* The renderer's test rows are gone (owner 23/11/2026, "we have good values"):
+ * split frames Per image, merged positions Exact, authored ASS hinting None
+ * (plain text keeps Light), large caches, scripts of 540 lines or fewer at
+ * 100 % in the Autos, busy scenes render only the newest frame. Custom auto
+ * and its text / blur rows went with them; a saved Custom (6) or any old key
+ * loads as the TV's default and is dropped on the next save. KeijoMika's
+ * always-on savings (event index, signature cache, hashing) stay. */
 /* The TV's Tizen major version (video_tpk.c), for the default render mode. */
 void assperf_tizen_definir(int maior);
-void assperf_preset_definir(int p);
 
-/* AP_ESCALA values (owner 22/11/2026): three Autos and Custom auto, all at
+/* AP_ESCALA values (owner 22/11/2026): three Autos, all at
  * 100 % in quiet scenes; while busy the text and the blur are drawn at their
  * own resolutions (libass split passes, 0004).
  *   Low auto (was "Auto 50 %" = 5):  text 50 %, blur clean near 40 % (one pass at 50 when 50 is clean).
@@ -78,8 +66,8 @@ void assperf_preset_definir(int p);
  * Default mode by the TV (owner 23/11/2026; a saved choice wins): Tizen 7+
  * High, Tizen 6/6.5 Medium, Tizen 4/5 (and the NuvioTpk40 library) Low;
  * version unknown: Medium (assperf_tizen_definir).
- *   Custom auto (6): the Text / Blur resolution rows.
- * Saved fixed 100 % (0) reads as High auto, fixed 75 % (2) as Medium auto.
+ * Saved fixed 100 % (0) reads as High auto, fixed 75 % (2) as Medium auto;
+ * a saved Custom auto (6, removed 23/11/2026) as the TV's default.
  * "Clean" blur (no horizontal lines on gradients built from thin strips):
  * screen pixels per script pixel f = frame height (layout x k x %) / PlayResY
  * is one of 1/4, 1/3, 2/5, 1/2, 1, 2, 3, 4. The Auto takes the lowest clean %
@@ -90,9 +78,9 @@ void assperf_preset_definir(int p);
 #define AP_RES_75_VELHO  2   // only read from old files: Medium auto
 #define AP_RES_MEDIO     3
 #define AP_RES_BAIXO     5
-#define AP_RES_CUSTOM    6
+#define AP_RES_CUSTOM_VELHO 6   // only read from old files: the TV's default
 #define AP_RES_ALTO      7
-#define AP_RES_AUTO(v) ((v) == AP_RES_BAIXO || (v) == AP_RES_MEDIO || (v) == AP_RES_ALTO || (v) == AP_RES_CUSTOM)
+#define AP_RES_AUTO(v) ((v) == AP_RES_BAIXO || (v) == AP_RES_MEDIO || (v) == AP_RES_ALTO)
 #define AP_BAIXO_TEXTO 0.50
 #define AP_BAIXO_BLUR  0.40
 #define AP_MEDIO_TEXTO 0.75
@@ -100,8 +88,6 @@ void assperf_preset_definir(int p);
 #define AP_ALTO_TEXTO  1.00
 #define AP_ALTO_BLUR   0.50
 #define AP_BLUR_TETO   0.75
-#define AP_LIMPO_BASE  1000  // AP_BLURRES = 1000 + c: the clean step c (1..AP_LIMPO_N) of the playing file
-#define AP_LIMPO_N     8
 
 // Current value (cheap). Outside the .tpk: always 0.
 int  assperf_get(int id);
@@ -126,11 +112,6 @@ double assperf_escala_blur(void);            // Auto, busy: the blur's; 0 = one 
 // frame height at 100 % (layout height x k) and the script's PlayResY.
 void   assperf_grade_definir(int alturaPx, int playResY);
 void   assperf_grade(int *alturaPx, int *playResY);
-// Custom auto's Blur row: the clean values of the playing file within 25..100 %:
-// percent x 10 and the AP_BLURRES code; returns how many (up to max).
-int    assperf_blur_limpos(int *pct10, int *codigo, int max);
-// AP_BLURRES as a scale (Custom auto), on the current grid.
-double assperf_blurres_escala(int v);
 // The current mode's name and busy scales, for the log.
 void   assperf_modo_texto(char *b, int n);
 // Subtitle colour like the video's (AP_GAMA, AP_CONTRASTE): the TV's picture
@@ -152,9 +133,6 @@ void   assperf_carga_gl(double ms);          // GL thread: cost of a new frame (
 // 0.5 s ahead (render resolution Auto only, so it drops to 75 % just before).
 void   assperf_previsao(int inicios, long chars, int imagens, int iniciosCedo, long charsCedo);
 int    assperf_pesado(void);                 // 1 = busy scene now
-/* Busy and still rendering only the newest frame (Every frame Off, or Auto
- * with a render peak `picoMs` over 80 % of a frame at `fps`). */
-int    assperf_so_o_mais_novo(double picoMs, double fps);
 // Tizen 4-6 TVs (owner, 17/11/2026). Set by video_tpk.c from the Tizen
 // version; always 1 in the Tizen 4/5 library; 0 elsewhere. Since 19/11/2026
 // only the log reads it: busy scenes render further ahead on every .tpk, and
