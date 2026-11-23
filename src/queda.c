@@ -232,9 +232,14 @@ static void qdTid(int fd) {
 // One slot per registered thread, found by tid in the handler (no TLS there:
 // __tls_get_addr in a shared library may allocate). `passo` is a literal.
 #define QD_PASSOS 48
-static struct { int tid; const char *passo; long long a, b; } qdPassos[QD_PASSOS];
-static __thread int qdPassoSlot = -1;
-static __thread void *qdFioAlt;
+/* No thread-local storage: the Tizen 4/5 library must have no PT_TLS segment
+ * (tools/tpk.sh), so each thread finds its slot by tid. */
+static struct { int tid; const char *passo; long long a, b; void *alt; } qdPassos[QD_PASSOS];
+static int qdSlotDo(int t) {
+  int i;
+  for (i = 0; i < QD_PASSOS; i++) if (__atomic_load_n(&qdPassos[i].tid, __ATOMIC_ACQUIRE) == t) return i;
+  return -1;
+}
 static void qdDec64(int fd, long long v) {
   char b[24]; int i = (int)sizeof b - 1;
   unsigned long long u = v < 0 ? (unsigned long long)-v : (unsigned long long)v;
@@ -627,57 +632,58 @@ void queda_vigiar(void) {
 // --- worker threads (queda.h) ------------------------------------------------
 #define QD_FIO_ALT (64 * 1024)
 void queda_fio_iniciar(void) {
-  int t = qdGettid(), i;
+  int t = qdGettid(), i = qdSlotDo(t);
   stack_t velho;
-  memset(&velho, 0, sizeof velho);
+  if (i < 0)
+    for (i = 0; i < QD_PASSOS; i++) {
+      int livre = 0;
+      if (__atomic_compare_exchange_n(&qdPassos[i].tid, &livre, t, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&qdPassos[i].passo, (const char *)NULL, __ATOMIC_RELEASE);
+        qdPassos[i].alt = NULL;
+        break;
+      }
+    }
+  if (i >= QD_PASSOS) return;   // no slot: no breadcrumb and no stack of our own (nothing to free later)
   // A signal stack of its own (glibc gives threads none; CoreCLR only to its own).
-  if (!qdFioAlt && sigaltstack(NULL, &velho) == 0 && (velho.ss_flags & SS_DISABLE)) {
+  memset(&velho, 0, sizeof velho);
+  if (!qdPassos[i].alt && sigaltstack(NULL, &velho) == 0 && (velho.ss_flags & SS_DISABLE)) {
     void *p = malloc(QD_FIO_ALT);
     if (p) {
       stack_t alt;
       alt.ss_sp = p; alt.ss_size = QD_FIO_ALT; alt.ss_flags = 0;
-      if (sigaltstack(&alt, NULL) == 0) qdFioAlt = p; else free(p);
-    }
-  }
-  if (qdPassoSlot >= 0) return;
-  for (i = 0; i < QD_PASSOS; i++) {
-    int livre = 0;
-    if (__atomic_compare_exchange_n(&qdPassos[i].tid, &livre, t, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-      __atomic_store_n(&qdPassos[i].passo, (const char *)NULL, __ATOMIC_RELEASE);
-      qdPassoSlot = i;
-      break;
+      if (sigaltstack(&alt, NULL) == 0) qdPassos[i].alt = p; else free(p);
     }
   }
 }
 void queda_fio_fim(void) {
-  if (qdPassoSlot >= 0) {
-    __atomic_store_n(&qdPassos[qdPassoSlot].passo, (const char *)NULL, __ATOMIC_RELEASE);
-    __atomic_store_n(&qdPassos[qdPassoSlot].tid, 0, __ATOMIC_RELEASE);
-    qdPassoSlot = -1;
-  }
-  if (qdFioAlt) {
+  int i = qdSlotDo(qdGettid());
+  if (i < 0) return;
+  if (qdPassos[i].alt) {
     stack_t alt;
     memset(&alt, 0, sizeof alt);
     alt.ss_flags = SS_DISABLE;
-    if (sigaltstack(&alt, NULL) == 0) { free(qdFioAlt); qdFioAlt = NULL; }
+    if (sigaltstack(&alt, NULL) == 0) free(qdPassos[i].alt);
+    qdPassos[i].alt = NULL;
   }
+  __atomic_store_n(&qdPassos[i].passo, (const char *)NULL, __ATOMIC_RELEASE);
+  __atomic_store_n(&qdPassos[i].tid, 0, __ATOMIC_RELEASE);
 }
 void queda_passo(const char *passo, long long a, long long b) {
-  int i = qdPassoSlot;
+  int i = qdSlotDo(qdGettid());
   if (i < 0) return;
   qdPassos[i].a = a; qdPassos[i].b = b;
   __atomic_store_n(&qdPassos[i].passo, passo, __ATOMIC_RELEASE);
 }
 void queda_vigiar_fio(void) {
-  static __thread long long ultimo;
+  static long long ultimo;   // shared by all worker threads: one look per 100 ms is enough
   struct timespec ag;
   struct sigaction atual;
   long long ms;
   if (!qdEncadeado) return;
   clock_gettime(CLOCK_MONOTONIC, &ag);
   ms = (long long)ag.tv_sec * 1000 + ag.tv_nsec / 1000000;
-  if (ms - ultimo < 100) return;
-  ultimo = ms;
+  if (ms - __atomic_load_n(&ultimo, __ATOMIC_RELAXED) < 100) return;
+  __atomic_store_n(&ultimo, ms, __ATOMIC_RELAXED);
   memset(&atual, 0, sizeof atual);
   if (sigaction(SIGSEGV, NULL, &atual) == 0 && !((atual.sa_flags & SA_SIGINFO) && atual.sa_sigaction == qdTratarE))
     queda_conferir("relay thread");
