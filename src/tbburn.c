@@ -57,6 +57,25 @@ int tbburn_json_texto(const char *corpo, const char *chave, char *out, unsigned 
   return 0;
 }
 
+/* A JSON true/false value (log 15, owner 23/11/2026: createstream's
+ * needs_transcoding / is_transcoding). 1 true, 0 false, -1 absent. */
+int tbburn_json_bool(const char *corpo, const char *chave) {
+  char pad[96];
+  const char *p;
+  if (!corpo || !chave) return -1;
+  snprintf(pad, sizeof pad, "\"%s\"", chave);
+  for (p = strstr(corpo, pad); p; p = strstr(p + 1, pad)) {
+    const char *v = p + strlen(pad);
+    while (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r') v++;
+    if (*v != ':') continue;
+    v++;
+    while (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r') v++;
+    if (!strncmp(v, "true", 4)) return 1;
+    if (!strncmp(v, "false", 5)) return 0;
+  }
+  return -1;
+}
+
 int tbburn_achar_m3u8(const char *corpo, char *out, unsigned n) {
   const char *p;
   char *tmp;
@@ -775,6 +794,16 @@ static int readicionar(Pedido *p, int itemVelho, int arqVelho, const char *hashV
     snprintf(motivo, mn, "not cached on TorBox");
     return 0;
   }
+  /* Log 15 (owner 23/11/2026): TorBox sent no video for an item still in the
+   * account; adding its hash gave the same item back, and asking for minutes
+   * cannot change that. The original plays (video_tpk.c waits for TorBox's
+   * encoder itself). */
+  if (p->readd && itemVelho > 0 && tid == itemVelho) {
+    printf("[tbburn] re-add: TorBox gave back the same item %d (still in your TorBox): not re-adding\n", tid);
+    fflush(stdout);
+    snprintf(motivo, mn, "item still in your TorBox");
+    return 0;
+  }
   printf("[tbburn] re-add: added as torrent %d. TorBox may need a few minutes to register it: asking for the "
          "stream every %u s for up to %u min; the original plays with Nuvio's subtitles meanwhile\n",
          tid, TBB_READD_PASSO_MS / 1000u, TBB_READD_TOTAL_MS / 60000u);
@@ -925,16 +954,19 @@ resposta:
       return NULL;
     }
   }
-  free(r);
-  log = malloc(TBB_URL_MAX);
-  if (log) {
-    snprintf(log, TBB_URL_MAX, "%s", m3u8);
-    debrid_tb_redigir(log);
-    tbburn_log_mascarar(log);   // the host only
-    printf("[tbburn] stream ready in %u ms: %s\n", msAgora() - t0, log);
-    fflush(stdout);
-    free(log);
-  }
+  { int nt = tbburn_json_bool(r, "needs_transcoding"), it = tbburn_json_bool(r, "is_transcoding");
+    free(r);
+    log = malloc(TBB_URL_MAX);
+    if (log) {
+      snprintf(log, TBB_URL_MAX, "%s", m3u8);
+      debrid_tb_redigir(log);
+      tbburn_log_mascarar(log);   // the host only
+      // Log 15 (owner 23/11/2026): a file TorBox must encode answered slowly.
+      printf("[tbburn] stream ready in %u ms (needs_transcoding %s, is_transcoding %s): %s\n", msAgora() - t0,
+             nt < 0 ? "?" : nt ? "true" : "false", it < 0 ? "?" : it ? "true" : "false", log);
+      fflush(stdout);
+      free(log);
+    } }
   // Ready first: the player opens now. The playlist read below is for the log
   // only and used to hold the start for one more round trip to TorBox's
   // stream host (up to 10 s), on every burn-in start.
@@ -971,6 +1003,18 @@ void tbburn_pedir(const char *url, int sub, int audio) {
   }
   if (pthread_create(&f, NULL, trabalhar, p) == 0) pthread_detach(f);
   else { publicar(p->geracao, TBB_FALHOU, NULL, "no thread"); free(p); }
+}
+
+/* Log 15 (owner 23/11/2026): the item TorBox gave the stream for is in the
+ * account (the lookup found it; createstream answered). Re-adding it by its
+ * hash only gives the same item back (153924165 there). */
+int tbburn_item_na_conta(const char *url) {
+  int v = 0;
+  if (!url || !url[0]) return 0;
+  pthread_mutex_lock(&trava);
+  if (ids.achou && ids.item > 0 && !strcmp(ids.url, url)) v = ids.item;
+  pthread_mutex_unlock(&trava);
+  return v;
 }
 
 void tbburn_readicionar(const char *url, int sub, int audio) {

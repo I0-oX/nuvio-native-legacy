@@ -144,6 +144,21 @@ check "laced Opus: every packet 20 ms in the log" "grep -q 'Opus audio 0 seg 5: 
 fim
 
 
+# 3c. Log 15 (owner 23/11/2026): TorBox's encoder hangs on a Range for a
+#     segment but serves it whole. Segment 0's head is asked for whole, so the
+#     first PTS comes at once and the session gets ready.
+: > "$work/origem.log"
+sessao tbhang/playlist.m3u8 0 0
+for _ in $(seq 100); do grep -q 'ready in\|session failed' "$work/s.log" && break; sleep 0.1; done
+check "encoder that hangs on Range: segment 0 asked whole, first PTS known" \
+  "grep -q 'TorBox segment 0 head: whole segment asked (no Range), HTTP 200' '$work/s.log' && grep -qE \"TorBox's first video PTS: [0-9]\" '$work/s.log'"
+check "encoder that hangs on Range: no Range sent to TorBox's segments, session ready" \
+  "! grep -q '^HANG' '$work/origem.log' && grep -q 'ready in' '$work/s.log' && ! grep -q 'session failed' '$work/s.log'"
+curl -s -o "$work/out/h1.ts" "$B/v_1.ts"
+check "encoder that hangs on Range: the first segment through Nuvio is logged" \
+  "[ -s '$work/out/h1.ts' ] && grep -q 'first video segment the TV asked for: seg 1, came from TorBox' '$work/s.log'"
+fim
+
 # 4. fMP4 TorBox behind a master playlist.
 sessao tb4/master.m3u8 0 1
 curl -s -o "$work/out/m1.ts" "$B/a1_2.ts"

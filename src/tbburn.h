@@ -70,6 +70,11 @@ void tbburn_pedir(const char *url, int sub, int audio);
  * 22/11/2026): re-add it by its hash, then ask for the stream again. Results
  * as tbburn_pedir (TBB_ESPERANDO while TorBox registers it). */
 void tbburn_readicionar(const char *url, int sub, int audio);
+/* The TorBox item of `url` when the lookup found it in the account (> 0), else
+ * 0. Log 15 (owner 23/11/2026): no re-add then, it would give the same item. */
+int  tbburn_item_na_conta(const char *url);
+// A JSON true/false: 1 / 0, -1 = absent (createstream's needs_transcoding).
+int  tbburn_json_bool(const char *corpo, const char *chave);
 int  tbburn_resultado(char *m3u8, unsigned n, char *motivo, unsigned mn);
 void tbburn_cancelar(void);
 // TorBox refused the plan on the last request (not Pro there). Owner

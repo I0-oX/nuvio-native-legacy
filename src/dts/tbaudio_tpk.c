@@ -592,6 +592,8 @@ typedef struct Sessao {
   int pronto, falhou, modo, audio;   // audio: index in fx[]
   int semVideo;                        // TorBox sent no video (segment 0 never came): tba_sem_video
   unsigned prazoMs;                    // baixarP: this request's deadline (0 = the usual 30 s)
+  double abertoEm;                     // tba_abrir (agoraMs): log 15's "first segment through Nuvio" line
+  atomic_int vidPrimeiro;              // video segments served so far (the first is logged)
   int opusLog;                         // Opus packet lines logged (first segments only)
   int64_t proxPts;                     // the reading track's next timestamp (laced frames carry none)
   int semPts, semPtsLog;               // packets that came without a timestamp (filled in) / lines logged
@@ -713,19 +715,19 @@ static unsigned char *baixarP(Sessao *s, const char *url, size_t max, size_t *n,
                               int *status, double *ms, volatile int *mais) {
   RedePedido p; RedeResposta r; Acum a;
   Parar pp = { s, mais };
-  char faixa[64];
-  const char *cabs[2] = { NULL, NULL };
-  int cabeca = max <= TB_CABECA;
   double t0 = agoraMs();
   memset(&p, 0, sizeof p); memset(&r, 0, sizeof r);
   a.b = malloc(max + 1); a.n = 0; a.max = max;
   if (!a.b) return NULL;
   p.url = url; p.prazo_ms = s->prazoMs ? (int)s->prazoMs : 30000; p.seguir = 1; p.rebaixar_midia = 1;
   // rede refuses a body whose Content-Length passes max_bytes before reading
-  // it: the cap is ours (acumular), the transfer's is the largest allowed. A
-  // short read (segment 0's head) asks for that Range only.
+  // it: the cap is ours (acumular), the transfer's is the largest allowed.
+  // Owner 23/11/2026 (log 15, Hajimete no Gal FLE, needs_transcoding:true):
+  // no Range header, ever. A short read (segment 0's head) asks for the whole
+  // segment, like a browser's HLS player does, and stops at the cap. TorBox's
+  // encoder left a 256 KB Range on a segment still being encoded unanswered
+  // (every try: HTTP 0 after 10 s), while the phone browser played it.
   p.max_bytes = REDE_CORPO_MAXIMO;
-  if (cabeca) { snprintf(faixa, sizeof faixa, "Range: bytes=0-%zu", max - 1); cabs[0] = faixa; p.cabecalhos = cabs; }
   p.receber_corpo = acumular; p.corpo_usuario = &a;
   p.parar = pararSe; p.parar_usuario = &pp;
   int st;
@@ -816,7 +818,9 @@ static int prepTorbox(Sessao *s) {
   // and gave its playlist, but segment 0 never came (4 tries, 30 s each; the
   // same session's Kaguya had it in 1.1 s). A file TorBox can't read: after
   // TB_SEG0_PRAZO_MS the session fails as "no video" (tba_sem_video), and
-  // video_tpk.c opens the original at once and re-adds the file by its hash.
+  // video_tpk.c opens the original at once. Owner 23/11/2026 (log 15): the
+  // original then plays until TorBox's encoded stream answers (video_tpk.c
+  // tbAquecer), and a notice asks for OK to switch.
   { unsigned char *h = NULL;
     int semResposta = 0;
     s->prazoMs = TB_SEG0_PRAZO_MS;
@@ -835,11 +839,14 @@ static int prepTorbox(Sessao *s) {
       if (!h) semResposta = 1;
     }
     s->prazoMs = 0;
-    if (h) printf("[tbaudio] TorBox segment 0 head: %zu bytes in %.0f ms\n", n, ms);
+    if (h) printf("[tbaudio] TorBox segment 0 head: whole segment asked (no Range), HTTP %d, %zu bytes in %.0f ms%s\n",
+                  st, n, ms, n >= TB_CABECA ? " (stopped at 256 KB)" : "");
     free(h);
     if (semResposta) {
       if (s->cancel) return 0;
-      printf("[tbaudio] TorBox segment 0 did not download (HTTP %d, %.0f ms; deadline %u s)\n", st, ms, TB_SEG0_PRAZO_MS / 1000u);
+      printf("[tbaudio] TorBox segment 0 did not download (whole segment asked, no Range; HTTP %d, %.0f ms; deadline %u s): %s\n",
+             st, ms, TB_SEG0_PRAZO_MS / 1000u,
+             st >= 400 ? "TorBox answered with an error" : st ? "an unexpected answer" : "no answer (TorBox's encoder may still be starting)");
       pthread_mutex_lock(&s->m); s->semVideo = 1; pthread_mutex_unlock(&s->m);
       falhar(s, "TorBox sent no video (segment 0 did not download)");
       return 0;
@@ -1354,6 +1361,13 @@ static int gerarVideo(Sessao *s, int seg, Resp *r, char *err, size_t en) {
   unsigned char *b;
   tbr_servido(s->tbrGer, seg);   // the first one after an open/seek: the segment the player landed in
   b = baixar(s, s->pl.seg[seg].uri, TB_SEG_MAX, &n, NULL, 0, &st, &ms);
+  // Log 15 (owner 23/11/2026): when the TV player's first video segment
+  // arrives through Nuvio's session, and how long TorBox took for it.
+  if (atomic_fetch_add(&s->vidPrimeiro, 1) == 0) {
+    printf("[tbaudio] first video segment the TV asked for: seg %d, %s from TorBox in %.0f ms (HTTP %d, %zu KB), %.0f ms after the session opened\n",
+           seg, b ? "came" : "did NOT come", ms, st, b ? n / 1024 : (size_t)0, agoraMs() - s->abertoEm);
+    fflush(stdout);
+  }
   if (!b) { snprintf(err, en, "TorBox segment %d did not download (HTTP %d)", seg, st); return -1; }
   if (s->tbMp4) {
     if (!s->stripAviso++) { printf("[tbaudio] TorBox's segments are fMP4: passed as they are (only MPEG-TS is stripped)\n"); fflush(stdout); }
@@ -1657,6 +1671,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   s->modo = modo;
   s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1; s->proxPts = AV_NOPTS_VALUE;
   s->tbrGer = tbr_geracao();
+  s->abertoEm = agoraMs();
   s->tbUrl = strdup(tbUrl); s->orig = strdup(orig); s->cab = strdup(cab ? cab : "");
   gerarToken(s->tok, 28);
   if (!s->tbUrl || !s->orig || !s->cab) { atomic_store(&s->refs, 1); soltar(s); return 0; }

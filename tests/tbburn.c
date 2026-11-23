@@ -139,6 +139,11 @@ int main(void) {
   CHECA(tbburn_achar_m3u8("ok https://h.tb-cdn.io/s/1/playlist.m3u8\n", out, sizeof out) &&
         !strcmp(out, "https://h.tb-cdn.io/s/1/playlist.m3u8"));
   CHECA(!tbburn_achar_m3u8(NULL, out, sizeof out));
+  // Log 15 (owner 23/11/2026): createstream's flags in the "stream ready" line.
+  { const char *j = "{\"success\":true,\"data\":{\"is_transcoding\":false, \"needs_transcoding\" : true,\"region\":\"wnam\"}}";
+    CHECA(tbburn_json_bool(j, "needs_transcoding") == 1 && tbburn_json_bool(j, "is_transcoding") == 0);
+    CHECA(tbburn_json_bool(j, "region") == -1 && tbburn_json_bool(j, "nope") == -1 && tbburn_json_bool(NULL, "x") == -1);
+    CHECA(tbburn_json_bool("{\"needs_transcoding\":\"true\"}", "needs_transcoding") == -1); }
   CHECA(!tbburn_achar_m3u8("{\"data\":null}", out, sizeof out));
   // Unterminated string: no crash, nothing found.
   CHECA(!tbburn_achar_m3u8("{\"u\":\"https://a.io/p.m3u8", out, sizeof out));
@@ -458,12 +463,27 @@ int main(void) {
       tbburn_fonte("https://s/12z", "", "B.S01E19.mkv", 2019);
       tbburn_pedir("https://s/12z", 1, 1);
       CHECA(fimPedido() == TBB_FALHOU);   // found (item 500), no playlist in these stubs
+      // Log 15: the item is in the account: video_tpk.c doesn't re-add then.
+      CHECA(tbburn_item_na_conta("https://s/12z") == 500 && !tbburn_item_na_conta("https://s/other") && !tbburn_item_na_conta(""));
       frescoItem = 900; frescoAPartir = 1; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 1;
       tbburn_readicionar("https://s/12z", 1, 1);
       CHECA(fimPedido() == TBB_PRONTO && viuEsperando && adicoes == 1 &&
             !strcmp(adicionouHash, "1212121212121212121212121212121212121212") && strstr(ultRota, "createstream?id=900&") != NULL);
       CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
-      pronto900 = 0; frescoItem = 0; frescoAPartir = 0; partesHashItem[0] = 0; } }
+      CHECA(tbburn_item_na_conta("https://s/12z") == 900);   // the re-added torrent is the one known now
+      pronto900 = 0; frescoItem = 0; frescoAPartir = 0; partesHashItem[0] = 0; }
+    // x2) Log 15 (owner 23/11/2026): no video, and adding the hash gives the
+    //     same item back (153924165 there): no minutes of asking, at once.
+    { char mt[96];
+      partesAchar = 1; snprintf(partesHashItem, sizeof partesHashItem, "%s", "3434343434343434343434343434343434343434");
+      tbburn_fonte("https://s/12w", "", "B.S01E20.mkv", 2020);
+      tbburn_pedir("https://s/12w", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU && tbburn_item_na_conta("https://s/12w") == 500);
+      frescoN = criacoes = adicoes = 0; adicionarDa = 500;
+      tbburn_readicionar("https://s/12w", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU && adicoes == 1 && criacoes == 0 && frescoN == 0);
+      CHECA(tbburn_resultado(NULL, 0, mt, sizeof mt) == TBB_FALHOU && strstr(mt, "still in your TorBox") != NULL);
+      partesHashItem[0] = 0; } }
 
   // y) Log 12 (Married Couple CRUCiBLE): a Burn in press while the re-added
   //    file is registering joins the wait: no second add, no list lookup, no
