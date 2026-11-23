@@ -7,6 +7,7 @@
 #include "rede.h"
 #include "dados.h"
 #include "fio1.h"
+#include "nv_ticks.h"
 #include <SDL2/SDL.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -132,7 +133,7 @@ int fonteurl_iniciar(const char *url,const char *pasta) {
   RedeGrupo *g=rede_grupo_criar();d->job=g?rede_job_criar(g):NULL;rede_grupo_soltar(g);
   if(!d->job){free(d);return 0;}
   snprintf(d->url,sizeof d->url,"%s",url);snprintf(d->pasta,sizeof d->pasta,"%s",pasta);
-  snprintf(d->arquivo,sizeof d->arquivo,"entrada-%016llx.tmp",(unsigned long long)((SDL_GetTicks64()<<24) | (++sequencia & 0xffffffu)));
+  snprintf(d->arquivo,sizeof d->arquivo,"entrada-%016llx.tmp",(unsigned long long)((nv_ticks64()<<24) | (++sequencia & 0xffffffu)));
   pthread_t thread;
   if(pthread_create(&thread,NULL,executar,d)){soltar(d);soltar(d);return 0;}
   pthread_detach(thread);atual=d;return 1;

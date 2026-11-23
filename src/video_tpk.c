@@ -435,6 +435,36 @@ void nv_tpk_video_registrar_faixas(FnEscolher escolher) { hEscolher = escolher; 
 __attribute__((visibility("default")))
 void nv_tpk_video_registrar_aspecto(FnAspecto janela) { hAspecto = janela; }
 
+/* Host (any thread): one real reading of the position. motivo 0 = the usual
+ * query (playing), 1 = right after a seek, 2 = right after the pause, 3 = the
+ * pause settled (~300 ms later). carimboNs = the middle of the query on .NET's
+ * Stopwatch, which on Linux is CLOCK_MONOTONIC in ns. Feeds the stamped
+ * subtitle clock (video_pos_amostra_carimbo) and the "[ass] 10s tv" log. */
+__attribute__((visibility("default")))
+void nv_tpk_video_posicao(int ms, int motivo, int consultaMs, long long carimboNs) {
+  double agora = monoAgora(), c = (double)carimboNs / 1e9, inc = consultaMs > 0 ? consultaMs / 2000.0 : 0.0;
+  if (!ativo || ms < 0) return;
+  if (c > agora + 0.05 || c < agora - 10.0) c = agora - inc;   // another clock: the end minus half a query
+  pthread_mutex_lock(&amTrava);
+  amMed.n++;
+  if (consultaMs > 0) { amMed.somaMs += consultaMs; if (consultaMs > amMed.maxMs) amMed.maxMs = consultaMs; }
+  /* A query that STARTED before the last seek (arrives after EV_BUSCOU, up to
+   * 600 ms slower): the position is the one from before the jump. Dropped. */
+  if (c - inc < amBusca) { amMed.fora++; pthread_mutex_unlock(&amTrava); return; }
+  am.ms = ms; am.carimbo = c; am.incerteza = inc; am.seq++; am.valido = 1;
+  pthread_mutex_unlock(&amTrava);
+  if (motivo <= 1) atomic_store(&posIncerta, 0);   // the TV already said where it landed after the seek
+}
+
+/* Position readings since the last call (video.h): how many arrived, how many
+ * were dropped as older than the last seek, and the query time. Resets them. */
+void video_tpk_leituras(int *n, int *fora, long *somaMs, int *maxMs) {
+  pthread_mutex_lock(&amTrava);
+  *n = amMed.n; *fora = amMed.fora; *somaMs = amMed.somaMs; *maxMs = amMed.maxMs;
+  memset(&amMed, 0, sizeof amMed);
+  pthread_mutex_unlock(&amTrava);
+}
+
 // Opcional como o hAspecto: hosts antigos nao tem o marcador e o getter da
 // amostra cai no caminho anterior. O host publica <0 ate a primeira leitura
 // real da abertura corrente (zera ao abrir e a cada seek pedido).
