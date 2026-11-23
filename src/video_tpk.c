@@ -1177,6 +1177,18 @@ void video_tpk_queimar_ligar(int ligar) {
 int video_tpk_leg_queimavel(int i) { return tbLegAss(i); }
 int video_tpk_leg_oculta(int i) { return (tb.ativo || tb.pend) && tbLegAss(i); }
 int video_tpk_queimada(void) { return tb.ativo || tb.pend ? tb.leg : -1; }
+/* Log 13 (23/11/2026): burn-in is wanted for this title (Settings or the
+ * playback row, plan, key; not Off for the show; HDR rule) but is not on: the
+ * file is not in TorBox, TorBox failed, or a re-add is still registering. The
+ * track it would burn (menu index), so faixas.c can draw it with Nuvio when
+ * Main's remembered choice is "none" (that "none" was saved because burn-in
+ * carries the signs). -1 = burned or being asked for, held, or not wanted. */
+int video_tpk_queimar_desejada(void) {
+  const char *porque = "";
+  if (!ativo || emTrailer || tb.ativo || tb.pend || tb.pre || tb.cabEspera) return -1;
+  if (!tbburn_pode()) return -1;
+  return tbAutoFaixa(1, &porque);
+}
 int video_tpk_queimar_voltou(void) { int v = tb.voltar; tb.voltar = 0; return v; }
 static void tbUrlPlayer(const char *m);
 int video_tpk_queimar_aviso(void) { int v = tb.aviso; tb.aviso = 0; return v; }

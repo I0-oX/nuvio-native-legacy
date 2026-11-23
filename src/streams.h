@@ -373,6 +373,9 @@ int  stream_url_serve(const char *url, const char *cabecalhos);
 // endereco final, para o .tpk entregar o link do CDN ao player sem pedir de
 // novo. NULL fora do .tpk (o tpk.c liga) e nos testes.
 extern void (*stream_cdn_lembrar)(const char *orig, const char *final, const char *cabecalhos, uint64_t sessao);
+// The add-on link already resolved to a CDN in this session (cdnlink_resolvido,
+// .tpk only; NULL elsewhere). The source check keeps a timed-out source with it.
+extern int (*stream_cdn_resolvido)(const char *orig, char *host, unsigned hostTam);
 // A source focused 1 s in the source list (owner 18/11): once per focused row.
 // NULL outside the .tpk (tpk.c sets it: the early TorBox lookup for burn-in,
 // tbburn.h) and in the tests.

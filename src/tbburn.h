@@ -82,6 +82,9 @@ int  tbburn_recusado(void);
 // 1 = burn-in gave up on this source (toast), 2 = Burn in turned Off; either
 // way the ASS tracks are back in Main's list (the caller re-picks Main).
 int  video_tpk_queimada(void);
+// Burn-in wanted for this title but not on (not in TorBox, failed, registering):
+// the track it would burn (menu index), else -1. faixas.c draws it when Main is "none".
+int  video_tpk_queimar_desejada(void);
 int  video_tpk_queimar_voltou(void);
 // Re-added file ready mid-episode (owner 19/11/2026). _aviso, once: 1 = show
 // the "Burn-in ready" notice (OK switches), 2 = switched (Main leaves the

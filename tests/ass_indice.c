@@ -336,6 +336,26 @@ static void teste_sobrecarga(void) {
   ass_frame_liberar(&f);
 }
 
+/* [6] Overload frames in one pass (log 14, 23/11/2026): after a frame over
+ * ASS_FLAT_SOBRECARGA images, the next split frame goes to one pass; a frame
+ * under the limit puts the one after back on the split. Decided per frame. */
+static void teste_uma_passada(void) {
+  ass_ultimo_imgs_guardar(0);
+  ok(!ass_uma_passada_sobrecarga(1, 0.5), "[6] new track: the split stays");
+  ass_ultimo_imgs_guardar(57);
+  ok(!ass_uma_passada_sobrecarga(1, 0.5), "[6] after a normal busy frame (57 images, Kaguya): the split stays");
+  ass_ultimo_imgs_guardar(ASS_FLAT_SOBRECARGA);
+  ok(!ass_uma_passada_sobrecarga(1, 0.5), "[6] at the limit (300 images): the split stays");
+  ass_ultimo_imgs_guardar(1200);
+  ok(ass_uma_passada_sobrecarga(1, 0.5), "[6] after an overloaded frame (1200 images, Fate OP): one pass");
+  ok(!ass_uma_passada_sobrecarga(0, 0.0), "[6] a frame that was not split anyway is not touched");
+  ass_ultimo_imgs_guardar(40);   /* the one-pass frame came out under the limit */
+  ok(!ass_uma_passada_sobrecarga(1, 0.5), "[6] the frame after a normal one is split again");
+  ass_ultimo_imgs_guardar(1200);
+  assrender_limpar();
+  ok(!ass_uma_passada_sobrecarga(1, 0.5), "[6] a new track (assrender_limpar) starts on the split");
+}
+
 int main(void) {
   assperf_teste_definir(AP_ESCALA, AP_RES_BAIXO);
   teste_indice();
@@ -343,6 +363,7 @@ int main(void) {
   teste_flatten();
   teste_dividido();
   teste_sobrecarga();
+  teste_uma_passada();
   printf(falhas ? "ass_indice: %d FALHAS\n" : "ass_indice: ok\n", falhas);
   return falhas != 0;
 }
