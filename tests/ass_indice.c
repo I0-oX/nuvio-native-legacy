@@ -205,6 +205,7 @@ static void compor_camadas(const AssCpuFrame *f, float escF, int minX, int minY,
 
 static void teste_flatten(void) {
   AssCpuFrame f; int i, x, y, r;
+  assperf_teste_definir(AP_DIVIDIDO, 0);   /* the Layers row: split frames flattened into per-pass layers */
   for (r = 0; r < 3; r++) {
     float escF = 0.5f;
     int maxErr = 0, maxErrA = 0, W, H, minX, minY;
@@ -276,6 +277,7 @@ static void teste_flatten(void) {
     for (i = 0; i < 24; i++) free(copia[i].bitmap);
     ass_frame_liberar(&f);
   }
+  assperf_teste_definir(AP_DIVIDIDO, 1);   /* back to the default (Per image) */
 }
 
 /* [4] The KeijoMika rows (owner 23/11/2026). Split frames = Per image: a split

@@ -38,7 +38,7 @@
 
 // The person's options (Subtitles > Style on an ASS/SSA track, .tpk):
 enum {
-  AP_ESCALA,       // render resolution (AP_RES_*): Low auto (default), Medium auto, High auto, Custom auto
+  AP_ESCALA,       // render resolution (AP_RES_*): Low / Medium / High auto (default by Tizen version), Custom auto
   AP_GAMA,         // gamma like the TV's slider, signed: -20..+20 (0 off; the TV stops at 5)
   AP_CONTRASTE,    // contrast as the TV's number minus 30: -30..+20 (0 = TV default 30, gain 1.0)
   AP_LIBASS,       // 1 = libass draws ASS/SSA; 0 = dialogue only, as plain text
@@ -54,7 +54,7 @@ enum {
    * ours as a row, so his build can be reproduced here. 0 = ours (default),
    * 1 = his, except AP_PEQ100 (1 = ours). The "Renderer preset" row of the
    * Style sheet sets them all at once (assperf_preset). */
-  AP_DIVIDIDO,     // busy split frames: 0 composited into per-pass layers; 1 per image (texture cache)
+  AP_DIVIDIDO,     // busy split frames: 1 per image through the texture cache (default since 23/11, LOG 3); 0 per-pass layers
   AP_POSINT,       // merged frames: 0 sub-pixel offsets exact (resampled); 1 whole pixel
   AP_HINT,         // authored ASS hinting: 0 none; 1 light
   AP_CACHEP,       // caches: 0 large (22/11); 1 small (libass 32/24 MB, rigid 384 / 32 MB, textures 768 / 24 MB, queue 24 MB)
@@ -64,14 +64,20 @@ enum {
 /* The Renderer preset (owner 23/11/2026): 0 Nuvio (ours), 1 KeijoMika (his),
  * 2 Custom (the rows mixed). assperf_preset_definir takes 0 or 1. */
 int  assperf_preset(void);
+/* The TV's Tizen major version (video_tpk.c), for the default render mode. */
+void assperf_tizen_definir(int maior);
 void assperf_preset_definir(int p);
 
 /* AP_ESCALA values (owner 22/11/2026): three Autos and Custom auto, all at
  * 100 % in quiet scenes; while busy the text and the blur are drawn at their
  * own resolutions (libass split passes, 0004).
- *   Low auto (default, was "Auto 50 %" = 5): text 50 %, blur clean near 40 %.
- *   Medium auto (was "Auto 75 %" = 3):     text 75 %, blur clean near 50 %.
- *   High auto (new, 7):                    text 90 %, blur clean near 55 %.
+ *   Low auto (was "Auto 50 %" = 5):  text 50 %, blur clean near 40 % (one pass at 50 when 50 is clean).
+ *   Medium auto (was "Auto 75 %" = 3): text 75 %, blur clean near 50 %.
+ *   High auto (7):                      text 100 %, blur clean near 50 % (owner 23/11/2026, LOG 8:
+ *                                       text 100 costs the same as 90 on the S95C).
+ * Default mode by the TV (owner 23/11/2026; a saved choice wins): Tizen 7+
+ * High, Tizen 6/6.5 Medium, Tizen 4/5 (and the NuvioTpk40 library) Low;
+ * version unknown: Medium (assperf_tizen_definir).
  *   Custom auto (6): the Text / Blur resolution rows.
  * Saved fixed 100 % (0) reads as High auto, fixed 75 % (2) as Medium auto.
  * "Clean" blur (no horizontal lines on gradients built from thin strips):
@@ -91,8 +97,8 @@ void assperf_preset_definir(int p);
 #define AP_BAIXO_BLUR  0.40
 #define AP_MEDIO_TEXTO 0.75
 #define AP_MEDIO_BLUR  0.50
-#define AP_ALTO_TEXTO  0.90
-#define AP_ALTO_BLUR   0.55
+#define AP_ALTO_TEXTO  1.00
+#define AP_ALTO_BLUR   0.50
 #define AP_BLUR_TETO   0.75
 #define AP_LIMPO_BASE  1000  // AP_BLURRES = 1000 + c: the clean step c (1..AP_LIMPO_N) of the playing file
 #define AP_LIMPO_N     8

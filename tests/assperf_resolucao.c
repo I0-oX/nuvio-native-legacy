@@ -33,7 +33,7 @@ int main(void) {
   modo(AP_RES_MEDIO, &tx, &bl, &d);
   OK(d && tx == 0.75 && PERTO(bl, 0.50), "Medium, 1080 UI, 1080p: text 75, blur 50");
   modo(AP_RES_ALTO, &tx, &bl, &d);
-  OK(d && tx == 0.90 && PERTO(bl, 0.50), "High, 1080 UI, 1080p: text 90, blur 50 (nothing clean in 55..75)");
+  OK(d && tx == 1.0 && PERTO(bl, 0.50), "High, 1080 UI, 1080p: text 100, blur 50");
 
   /* 4K UI (k = 2): frame 2160 px. */
   assperf_grade_definir(2160, 1080);
@@ -60,7 +60,7 @@ int main(void) {
   /* Small scripts at 100 % Off (owner 23/11/2026, KeijoMika's build): the Auto's own text scale. */
   assperf_teste_definir(AP_PEQ100, 0);
   modo(AP_RES_ALTO, &tx, &bl, &d);
-  OK(d && PERTO(tx, AP_ALTO_TEXTO), "High, 480p, Small scripts at 100 % Off: text 90");
+  OK(d && PERTO(tx, AP_ALTO_TEXTO), "High, 480p, Small scripts at 100 % Off: text 100 (High is 100 anyway)");
   assperf_teste_definir(AP_PEQ100, 1);
   /* Renderer preset: Nuvio (defaults) / KeijoMika (his rows) / Custom (mixed). */
   OK(assperf_preset() == 0, "preset: the defaults are Nuvio");
@@ -70,7 +70,7 @@ int main(void) {
   assperf_teste_definir(AP_HINT, 0);
   OK(assperf_preset() == 2, "preset: one row changed reads Custom");
   assperf_preset_definir(0);
-  OK(assperf_preset() == 0 && assperf_get(AP_DIVIDIDO) == 0 && assperf_get(AP_PEQ100) == 1, "preset Nuvio: our rows back");
+  OK(assperf_preset() == 0 && assperf_get(AP_DIVIDIDO) == 1 && assperf_get(AP_POSINT) == 0 && assperf_get(AP_PEQ100) == 1, "preset Nuvio: our rows back (Per image, Exact)");
 
   /* Custom auto: the rows, a clean pick follows the script. */
   assperf_grade_definir(2160, 1080);
@@ -102,6 +102,12 @@ int main(void) {
   OK(assperf_teste_lido(AP_TXTRES, 72) == -1 && assperf_teste_lido(AP_TXTRES, 70) == 70, "text resolution: steps of 5");
   OK(assperf_teste_lido(AP_BLURRES, AP_LIMPO_BASE + 4) == AP_LIMPO_BASE + 4 && assperf_teste_lido(AP_BLURRES, AP_LIMPO_BASE + 9) == -1,
      "blur resolution: clean codes 1..8 kept");
+  /* Default mode by the TV (owner 23/11/2026), nothing saved: 7+ High, 6 Medium, 4/5 Low, unknown Medium. */
+  assperf_tizen_definir(9); OK(assperf_get(AP_ESCALA) == AP_RES_ALTO, "Tizen 9, nothing saved: High auto");
+  assperf_tizen_definir(6); OK(assperf_get(AP_ESCALA) == AP_RES_MEDIO, "Tizen 6, nothing saved: Medium auto");
+  assperf_tizen_definir(5); OK(assperf_get(AP_ESCALA) == AP_RES_BAIXO, "Tizen 5, nothing saved: Low auto");
+  assperf_tizen_definir(4); OK(assperf_get(AP_ESCALA) == AP_RES_BAIXO, "Tizen 4, nothing saved: Low auto");
+  assperf_tizen_definir(0); OK(assperf_get(AP_ESCALA) == AP_RES_MEDIO, "Tizen unknown: Medium auto");
   printf(falhas ? "assperf_resolucao: %d FAIL\n" : "assperf_resolucao: ok\n", falhas);
   return falhas != 0;
 }

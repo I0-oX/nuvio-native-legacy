@@ -3425,6 +3425,7 @@ static int tizenMaior;
 void video_tpk_tizen_definir(const char *v) {
   tizenMaior = v ? atoi(v) : 0;
   assperf_tv_lenta_definir(tizenMaior >= 4 && tizenMaior <= 6);   /* busy ASS scenes: 50 %, further ahead */
+  assperf_tizen_definir(tizenMaior);   /* default render mode: 7+ High, 6 Medium, 4/5 Low (owner 23/11/2026) */
 }
 // How the TV is kept off the ASS tracks (mkvfix.h): Void on Tizen 4-6 (their
 // players broke up the video with 2.0.8's Hidden; Void confirmed on a Tizen 6

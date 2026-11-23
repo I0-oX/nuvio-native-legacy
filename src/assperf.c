@@ -21,13 +21,13 @@ static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
   [AP_TXTRES] = { "txtres", 25, 100, 100 }, [AP_BLURRES] = { "blurres", 25, AP_LIMPO_BASE + AP_LIMPO_N, 50 },
   [AP_TODOS] = { "todos_quadros", 0, 2, 0 },
-  [AP_DIVIDIDO] = { "divididos", 0, 1, 0 }, [AP_POSINT] = { "pos_inteira", 0, 1, 0 },
+  [AP_DIVIDIDO] = { "divididos", 0, 1, 1 }, [AP_POSINT] = { "pos_inteira", 0, 1, 0 },
   [AP_HINT] = { "hinting", 0, 1, 0 }, [AP_CACHEP] = { "caches_pequenos", 0, 1, 0 },
   [AP_PEQ100] = { "pequenos_100", 0, 1, 1 },
 };
 /* The rows the Renderer preset sets: ours / KeijoMika's ass-minimal (23/11). */
 static const struct { int id, nosso, dele; } PRESET[] = {
-  { AP_DIVIDIDO, 0, 1 }, { AP_POSINT, 0, 1 }, { AP_HINT, 0, 1 }, { AP_CACHEP, 0, 1 }, { AP_PEQ100, 1, 0 },
+  { AP_DIVIDIDO, 1, 1 }, { AP_POSINT, 0, 1 }, { AP_HINT, 0, 1 }, { AP_CACHEP, 0, 1 }, { AP_PEQ100, 1, 0 },
 };
 #define PRESET_N ((int)(sizeof PRESET / sizeof PRESET[0]))
 
@@ -69,6 +69,29 @@ static int valorLido(int id, int v) {
 }
 #endif
 
+/* Default render mode by the TV (owner 23/11/2026): Tizen 7+ High auto, 6/6.5
+ * Medium auto, 4/5 Low auto; unknown Medium. Only when nothing is saved. */
+static int tizenMaior;      /* __atomic: video_tpk.c, once */
+static int escalaSalva;     /* the file had "escala" (under trava) */
+static int escala_padrao(void) {
+#ifdef NV_TPK40
+  return AP_RES_BAIXO;
+#else
+  int t = __atomic_load_n(&tizenMaior, __ATOMIC_RELAXED);
+  return t >= 7 ? AP_RES_ALTO : t == 6 ? AP_RES_MEDIO : t >= 4 ? AP_RES_BAIXO : AP_RES_MEDIO;
+#endif
+}
+void assperf_tizen_definir(int maior) {
+  __atomic_store_n(&tizenMaior, maior, __ATOMIC_RELAXED);
+  /* Read before the version was known and nothing saved: take the TV's default now. */
+  pthread_mutex_lock(&trava);
+  if (iniciado && !escalaSalva && val[AP_ESCALA] != escala_padrao()) {
+    __atomic_store_n(&val[AP_ESCALA], escala_padrao(), __ATOMIC_RELAXED);
+    __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
+  }
+  pthread_mutex_unlock(&trava);
+}
+
 void assperf_iniciar(void) {
   if (__atomic_load_n(&iniciado, __ATOMIC_ACQUIRE)) return;
   pthread_mutex_lock(&trava);
@@ -78,6 +101,7 @@ void assperf_iniciar(void) {
     char *t = dados_ler(AP_ARQ);
     int i, novo[AP_N] = {0}, velho[AP_N] = {0}, velhoV[AP_N] = {0};
     for (i = 0; i < AP_N; i++) val[i] = PESSOA[i].padrao;
+    val[AP_ESCALA] = escala_padrao();   /* by the TV until a saved value is read */
     if (t) {
       char *l = t, *nl;
       for (; l && *l; l = nl) {
@@ -98,6 +122,7 @@ void assperf_iniciar(void) {
           if (!strcmp(l, "contraste") && v >= 0 && v <= 30) velho[AP_CONTRASTE] = 1, velhoV[AP_CONTRASTE] = -v; }
       }
       for (i = 0; i < AP_N; i++) if (velho[i] && !novo[i]) val[i] = velhoV[i];
+      escalaSalva = novo[AP_ESCALA];
       free(t);
     }
     { char *marca = dados_ler(AP_MARCA); if (marca) { free(marca); dados_apagar(AP_MARCA); } }
@@ -155,6 +180,7 @@ void assperf_restaurar(void) {
   assperf_iniciar();
   pthread_mutex_lock(&trava);
   for (i = 0; i < AP_N; i++) if (i != AP_LIBASS) __atomic_store_n(&val[i], PESSOA[i].padrao, __ATOMIC_RELAXED);
+  __atomic_store_n(&val[AP_ESCALA], escala_padrao(), __ATOMIC_RELAXED);   /* the TV's default mode */
   gravar();
   pthread_mutex_unlock(&trava);
   __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
