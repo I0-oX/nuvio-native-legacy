@@ -18,6 +18,7 @@
 #include "legsync.h"
 #include "vertudo.h"
 #include "ajlog.h"
+#include "farolajustes.h"   // FAROL (#26): lista branca da diferenca de ajustes
 #include "horafmt.h"
 #include "ajustes_ux.h"
 #include "resolver.h"
@@ -72,6 +73,7 @@
 #include "trakt.h"
 #include "simklauth.h"
 #include "discord.h"
+#include "farolsinal.h"
 #include "diarionuvem.h"
 #include "simkl.h"
 #include "trakt.h"
@@ -109,6 +111,7 @@ static void navigationRange(float,float,float,float,float,float,PonteiroFn,Ponte
 #include "fundo.h"
 #include "p2p.h"
 #include "curadoria.h"
+#include "nvbackend.h"
 #include "p2pmotor.h"
 #include "pessoas.h"
 #include "recomenda.h"
@@ -683,7 +686,7 @@ typedef enum {
 #ifdef NV_ANDROID
   AJ_BAIXAR_REGISTRO, // acao local; no fim para preservar os IDs existentes
 #endif
-  // Shared exclusions live in fontefalha.txt; appended device-local views.
+  // Shared source filters live in fontefalha.txt; appended device-local views.
   AJ_FILTROS_FONTES, AJ_FILTRO_TAM_MAX, AJ_FILTRO_GRUPOS,
   // Player-backed primary style views: no second copy in ajustes.txt.
   AJ_LEG1_TAMANHO, AJ_LEG1_FONTE, AJ_LEG1_COR, AJ_LEG1_OPACIDADE,
@@ -785,6 +788,7 @@ typedef enum {
   AJ_GUIA_PREVIA_DESTACAR, AJ_GUIA_PREVIA_SOM, AJ_GUIA_DIAS,
   AJ_FONTE_OCULTAR_DV, AJ_FONTE_OCULTAR_AUDIO, AJ_FONTE_OCULTAR_VIDEO, // Device-local, append-only.
   AJ_TV_HOME, // Device-local, append-only; enabled by default.
+  AJ_NUVIO_BACKEND_URL, // Servidor Nuvio personalizado; nuvio-backend.txt; append-only.
   AJ_PS_TAMANHO, // Device-local profile avatar size; append-only.
   AJ_LIVETV_AGRUPAR, // Profile-local, append-only; enabled by default.
   AJ_MENU_ESPORTES, // Device-local menu visibility; append-only, enabled by default.
@@ -916,7 +920,7 @@ static const char *V_TB_PLANO[]  = { "Standard", "Pro" };
 static const char *V_TB_AUDIO[]  = { "Passthrough", "Áudio do TorBox" };
 static const char *V_SOURCE_BADGE_POSITION[] = { "No topo", "Embaixo" };
 static const char *V_GUIA_INICIO[] = { "Ao destacar", "Ao selecionar" };
-static const char *V_GUIA_DIAS[] = { "Um dia", "Três dias" };
+static const char *V_GUIA_DIAS[] = { "Um dia", "Três dias", "Sete dias" };
 static const char *V_LIGA_AUTO[] = { "Ligado", "Desligado", "Automático" };
 // Estilo da fileira de formato do player; o indice e o PLR_FMT_* de ajustes.h
 // e o gravado em "plrFormatoLocal".
@@ -1382,6 +1386,11 @@ static const AcentoFixo TEMA_ACENTO[] = {
 #define AJ_TEMA_TEXTURA     22
 #define AJ_TEMA_TEXTURA_SUTIL 23
 #define AJ_N_TEMAS_OPC      24
+#define AJ_TEMA_SEGURO      AJ_N_TEMAS_OPC
+// RESERVA (dono, 22/11/2026: "dinamico, rosa padrao"): onde o tema dinamico
+// nao roda (perfil seguro, indice de outra versao), o realce cai no Rosa, nao
+// no Branco. O padrao de fabrica continua Da arte.
+#define AJ_TEMA_RESERVA      6
 _Static_assert(sizeof TEMA_ACENTO / sizeof *TEMA_ACENTO == AJ_N_TEMAS_OPC,
                "TEMA_ACENTO: uma linha por indice de V_TEMA");
 static const char *V_TEMA[] = {
@@ -1389,10 +1398,10 @@ static const char *V_TEMA[] = {
   "Rosa", "Dourado", "Jade", "Ouro rosé", "Azul ártico", "Grafite",
   "Da arte", "Dinâmica estilizada", "Gradiente", "Imersiva",
   "Champagne", "Sálvia", "Lavanda", "Vinho", "Petróleo", "Índigo",
-  "Textura", "Textura sutil"
+  "Textura", "Textura sutil", "Modo seguro ligado"
 };
-_Static_assert(sizeof V_TEMA / sizeof *V_TEMA == AJ_N_TEMAS_OPC,
-               "V_TEMA: um nome por indice de TEMA_ACENTO");
+_Static_assert(sizeof V_TEMA / sizeof *V_TEMA == AJ_N_TEMAS_OPC + 1,
+               "V_TEMA: um nome por acento e um para o perfil seguro");
 // A REGUA (Ajustes › Aparência › Cor de destaque): nove claros e nove
 // profundos em ordem de matiz, e as dinamicas. E a ordem da TELA; o indice
 // gravado continua o de V_TEMA.
@@ -2050,11 +2059,12 @@ static const Opcao OPCOES[AJ_N] = {
   ESC("Mostrar detalhes da pasta no destaque", V_LIGA, 2),
   ESC("Quando iniciar a prévia", V_GUIA_INICIO, 2),
   ESC("Prévia sem som", V_LIGA, 2),
-  ESC("Alcance do guia", V_GUIA_DIAS, 2),
+  ESC("Alcance do guia", V_GUIA_DIAS, 3),
   ESC("Ocultar Dolby Vision incompatível", V_AUTO_LIGA, 3),
   ESC("Ocultar áudio incompatível", V_AUTO_LIGA, 3),
   ESC("Ocultar vídeo incompatível", V_AUTO_LIGA, 3),
   ESC("Mostrar na tela inicial do Android TV", V_LIGA, 2),
+  ACAO("URL do servidor Nuvio"),
   ESC("Tamanho dos perfis", V_PS_TAMANHO, 3),
   ESC("Agrupar variantes dos canais", V_LIGA, 2),
   ESC("Esportes", V_LIGA, 2),
@@ -2455,6 +2465,7 @@ static const char *CHAVE[] = {
   "guiaPreviaDestacarLocal", "guiaPreviaSomV2Local", "guiaDiasLocal",
   "fonteOcultarDvLocal", "fonteOcultarAudioLocal", "fonteOcultarVideoLocal",
   "androidTvHomeLocal",
+  "-nuvioBackendUrl",
   "psTamanhoLocal",
   "liveTvGroupVariantsLocal",
   "menuEsportesLocal",
@@ -2847,6 +2858,10 @@ static int ajLegendaPrincipal(int op) { return op >= AJ_LEG1_TAMANHO && op <= AJ
 static int ajLegendaSecundaria(int op) {
   return (op >= AJ_LEG2_POS && op <= AJ_LEG2_BORDA) || (op >= AJ_LEG2_FONTE && op <= AJ_LEG2_RESTAURAR);
 }
+#ifndef NV_ANDROID
+static int ajFonteUrlOp;
+static NvPerfilSessao ajFonteUrlSessao;
+#endif
 static int ajFonte(int op) { return op == AJ_LEG1_FONTE || op == AJ_LEG2_FONTE || op == AJ_FONTE_UI; }
 static int ajFonteSlot(int op) { return op == AJ_FONTE_UI ? LEGFONTE_INTERFACE : op == AJ_LEG2_FONTE; }
 static void ajFonteInterfaceAplicar(void) {
@@ -2862,10 +2877,8 @@ static const char *ajFonteNome(int op, int v) {
   int base = ajFonteBase(op), n = legfontes_n();
   if (v >= 0 && v < base) return i18n(OPCOES[op].valores[v]);
   if (v >= base && v < base + n) return legfontes_nome(v - base);
-#ifdef NV_ANDROID
   if (v == base + n) return i18n("Importar fonte TTF/OTF");
   v--;
-#endif
   return v == base + n ? i18n("Excluir fonte importada") : "";
 }
 static int ajLegendaValor(int op) {
@@ -3447,13 +3460,16 @@ int ajustes_idioma_ingles(void)       { return ajustes_idioma() == IDIOMA_EN; }
 
 // 1 = o tema escolhido e um dos dinamicos (cor viva), que so existem nesta TV.
 static int temaEhDinamico(int v) {
-  return v >= 0 && v < AJ_N_TEMAS_OPC && v >= AJ_N_TEMAS && !TEMA_ACENTO[v].fam;
+  return v >= AJ_N_TEMAS && v < AJ_N_TEMAS_OPC && !TEMA_ACENTO[v].fam;
 }
 static int temaDinamico(void) { return temaEhDinamico(valor[AJ_TEMA]); }
+static int temaEmReserva(void) {
+  return valor[AJ_TEMA] == AJ_TEMA_SEGURO || (SEGURO && temaDinamico());
+}
 // LOCAL = nao existe no app web: os dinamicos e os seis fixos de 03/10. Nao
 // sobe para a conta e a conta nao o desfaz (ajustes_aplicar_blob,
 // ajustes_mesclar_blob).
-static int temaLocal(void) { return valor[AJ_TEMA] >= AJ_N_TEMAS && valor[AJ_TEMA] < AJ_N_TEMAS_OPC; }
+static int temaLocal(void) { return valor[AJ_TEMA] >= AJ_N_TEMAS && valor[AJ_TEMA] <= AJ_TEMA_SEGURO; }
 int ajustes_cor_viva(void) {
   if (SEGURO) return CORVIVA_DESLIGADA;   // qualquer tema dinamico: a cor viva anima a arte inteira
   return valor[AJ_TEMA] == AJ_TEMA_DINAMICA   ? (valor[AJ_ARTE_TOM] == 1 ? CORVIVA_SIMPLES_CLARO : CORVIVA_SIMPLES)
@@ -3973,9 +3989,9 @@ void ajustes_definir_p2p_ligado(int ligado) { int a = valor[AJ_P2P_LIGADO]; valo
 // chamam esta funcao, varias vezes por quadro: nenhuma conta mora aqui.
 void ajustes_acento(float *r, float *g, float *b) {
   int i = valor[AJ_TEMA];
-  if (SEGURO && temaDinamico()) i = 0;    // sem cor viva, o realce fixo padrao
+  if (temaEmReserva()) i = AJ_TEMA_RESERVA;
   else if (temaDinamico()) { corviva_acento(r, g, b); return; }
-  if (i < 0 || i >= AJ_N_TEMAS_OPC || !TEMA_ACENTO[i].fam) i = 0;   // arquivo de outra versao: branco
+  if (i < 0 || i >= AJ_N_TEMAS_OPC || !TEMA_ACENTO[i].fam) i = AJ_TEMA_RESERVA;   // arquivo de outra versao
   corDeHex(TEMA_ACENTO[i].fill, r, g, b);
 }
 // As cores derivadas de um acento DINAMICO (marca, HDR, luz, tinta) sairiam
@@ -3991,9 +4007,9 @@ static const CorvivaTokens *tokensVivos(void) {
 }
 static int temaFixoAtual(void) {
   int i = valor[AJ_TEMA];
-  if (SEGURO && temaDinamico()) return 0;
+  if (temaEmReserva()) return AJ_TEMA_RESERVA;
   if (temaDinamico()) return -1;
-  return (i < 0 || i >= AJ_N_TEMAS_OPC || !TEMA_ACENTO[i].fam) ? 0 : i;
+  return (i < 0 || i >= AJ_N_TEMAS_OPC || !TEMA_ACENTO[i].fam) ? AJ_TEMA_RESERVA : i;
 }
 static int texturaAtiva(void) {
   return !SEGURO && (valor[AJ_TEMA] == AJ_TEMA_TEXTURA || valor[AJ_TEMA] == AJ_TEMA_TEXTURA_SUTIL) &&
@@ -4058,11 +4074,17 @@ void ajustes_acento_hdr(float *r, float *g, float *b) {
 }
 void ajustes_acento_luz(float *r, float *g, float *b) {
   int i = temaFixoAtual();
+  // Tema dinamico caido na RESERVA (perfil seguro, sem titulo, arte cinza): a
+  // luz do fundo fica neutra, a do Branco. O rosa de reserva pinta controles,
+  // nao a pagina; so quem ESCOLHEU o Rosa leva a nevoa rosa.
+  if (temaEmReserva()) i = 0;
   if (i >= 0) { corDeHex(TEMA_ACENTO[i].luz, r, g, b); return; }
   { const CorvivaTokens *t = tokensVivos();
-    if (r) *r = t->luz[0];
-    if (g) *g = t->luz[1];
-    if (b) *b = t->luz[2]; }
+    float k = nv_acento_reserva < 0.0f ? 0.0f : nv_acento_reserva > 1.0f ? 1.0f : nv_acento_reserva, n[3];
+    corDeHex(TEMA_ACENTO[0].luz, &n[0], &n[1], &n[2]);
+    if (r) *r = t->luz[0] + (n[0] - t->luz[0]) * k;
+    if (g) *g = t->luz[1] + (n[1] - t->luz[1]) * k;
+    if (b) *b = t->luz[2] + (n[2] - t->luz[2]) * k; }
 }
 // TEXTURA: a textura do titulo em cena vai ao gfx, que a usa em todo
 // GFX_COR cheio pintado exatamente com o destaque (gfx_rect). Sem titulo, sem
@@ -4276,8 +4298,14 @@ void ajustes_definir_guia_previa_destacar(int l) { valor[AJ_GUIA_PREVIA_DESTACAR
 int ajustes_guia_previa_sem_som(void) { return valor[AJ_GUIA_PREVIA_SOM] == 0; }
 void ajustes_definir_guia_previa_sem_som(int l) { valor[AJ_GUIA_PREVIA_SOM] = l ? 0 : 1; AJ_COM_ORIGEM(AJLOG_CENTRAL, gravar()); }
 int ajustes_livetv_agrupar(void) { return lig(AJ_LIVETV_AGRUPAR); }
-int ajustes_guia_dias(void) { return valor[AJ_GUIA_DIAS] ? 3 : 1; }
-void ajustes_definir_guia_dias(int dias) { valor[AJ_GUIA_DIAS] = dias == 3; AJ_COM_ORIGEM(AJLOG_CENTRAL, gravar()); }
+int ajustes_guia_dias(void) {
+  if (valor[AJ_GUIA_DIAS] >= 2) return 7;
+  return valor[AJ_GUIA_DIAS] ? 3 : 1;
+}
+void ajustes_definir_guia_dias(int dias) {
+  valor[AJ_GUIA_DIAS] = dias >= 7 ? 2 : dias == 3 ? 1 : 0;
+  AJ_COM_ORIGEM(AJLOG_CENTRAL, gravar());
+}
 void  ajustes_livetv_aplicar_proxy(int l) { valor[AJ_LIVETV_PROXY] = l ? 0 : 1; AJ_COM_ORIGEM(AJLOG_CENTRAL, gravar()); }
 void  ajustes_livetv_aplicar_modo(int m) { if (m >= 0 && m < 3) { valor[AJ_LIVETV_MODO] = m; AJ_COM_ORIGEM(AJLOG_CENTRAL, gravar()); } }
 unsigned ajustes_livetv_espera_ms(void) {
@@ -5636,7 +5664,7 @@ void ajustes_dir(const char *dir) {
       if (OPCOES[i].tipo == OP_LEITURA || OPCOES[i].tipo == OP_ACAO) continue;
       // Valor fora da faixa (arquivo de outra versao, ou editado a mao) cai no
       // padrao em vez de indexar fora do vetor.
-      valor[i] = limita(i, v);
+      valor[i] = i == AJ_TEMA && v == AJ_TEMA_SEGURO ? v : limita(i, v);
       if (i == AJ_MEDIDOR) viuMedidor = 1;
       if (i == AJ_RESOLUCAO) viuRes = 1;
       if (i == AJ_FONTE_PRAZO) viuEspera = 1;
@@ -7096,7 +7124,7 @@ static int perfilLerVetor(int perfil, int *v, char *tem) {
       for (i = 0; i < AJ_N; i++) {
         if (!dePerfil(i) || strcmp(CHAVE[i], chave)) continue;
         if (i == AJ_COLECAO_EXIBICAO && (x < VT_LAY_AUTO || x >= VT_LAY_N)) x = VT_LAY_AUTO;
-        v[i] = limita(i, x);
+        v[i] = i == AJ_TEMA && x == AJ_TEMA_SEGURO ? x : limita(i, x);
         tem[i] = 1;
         break;
       }
@@ -7767,6 +7795,10 @@ int ajustes_iniciar(void) {
 }
 static int fileirasBusca;  // network cycle owed; run once when Settings closes
 void ajustes_encerrar(void) {
+#ifndef NV_ANDROID
+  // A later Settings editor must not inherit a cancelled font-URL prompt.
+  ajFonteUrlOp = 0;
+#endif
   // Save file-backed and scalar preferences when leaving Settings as well as
   // during periodic sync; no editor-specific cloud hook is required.
   if (sessao_logada()) sync_iniciar();
@@ -8141,6 +8173,10 @@ static const char *textoLeitura(int op) {
   if (op >= AJ_PX_ENTRAR && op <= AJ_PX_SAIR) return pxTexto(op);
   if (op == AJ_P2P_URL) return p2pEndereco[0] ? p2pEndereco : i18n("Não configurado");
   if (op == AJ_CURADORIA_URL) return curadoria_url()[0] ? curadoria_url() : i18n("Não configurado");
+  if (op == AJ_NUVIO_BACKEND_URL) {
+    static char recUrl[400];
+    return nv_rec_url_copiar(recUrl, sizeof recUrl) ? recUrl : i18n("Não configurado");
+  }
   if (op == AJ_P2P_TESTAR) return p2pTesteTexto();
   if (op >= AJ_POSTER_INST && op <= AJ_POSTER_TESTAR) return pstTexto(op);
   if (debIdx(op) >= 0) return debValor(op);
@@ -8870,7 +8906,7 @@ static const char *ajudaOpcaoTv(int op) {
       return "Mostra o botão de trailer na tela do título, quando existe um trailer conhecido.";
 #endif
     case AJ_DET_SO_CINEMETA: return "Desligado (padrão): a ficha do título vem primeiro do add-on em cujo catálogo ele apareceu, com episódios e ids próprios (Kitsu, Xperience, AIOMetadata…), e o catálogo do Nuvio completa o que faltar (o Cinemeta só entra se o catálogo do Nuvio falhar). Ligado: só o catálogo do Nuvio, sem os add-ons.";
-    case AJ_DET_META_EXT: return "Prefere a ficha do addon de metadados à do Cinemeta. Útil quando o seu addon tem sinopse e elenco melhores.";
+    case AJ_DET_META_EXT: return "Usa o addon de metadados como fonte da ficha e dos episódios quando ele responde para o título. Sem addon que responda — ou com \"usar sempre o Cinemeta\" ligado — nada muda.";
     case AJ_DET_DATA_CHEIA: return "Escreve a data de estreia por extenso em vez de só o ano.";
     case AJ_DET_VEU: return "Quanto a vinheta escura cobre a arte na tela do título. Cem por cento é o padrão; zero mostra a arte limpa — o texto pode ficar difícil de ler sobre cenas claras.";
     case AJ_DET_TRAILER_AUTO:
@@ -8974,6 +9010,7 @@ static const char *ajudaOpcaoTv(int op) {
     case AJ_P2P_DESTINO: return "Onde o motor P2P guarda o cache temporário enquanto toca. Interno usa o armazenamento da TV; Pendrive USB tenta um pendrive conectado e, se não houver ou falhar, volta para o interno. Não é download offline.";
     case AJ_P2P_TESTAR: return "Pergunta ao servidor se ele responde e qual a versão. Funciona mesmo com o P2P desligado, para conferir o endereço antes de ligar.";
     case AJ_CURADORIA_URL: return "A fileira Herói mostra um único cartão do tamanho da fileira. Com este endereço, o título vem da curadoria do Nuvio Legacy (um JSON com imdb e texto); sem resposta, o primeiro título da fileira. Vazio desliga.";
+    case AJ_NUVIO_BACKEND_URL: return "Endereço https do servidor Nuvio usado por recomendações e serviços desta build. Só aceita https, ou http em IP de rede local. Vazio volta ao padrão da build.";
     case AJ_POSTER_PROV: return "Troca os cartazes retrato por um pronto de um serviço externo, com notas, selos 4K/HDR e faixa Top 10 no próprio cartaz. SpatialPosters (instância pública ou a sua), RPDB (com chave) ou um modelo de URL seu. Só cartazes de card: o destaque e os fundos não mudam. Se o serviço não responde, volta ao cartaz normal.";
     case AJ_POSTER_INST: return "Endereço da instância do SpatialPosters. Vazio usa a pública (spatial-posters.vercel.app), que é gratuita e compartilhada; para muitos cartazes, rode a sua com Docker.";
     case AJ_POSTER_TOKEN: return "Opcional. Token de configuração do SpatialPosters, ou o endereço do manifest colado inteiro. Um token completo costuma ter mais de 500 letras e não cabe aqui; prefira os parâmetros curtos ao lado ou os padrões da sua instância.";
@@ -8988,7 +9025,7 @@ static const char *ajudaOpcaoTv(int op) {
     case AJ_PROVEDORES_ESCOPO: return "Compartilhada usa as mesmas contas de provedores neste aparelho. Separada guarda uma cópia para este perfil. Trocar de opção mantém as duas configurações.";
     case AJ_AJUSTES_DO_PRINCIPAL: return "Ligado, cada perfil secundário desta conta herda da TV os ajustes locais de personalização que ainda não tiver salvos — o mesmo Hero, fileiras e visual do perfil principal. Desligado, só vale o que já estiver no arquivo do perfil.";
     case AJ_ADDONS_PRINCIPAL: return "Os outros perfis desta conta usam os addons do perfil principal. Desligado, cada perfil usa os seus — a não ser que a conta já diga para usar os do principal.";
-    case AJ_VIDRO_CONTORNO: return "O contorno das linhas e dos cartões, inclusive o do foco. Desligado, o item em foco é marcado só por um fundo mais claro na cor de destaque.";
+    case AJ_VIDRO_CONTORNO: return "O contorno das linhas e dos cartões, inclusive o do foco.";
     case AJ_NT_EP: return "Qual nota aparece nos cartões de episódio. Como na linha do título segue os interruptores de Notas (IMDb, Trakt, TMDB). Só nesta TV.";
     case AJ_ARTE_TOM: return "Vívido mantém as cores da arte. Claro usa tons pastel da mesma cor, com texto contrastante. Só nesta TV.";
     case AJ_COR_LOGO: return "Com um tema dinâmico, a cor sai do logo do título em vez da arte de fundo. Logo branco ou preto usa a arte.";
@@ -9160,7 +9197,7 @@ static const char *ajudaOpcaoTv(int op) {
     case AJ_GUIA_PREVIA_DESTACAR: return "Quando a prévia do canal começa no Guia de TV: ao destacar ou só ao selecionar. Ao destacar é mais rápido; ao selecionar poupa rede e evita a prévia enquanto você só passa pela lista.";
     case AJ_GUIA_PREVIA_SOM: return "A prévia do canal no Guia de TV toca sem som. Desligado, o áudio do canal entra junto com a prévia.";
     case AJ_LIVETV_AGRUPAR: return "Mostra um canal por linha e reúne as qualidades e codecs na lista de fontes. Desligue para mostrar cada variante separadamente.";
-    case AJ_GUIA_DIAS: return "Quantos dias de programação o Guia de TV carrega e guarda. Um dia é mais leve e abre mais rápido; três dias deixam ver o que vem nos próximos dias.";
+    case AJ_GUIA_DIAS: return "Quantos dias de programação o Guia de TV carrega e guarda. Um dia é mais leve e abre mais rápido; três ou sete dias deixam ver o que vem nos próximos dias. Em TVs com pouca memória, o Guia pode limitar a grade a 24 horas para não faltar espaço.";
     default: return "Use as setas laterais para escolher. A preferência é aplicada ao alterar o valor.";
   }
 }
@@ -9939,7 +9976,7 @@ static void riscoGravarSeguro(void) {
   for (i = 0; i < N_RISCOS; i++) {
     const Risco *r = &RISCOS[i];
     int v = riscoAtual(r->op);
-    if (r->op == AJ_TEMA) { if (temaDinamico()) valor[AJ_TEMA] = 0; continue; }
+    if (r->op == AJ_TEMA) { if (temaDinamico()) valor[AJ_TEMA] = AJ_TEMA_SEGURO; continue; }
     if (r->nivel(v) <= 0) continue;
     if (r->op == AJ_FIL_LIMITE) { fil_definir_limite(FIL_LIMITE_PADRAO); valor[AJ_FIL_LIMITE] = fil_limite_gravado(); }
     else if (r->op == AJ_ITENS_FILEIRA || r->op == AJ_RESOLUCAO || r->op == AJ_TEX_MB) valor[r->op] = 0;
@@ -10185,24 +10222,51 @@ static const char *faResumo(int provedores) {
   return buf;
 }
 
-// Shared, exclusion-only filters. Category checkboxes save atomically as soon
-// as OK/tap toggles one; size uses the existing explicit-confirmation editor.
-// Every edit reads the saved config first, so another field is never lost.
+// Shared source filters. Category checkboxes exclude values; cache is a single
+// All/Cached/Uncached choice. Both save atomically on OK/tap; size uses the
+// existing explicit-confirmation editor. Every edit reads the saved config
+// first, so another field is never lost.
 static int ffCategoria = -1, ffFoco, ffValorFoco;
 // Centered modal lifecycle (clock/player sheets): the shape springs in and out
 // with the last body retained while closing, a category list eases in, row
 // focus and scroll follow the shared springs.
 static float ffForma, ffFormaV, ffCatA = 1.0f, ffFocoA[64], ffRol, ffRolV, ffRolAlvo;
 static int ffFechando, ffCatVista = -1, ffRolPronto;
-static const int FF_CATEGORIA[9] = {
-  FONTEFILTRO_RESOLUCAO, FONTEFILTRO_QUALIDADE, -1,
+#define FF_CACHE FONTEFILTRO_N
+#define FF_LINHAS 10
+static const int FF_CATEGORIA[FF_LINHAS] = {
+  FF_CACHE, FONTEFILTRO_RESOLUCAO, FONTEFILTRO_QUALIDADE, -1,
   FONTEFILTRO_VISUAL, FONTEFILTRO_AUDIO, FONTEFILTRO_CANAIS,
   FONTEFILTRO_ENCODE, FONTEFILTRO_LINGUAS, -1
 };
+static const char *ffCacheNome(void) {
+  static char texto[96];
+  snprintf(texto, sizeof texto, "%s / %s", i18n("Em cache"), i18n("Fora do cache"));
+  return texto;
+}
+static const char *ffCacheAjuda(void) {
+  static char texto[160];
+  snprintf(texto, sizeof texto, "%s · %s · %s", i18n("Todos"), i18n("Em cache"), i18n("Fora do cache"));
+  return texto;
+}
+static const char *ffCacheOpcao(int i) {
+  static const char *const opcoes[FONTEFILTRO_CACHE_N] = {"Todos", "Em cache", "Fora do cache"};
+  return i >= 0 && i < FONTEFILTRO_CACHE_N ? opcoes[i] : "Todos";
+}
+static int ffOpcoesN(void) {
+  return ffCategoria == FF_CACHE ? FONTEFILTRO_CACHE_N : fontefiltro_opcoes_n(ffCategoria);
+}
+static const char *ffCategoriaNome(void) {
+  return ffCategoria == FF_CACHE ? ffCacheNome() : fontefiltro_rotulo(ffCategoria);
+}
+static const char *ffOpcao(int i) {
+  return ffCategoria == FF_CACHE ? ffCacheOpcao(i) : fontefiltro_opcao(ffCategoria, i);
+}
 static const char *ffNome(int linha) {
-  if (linha < 0 || linha >= 9) return "";
-  if (linha == 2) return "Tamanho máximo da fonte";
-  if (linha == 8) return "Grupos de lançamento excluídos";
+  if (linha < 0 || linha >= FF_LINHAS) return "";
+  if (linha == 0) return ffCacheNome();
+  if (linha == 3) return "Tamanho máximo da fonte";
+  if (linha == 9) return "Grupos de lançamento excluídos";
   return fontefiltro_rotulo(FF_CATEGORIA[linha]);
 }
 static int ffBits(uint64_t bits) {
@@ -10213,14 +10277,15 @@ static int ffBits(uint64_t bits) {
 static const char *ffValor(int linha) {
   static char texto[160]; FonteFiltroConfig cfg;
   fontefalha_filtro(&cfg);
-  if (linha == 2) {
+  if (linha == 0) return i18n(ffCacheOpcao((int)cfg.cache));
+  if (linha == 3) {
     if (!cfg.maxGB) return i18n("Sem limite de tamanho");
     snprintf(texto, sizeof texto, "%u GB", cfg.maxGB);
-  } else if (linha == 8) {
+  } else if (linha == 9) {
     if (!cfg.grupos[0]) return i18n("Nenhuma exclusão");
     snprintf(texto, sizeof texto, "%s", cfg.grupos);
   } else {
-    int n = linha >= 0 && linha < 9 ? ffBits(cfg.excluir[FF_CATEGORIA[linha]]) : 0;
+    int n = linha >= 0 && linha < FF_LINHAS ? ffBits(cfg.excluir[FF_CATEGORIA[linha]]) : 0;
     if (!n) return i18n("Nenhuma exclusão");
     snprintf(texto, sizeof texto, i18n("%d valores filtrados"), n);
   }
@@ -10230,6 +10295,7 @@ static const char *ffResumo(void) {
   static char texto[80]; FonteFiltroConfig cfg; int n = 0;
   fontefalha_filtro(&cfg);
   for (int c = 0; c < FONTEFILTRO_N; c++) n += ffBits(cfg.excluir[c]);
+  n += cfg.cache != FONTEFILTRO_CACHE_TODAS;
   n += cfg.maxGB > 0;
   if (cfg.grupos[0]) { n++; for (const char *p = cfg.grupos; *p; p++) n += *p == ','; }
   if (!n) return i18n("Nenhum filtro");
@@ -10274,6 +10340,15 @@ static void ffGruposDefinir(const char *texto) {
 }
 static void ffEscolher(void) {
   if (frAberta != 6 || teclado_aberto()) return;
+  if (ffCategoria == FF_CACHE) {
+    FonteFiltroConfig cfg; fontefalha_filtro(&cfg);
+    if (ffValorFoco < 0 || ffValorFoco >= FONTEFILTRO_CACHE_N) return;
+    cfg.cache = (unsigned)ffValorFoco;
+    if (!fontefalha_filtro_definir(&cfg))
+      uxNotificar("Não foi possível salvar. O valor anterior foi mantido.");
+    else uxNotificar("Ajuste salvo nesta TV.");
+    return;
+  }
   if (ffCategoria >= 0) {
     uint64_t bit = fontefiltro_bit(ffCategoria, ffValorFoco);
     FonteFiltroConfig cfg; fontefalha_filtro(&cfg);
@@ -10284,10 +10359,10 @@ static void ffEscolher(void) {
     else { sync_proteger_ajustes_locais(); uxNotificar("Ajuste salvo nesta TV."); }
     return;
   }
-  if (ffFoco == 2) {
+  if (ffFoco == 3) {
     frAberta = 0; ajFalhaEspelhar(); uxAbrirEditor(AJ_FILTRO_TAM_MAX);
     faRetornarFolha = 6;
-  } else if (ffFoco == 8) {
+  } else if (ffFoco == 9) {
     static const char *const alfabeto =
       "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789, ._-+";
     FonteFiltroConfig cfg; char contexto[160]; fontefalha_filtro(&cfg);
@@ -10297,7 +10372,10 @@ static void ffEscolher(void) {
                       TECLADO_LONGO, alfabeto, cfg.grupos);
     teclado_permitir_vazio(1);
   } else {
-    ffCategoria = FF_CATEGORIA[ffFoco]; ffValorFoco = 0;
+    ffCategoria = FF_CATEGORIA[ffFoco];
+    if (ffCategoria == FF_CACHE) {
+      FonteFiltroConfig cfg; fontefalha_filtro(&cfg); ffValorFoco = (int)cfg.cache;
+    } else ffValorFoco = 0;
   }
 }
 static void ffVoltar(void) {
@@ -10307,7 +10385,7 @@ static void ffVoltar(void) {
 }
 static void ffEvento(SDL_Keycode k) {
   int *foco = ffCategoria >= 0 ? &ffValorFoco : &ffFoco;
-  int n = ffCategoria >= 0 ? fontefiltro_opcoes_n(ffCategoria) : 9;
+  int n = ffCategoria >= 0 ? ffOpcoesN() : FF_LINHAS;
   if (k == SDLK_ESCAPE || k == SDLK_AC_BACK || k == SDLK_BACKSPACE || k == SDLK_DELETE || k == SDLK_LEFT) {
     ffVoltar(); return;
   }
@@ -10710,12 +10788,17 @@ static int ajFonteAplicar(int op, int novo) {
     if (ok && op == AJ_FONTE_UI) ajFonteInterfaceAplicar();
     return ok;
   }
+  if (novo == base + n) {
 #ifdef NV_ANDROID
-  if (novo == base + n) return legfontes_pedir_importacao(slot);
-  int excluir = base + n + 1;
+    return legfontes_pedir_importacao(slot);
 #else
-  int excluir = base + n;
+    ajFonteUrlOp = op; ajFonteUrlSessao = nv_perfil_sessao_ler();
+    teclado_abrir_com("Importar fonte TTF/OTF", "URL direta de uma fonte TTF ou OTF (https://…). Até 32 MB.",
+      TECLADO_LONGO, CUR_ALFA_URL, NULL);
+    return 1;
 #endif
+  }
+  int excluir = base + n + 1;
   if (novo == excluir && anterior >= 0) {
     int ok = legfontes_remover(anterior);
     if (ok) ajFonteInterfaceAplicar();
@@ -11192,6 +11275,13 @@ static void eventoTela(const SDL_Event *e) {
                         299, CUR_ALFA_URL, curadoria_url()[0] ? curadoria_url() : NULL);
       return;
     }
+    if (focoOp == AJ_NUVIO_BACKEND_URL) {
+      stCampo = focoOp;
+      { char rec[400]; nv_rec_url_copiar(rec, sizeof rec);
+        teclado_abrir_com("URL do servidor Nuvio", "https://seu-servidor — vazio usa o padrão da build.",
+                          299, CUR_ALFA_URL, rec[0] ? rec : NULL); }
+      return;
+    }
     if (focoOp >= AJ_JF_SERVIDOR && focoOp <= AJ_JF_SAIR) { srvsetup_abrir(1); return; }
     if (focoOp >= AJ_EM_SERVIDOR && focoOp <= AJ_EM_SAIR) { srvsetup_abrir(2); return; }
     if (focoOp >= AJ_PX_ENTRAR && focoOp <= AJ_PX_SAIR) { srvsetup_abrir(0); return; }
@@ -11252,6 +11342,13 @@ void ajustes_fontes_atualizar(void) {
   if (fonteStatus) uxNotificar(fonteStatus);
 }
 void ajustes_atualizar(float dt, Uint32 agora) {
+#ifndef NV_ANDROID
+  if (ajFonteUrlOp && !nv_perfil_sessao_atual(ajFonteUrlSessao)) {
+    ajFonteUrlOp = 0;
+    if (teclado_aberto()) { SDL_Event e = {.type=SDL_KEYDOWN}; e.key.keysym.sym=SDLK_ESCAPE; teclado_evento(&e); }
+    teclado_esquecer();
+  }
+#endif
   if(iptvForm.tipo && !nv_perfil_sessao_atual(iptvForm.sessao)) { ajIptvLimparForm();uxCancelar();stCampo=0;teclado_esquecer(); }
   ajLegendaEspelhar(); ajIptvEspelhar();
   AJ_ESCALA_INI();
@@ -11271,6 +11368,9 @@ void ajustes_atualizar(float dt, Uint32 agora) {
   valor[AJ_PERFIL_INFANTIL] = perfil_infantil_ativo() ? 0 : 1;
   pfVigiar();
   p2pTesteRecolher();
+  { int desc = nvbackend_descobrir_estado();
+    if (desc == 2) { uxNotificar("Servidor Nuvio descoberto e salvo."); nvbackend_descobrir_limpar(); }
+    else if (desc == -1) { uxNotificar("Descoberta falhou; mantido o endereço digitado."); nvbackend_descobrir_limpar(); } }
   pstTesteRecolher();
   adTesteRecolher();
   skTesteRecolher();
@@ -11286,6 +11386,16 @@ void ajustes_atualizar(float dt, Uint32 agora) {
   // resultado antes de ela ver (e o apelido digitado se perderia em silencio).
   if (!pessoas_aberto()) hcTecladoLer();
   { int r = pessoas_aberto() ? TECLADO_NADA : teclado_resultado();
+#ifndef NV_ANDROID
+    if (ajFonteUrlOp && r != TECLADO_NADA) {
+      int op = ajFonteUrlOp; ajFonteUrlOp = 0;
+      if (r == TECLADO_PRONTO && nv_perfil_sessao_atual(ajFonteUrlSessao) && teclado_texto()[0]) {
+        int ok = legfontes_pedir_url(ajFonteSlot(op), teclado_texto());
+        uxNotificar(ok ? "Baixando" : "Não foi possível importar a fonte. Use um arquivo TTF ou OTF de até 32 MB.");
+      }
+      teclado_esquecer(); r = TECLADO_NADA;
+    }
+#endif
     if(ajPenPinAsk && r!=TECLADO_NADA) {
       if(r==TECLADO_PRONTO) { if(ajPenPinDigitado(teclado_texto()))r=TECLADO_NADA;else teclado_esquecer(); }
       else { ajPenPinAsk=ajPenPinRepeat=0;teclado_esquecer(); }
@@ -11332,6 +11442,13 @@ void ajustes_atualizar(float dt, Uint32 agora) {
       }
       else if (stCampo == AJ_CURADORIA_URL) {
         int e = curadoria_definir_url(teclado_texto());
+        uxNotificar(e ? "Ajuste salvo nesta TV." : "endereço inválido");
+      }
+      else if (stCampo == AJ_NUVIO_BACKEND_URL) {
+        int e = nvbackend_definir_url(teclado_texto());
+        // A descoberta roda num fio proprio (nvbackend_descobrir_iniciar):
+        // o teclado nunca espera rede. Com campo vazio nao ha origem.
+        if (e && teclado_texto()[0]) nvbackend_descobrir_iniciar(teclado_texto());
         uxNotificar(e ? "Ajuste salvo nesta TV." : "endereço inválido");
       }
       else if (stCampo == AJ_FILTRO_GRUPOS) ffGruposDefinir(teclado_texto());
@@ -11475,9 +11592,7 @@ static void aplicarIdioma(int op) {
 static int nValores(int op) {
   if (ajFonte(op)) {
     int n = ajFonteBase(op) + legfontes_n();
-#ifdef NV_ANDROID
     n++;
-#endif
     return n + (legfontes_selecionada(ajFonteSlot(op)) >= 0);
   }
   if(op==AJ_GUIA_CATEGORIAS)return uxNCategorias>0?uxNCategorias:1;
@@ -11503,6 +11618,7 @@ static int nValores(int op) {
 // Texto do valor de uma linha. Buffer estatico porque so uma linha e desenhada
 // por vez dentro de desenhaLinha.
 static const char *textoValor(int op) {
+  if (op == AJ_TEMA && valor[AJ_TEMA] == AJ_TEMA_SEGURO) return i18n(V_TEMA[AJ_TEMA_SEGURO]);
   if (op >= AJ_FONTE_OCULTAR_DV && op <= AJ_FONTE_OCULTAR_VIDEO)
     return i18n(V_LIGA[!ajustes_fonte_ocultar(op - AJ_FONTE_OCULTAR_DV)]);
   if (op == AJ_MINIATURA_RES) { static const char *labels[] = {"Automático", "180p (320 x 180)", "270p (480 x 270)", "360p (640 x 360)"}; return i18n(labels[valor[op] >= 0 && valor[op] <= 3 ? valor[op] : 0]); }
@@ -12394,7 +12510,8 @@ int ajustes_teste_quadro(const char *id) {
   if (!strncmp(id, "tri-", 4)) {   // 2.1: as tres ilhas (docs/reviews/ajustes-fable)
     static const char *const nomes[] = { "Marina" };
     perfis_teste_definir(nomes, NULL, 1, 1);
-    triIniciar(); pfTela = 0; uxVeioBusca = 0; valor[AJ_AVANCADAS] = 1; valor[AJ_TEMA] = 6;
+    triIniciar(); pfTela = 0; uxVeioBusca = 0; valor[AJ_AVANCADAS] = 1;
+    valor[AJ_TEMA] = getenv("NUVIO_SHOT_TEMA") && *getenv("NUVIO_SHOT_TEMA") ? atoi(getenv("NUVIO_SHOT_TEMA")) : 6;   // a captura escolhe o tema; o quadro do mockup e Rosa
     valor[AJ_IDIOMA] = 0; idiomaEfetivo = IDIOMA_PT; valor[AJ_HOME_LAYOUT] = 1;
     valor[AJ_QUALIDADE] = 1;   // uma linha "diferente do padrao"
     if (!strcmp(id, "tri-indice")) { }
@@ -12425,7 +12542,8 @@ int ajustes_teste_quadro(const char *id) {
         if (rotCores < 0 && !strcmp(TELA[i].titulo, "Cores e vidro")) rotCores = i;   // o 1.º (o de apresentacao)
         else if (!strcmp(TELA[i].titulo, "Durante e depois")) rotDurante = i;
       }
-    triIniciar(); pfTela = 0; uxVeioBusca = 0; valor[AJ_AVANCADAS] = 1; valor[AJ_TEMA] = 6;
+    triIniciar(); pfTela = 0; uxVeioBusca = 0; valor[AJ_AVANCADAS] = 1;
+    valor[AJ_TEMA] = getenv("NUVIO_SHOT_TEMA") && *getenv("NUVIO_SHOT_TEMA") ? atoi(getenv("NUVIO_SHOT_TEMA")) : 6;   // a captura escolhe o tema; o quadro do mockup e Rosa
     if (!getenv("NUVIO_SHOT_IDIOMA")) { valor[AJ_IDIOMA] = 0; idiomaEfetivo = IDIOMA_PT; }   // long-title proof: de, ru...
     valor[AJ_HOME_LAYOUT] = 1;
     valor[AJ_QUALIDADE] = 1; uxCancelar();
@@ -12729,12 +12847,13 @@ float ajustes_rapido_cor(int i, float *r, float *g, float *b) {
 }
 int ajustes_rapido_cor_atual(void) {
   int i, v = valor[AJ_TEMA];
-  if (SEGURO && temaDinamico()) v = 0;
+  if (temaEmReserva()) return -1;
   for (i = 0; i < 18; i++) if (corTema(i) == v) return i;
   return -1;   // um dinamico: nenhum dos dezoito
 }
 const char *ajustes_rapido_cor_atual_nome(void) {
   int i = ajustes_rapido_cor_atual();
+  if (temaEmReserva()) return V_TEMA[AJ_TEMA_SEGURO];
   return i >= 0 ? V_TEMA[corTema(i)] : V_TEMA[valor[AJ_TEMA] >= 0 && valor[AJ_TEMA] < AJ_N_TEMAS_OPC ? valor[AJ_TEMA] : 0];
 }
 int ajustes_rapido_cor_definir(int i) {
@@ -12743,4 +12862,31 @@ int ajustes_rapido_cor_definir(int i) {
   r = definirValorDireto(AJ_TEMA, corTema(i));
   ajOrigemDireto = AJLOG_AJUSTES;
   return r;
+}
+
+// FAROL (#26): diferenca de ajustes por lista branca (farolajustes.h). A
+// resolucao `chave` -> op e por strcmp na CHAVE[]: a tabela nao depende das
+// posicoes do enum, que variam por #ifdef e por append-only. Entrada sem
+// CHAVE nesta build (opcao de plataforma) e so pulada.
+int ajustes_farol_diff(void (*cb)(const char *chave, int numero, const char *token, void *ctx), void *ctx) {
+  int i, pares = 0;
+  if (!cb) return 0;
+  for (i = 0; i < (int)(sizeof FAROL_AJ_LISTA / sizeof *FAROL_AJ_LISTA); i++) {
+    const FarolAjItem *it = &FAROL_AJ_LISTA[i];
+    int op, v;
+    for (op = 0; op < AJ_N; op++) if (CHAVE[op] && !strcmp(CHAVE[op], it->chave)) break;
+    if (op == AJ_N) continue;
+    v = valor[op];
+    if (v == valorPadrao[op]) continue;
+    if (it->tipo == FAROL_AJ_ENUM) {
+      const char *tok = it->rot && v >= 0 && v < it->n ? it->rot[v] : "outro";
+      cb(it->nome, v, tok, ctx);
+    } else if (it->tipo == FAROL_AJ_NUM) {
+      cb(it->nome, it->num && v >= 0 && v < it->n ? it->num[v] : v, NULL, ctx);
+    } else {
+      cb(it->nome, v == it->ligado ? 1 : 0, NULL, ctx);
+    }
+    pares++;
+  }
+  return pares;
 }

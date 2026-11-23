@@ -99,6 +99,11 @@ static int ultRoiX, ultRoiY, ultRoiW, ultRoiH, temRoi;
 static int planoX, planoY, planoW, planoH;
 static int ultLegX, ultLegY, ultLegW, ultLegH;
 static FnPos    hPos;
+// O hPos devolve o cache do host (posMs), que tambem recebe o ALVO do seek no
+// ack do SetPlayPositionAsync. O hPosLida so devolve posicao que o host leu
+// de verdade do firmware (GetPlayPosition) nesta abertura: <0 enquanto nao
+// houve leitura real — e o que a amostra do farol aceita (video_pos_amostra).
+static FnPos    hPosLida;
 typedef void (*FnEscolher)(int tipo, int idx);
 static FnEscolher hEscolher;
 
@@ -418,35 +423,11 @@ void nv_tpk_video_registrar_faixas(FnEscolher escolher) { hEscolher = escolher; 
 __attribute__((visibility("default")))
 void nv_tpk_video_registrar_aspecto(FnAspecto janela) { hAspecto = janela; }
 
-/* Host (qualquer fio): uma leitura real da posicao. motivo 0 = a consulta de
- * sempre (tocando), 1 = logo depois de um seek, 2 = logo depois da pausa,
- * 3 = a pausa assentou (~300 ms depois). carimboNs = o meio da consulta no
- * Stopwatch do .NET, que no Linux e o CLOCK_MONOTONIC em ns. */
+// Opcional como o hAspecto: hosts antigos nao tem o marcador e o getter da
+// amostra cai no caminho anterior. O host publica <0 ate a primeira leitura
+// real da abertura corrente (zera ao abrir e a cada seek pedido).
 __attribute__((visibility("default")))
-void nv_tpk_video_posicao(int ms, int motivo, int consultaMs, long long carimboNs) {
-  double agora = monoAgora(), c = (double)carimboNs / 1e9, inc = consultaMs > 0 ? consultaMs / 2000.0 : 0.0;
-  if (!ativo || ms < 0) return;
-  if (c > agora + 0.05 || c < agora - 10.0) c = agora - inc;   // relogio diferente: o fim menos meia consulta
-  pthread_mutex_lock(&amTrava);
-  amMed.n++;
-  if (consultaMs > 0) { amMed.somaMs += consultaMs; if (consultaMs > amMed.maxMs) amMed.maxMs = consultaMs; }
-  /* Consulta que COMECOU antes do ultimo seek (chega depois do EV_BUSCOU, ate
-   * 600 ms mais lenta): a posicao e a de antes do salto. Fora — ela tirava o
-   * posIncerta com a posicao velha e a legenda da outra cena aparecia. */
-  if (c - inc < amBusca) { amMed.fora++; pthread_mutex_unlock(&amTrava); return; }
-  am.ms = ms; am.carimbo = c; am.incerteza = inc; am.seq++; am.valido = 1;
-  pthread_mutex_unlock(&amTrava);
-  if (motivo <= 1) atomic_store(&posIncerta, 0);   // a TV ja disse onde caiu depois do seek
-}
-
-/* Position readings since the last call (video.h): how many arrived, how many
- * were dropped as older than the last seek, and the query time. Resets them. */
-void video_tpk_leituras(int *n, int *fora, long *somaMs, int *maxMs) {
-  pthread_mutex_lock(&amTrava);
-  *n = amMed.n; *fora = amMed.fora; *somaMs = amMed.somaMs; *maxMs = amMed.maxMs;
-  memset(&amMed, 0, sizeof amMed);
-  pthread_mutex_unlock(&amTrava);
-}
+void nv_tpk_video_registrar_pos_lida(FnPos pos_lida) { hPosLida = pos_lida; }
 
 void video_escolher_audio(int i);
 
@@ -800,7 +781,12 @@ void nv_tpk_video_evento(int tipo, int a, int b) {
       if (a < 100 && !bufferando) { bufferando = 1; bufferDesde = SDL_GetTicks(); }
       else if (a >= 100) bufferando = 0;
       break;
-    case EV_BUSCA_FALHOU: atomic_fetch_add(&mfRecusas, 1); atomic_fetch_add(&buscaFalhas, 1u); break;
+    case EV_BUSCA_FALHOU: atomic_fetch_add(&mfRecusas, 1); atomic_fetch_add(&buscaFalhas, 1u);
+      // A falha encerra o voo do MESMO alvo (CAS, como no EV_BUSCOU): um seek
+      // mais novo ja armado por cima nao e desarmado pela falha do anterior.
+      // Sem o -1 o video_busca_em_voo e a amostra do farol ficavam presos num
+      // seek que a TV ja recusou.
+      atomic_compare_exchange_strong(&buscaAlvoMs, &a, -1); break;
     case EV_VELOCIDADE:
       vel_log(a, b ? "plataforma ok" : "plataforma recusou");
       if (!b) { velRecusada = 1; velPedida = 100; }
@@ -1689,6 +1675,8 @@ static void mfBombear(void) {
     mf.pend = 0;
     if (e == MKVFIX_PRECISA && !mf.ativo && !cv.ativo && ativo && !parado && SDL_GetTicks() - mf.pendEm < 20000u)
       mfLigar(mf.pendAlvo, "seek asked during the check (the TV can't seek this file as served)");
+    else
+      atomic_store(&buscaAlvoMs, -1);   // o seek adiado foi descartado: alvo fora de voo
   }
   // Cabecalho sem ASS conhecido antes de abrir: a sonda de depois do pronto
   // achou legenda a esconder. Reabre cedo, uma vez, no ponto atual.
@@ -2655,7 +2643,10 @@ static void convBombear(void) {
   // Progressivo: o player conta do comeco do fluxo ou da fonte? Decide uma vez
   // por abertura, com o quadro-chave onde o fluxo comeca (o servidor sabe).
   if (cv.prog && !cv.deslocOk && pronto && hPos) {
-    double raw = hPos() / 1000.0, base = dts_tpk_inicio_stream();
+    // Com o marcador, so leitura real: o alvo publicado no ack do seek nao
+    // pode virar deslocamento (valeria para a abertura inteira). O -1 do
+    // marcador cai no raw < 0.3 e espera a primeira leitura de verdade.
+    double raw = (hPosLida ? hPosLida() : hPos()) / 1000.0, base = dts_tpk_inicio_stream();
     if (raw >= 0.3 && base >= 0) {
       const char *como;
       if (fabs(raw - base) < 3.0) { cv.desloc = 0; como = i18n("absoluta (tempo da fonte)"); }
@@ -3136,7 +3127,8 @@ void video_bombear(void) {
         cv.seekPend = 1; cv.seekAlvo = alvo; cv.seekEm = SDL_GetTicks(); cv.deslocOk = 0;
         convReabrir(alvo, "seek pendente");
         abrirSessao();
-      }
+      } else
+        atomic_store(&buscaAlvoMs, -1);   // seek adiado sem fluxo novo: alvo fora de voo
     } else {
       buscarHost(ms);
       if (cv.ativo) { cv.seekPend = 1; cv.seekAlvo = ms / 1000.0; cv.seekEm = SDL_GetTicks(); }
@@ -3379,6 +3371,7 @@ void video_buscar(double s) {
       printf("[dts-tpk] seek progressivo para %.1f s: o servidor nao deu o fluxo novo; fica onde esta\n", s);
       fflush(stdout);
       cv.seekPend = 0;
+      atomic_store(&buscaAlvoMs, -1);   // seek recusado sem sair: alvo fora de voo
     }
     terminou = 0;
     return;
@@ -3738,6 +3731,27 @@ double video_duracao(void) {
 }
 double video_pos_amostra(Uint64 *t) {
   if (t) *t = nv_ticks64();
+  // A AMOSTRA nativa: so posicao lida do firmware DEPOIS da abertura corrente.
+  // Nao sao leitura real: o alvo que o host publica em posMs no ack do
+  // SetPlayPositionAsync, a posMantida da reabertura do convertido, a
+  // posConhecida e a base do fluxo — e o alvo do posReconLeg da reconexao.
+  if (cv.reabrindo) return 0.0;
+  if (cv.ativo && cv.prog && !cv.deslocOk) return 0.0;
+#ifdef NV_TPK
+  if (posReconLeg >= 0.0) return 0.0;
+#endif
+  if (hPosLida) {
+    // Alvo em voo: nenhuma amostra entre o pedido do seek e a resposta da TV
+    // (EV_BUSCOU/EV_BUSCA_FALHOU em nv_tpk_video_evento) conta — um marcador
+    // positivo nessa janela pode ser a leitura de ANTES do seek. Defesa em
+    // profundidade: o host atual ja segura o marcador ate a leitura pos-ack.
+    if (atomic_load(&buscaAlvoMs) >= 0) return 0.0;
+    int ms = pronto ? hPosLida() : -1;
+    if (ms < 0) return 0.0;
+    return ms / 1000.0 + (cv.ativo && cv.prog ? cv.desloc : 0);
+  }
+  // Host antigo sem o marcador de leitura: o comportamento de antes.
+  if (cv.ativo && cv.prog && !cv.deslocOk && cv.seekPend) return 0.0;
   return video_pos();
 }
 // Capitulos do MKV lidos por um fio lateral (capmkv.c, 203-capitulos).

@@ -67,7 +67,7 @@
 
   1,                /* desfocar nao assistidos: desligado */
   0,                /* botao de trailer: ligado */
-  0,                /* metadados externos: ligado */
+  1,                /* metadados externos: desligado */
   0,                /* data completa: ligada */
   100,              /* escurecimento do fundo do titulo: vinheta inteira */
   0,                /* trailer automatico na pagina de titulo: ligado */
@@ -166,7 +166,7 @@
   0, 1, 1, 1, 1, 1,/* trakt, tmdb, letterboxd, mal, ebert, nota do mdblist */
   1,                /* perfil pesquisavel: DESLIGADO (V_LIGA: 1 = Desligado). Padrao de todo mundo. */
   0,                /* meu perfil publico: acao */
-  0,                /* glass contour: On (aesthetic, never automatic) */
+  1,                /* glass contour: Off (aesthetic, never automatic) */
   1,                /* som do trailer no destaque: DESLIGADO (V_LIGA: 1 = Desligado) */
   22,               /* espera do trailer no destaque: 2,2 s (em decimos de segundo) */
   90,               /* percentual assistido: 90%, o numero fixo de antes */
@@ -371,6 +371,7 @@
   1, 1, 0, /* Guide: start on OK, audible, one day. */
   2, 2, 2, /* Capability exclusions: automatic defaults, resolved per device; unknown stays off. */
   0, /* Android TV home: enabled. */
+  0, /* Servidor Nuvio: acao; o valor mora em nuvio-backend.txt, nao em valor[] */
   1, /* Profile picker avatar size: Medium. */
   0, /* Group channel variants: enabled. */
   0, /* Sports menu entry: enabled. */

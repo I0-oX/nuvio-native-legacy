@@ -170,6 +170,8 @@ typedef struct {
   char *finalDst;
   unsigned finalTam;
   int parcialOk;
+  unsigned long prazoAtualMs;
+  int semRecuoV4;
   UsoHost usoHost[REDE_HOSTS_POR_FIO];
   long teto;
   int restoRecusado;
@@ -209,6 +211,8 @@ long *rede_teto_ptr(void) { return &redeFio()->teto; }
 #define redeFinalDst      (redeFio()->finalDst)
 #define redeFinalTam      (redeFio()->finalTam)
 #define redeParcialOk     (redeFio()->parcialOk)
+#define redePrazoAtualMs  (redeFio()->prazoAtualMs)
+#define redeSemRecuoV4    (redeFio()->semRecuoV4)
 #define usoHost           (redeFio()->usoHost)
 #define redeRestoRecusado (redeFio()->restoRecusado)
 #define redeLateral       (redeFio()->lateral)
@@ -543,6 +547,69 @@ EM_ASYNC_JS(int, nv_http_fluxo, (const char *url, unsigned prazo, unsigned teto,
   } catch (e) { return expirou ? 5 : 4; }
   finally { clearTimeout(timer); controle.abort(); _free(bloco); }
 });
+#ifdef NV_UM_FIO
+// Mesma resposta do nv_http_fluxo, mas SEM Asyncify: no build cooperativo o
+// EM_ASYNC_JS suspende a pilha inteira pela duracao do fetch — chamado de uma
+// fibra fio1 (o "pthread" do fonteurl), congelava o laco de quadros junto.
+// Aqui o fetch roda no event loop do navegador e a espera cede ao escalonador
+// (nv_http_esperar). Os codigos sao os mesmos do fluxo: 2 sem reader, 3 sem
+// memoria no colher, 4 erro/aborto, 5 prazo, 8 acima do teto, 0 ok.
+EM_JS(int, nv_http_fluxo_iniciar, (const char *url, unsigned prazo, unsigned teto), {
+  if (typeof ReadableStream === 'undefined' || typeof AbortController === 'undefined') return 0;
+  if (!Module.nvFioReqs) { Module.nvFioReqs = {}; Module.nvFioProxId = 1; }
+  var id = Module.nvFioProxId++;
+  var controle = new AbortController(), expirou = false;
+  var reg = { pronto: false, codigo: 4, status: 0, n: 0, parts: null, pi: 0, pos: 0,
+              abortar: function () { controle.abort(); } };
+  Module.nvFioReqs[id] = reg;
+  var timer = setTimeout(function () { expirou = true; controle.abort(); }, prazo);
+  fetch(UTF8ToString(url), { redirect: 'error', credentials: 'omit', signal: controle.signal })
+    .then(async function (res) {
+      reg.status = res.status;
+      if (!res.body || !res.body.getReader) { reg.codigo = 2; return; }
+      var ok = res.status >= 200 && res.status < 300;
+      var leitor = res.body.getReader(), n = 0;
+      if (ok) reg.parts = [];
+      while (true) {
+        var parte = await leitor.read();
+        if (parte.done) break;
+        if (parte.value.length > teto - n) { reg.codigo = 8; controle.abort(); return; }
+        n += parte.value.length; reg.n = n;
+        if (ok) reg.parts.push(parte.value);
+      }
+      reg.codigo = 0;
+    })
+    .catch(function () { reg.codigo = expirou ? 5 : 4; })
+    .then(function () { clearTimeout(timer); reg.pronto = true; });
+  return id;
+});
+EM_JS(int, nv_http_fluxo_colher, (int id, int *status, unsigned *total), {
+  var reg = Module.nvFioReqs && Module.nvFioReqs[id];
+  if (!reg) return 4;
+  if (status) HEAP32[status >> 2] = reg.status;
+  if (total) HEAPU32[total >> 2] = reg.n;
+  return reg.codigo;
+});
+// Entrega as fatias ja lidas pelo fetch, na ordem em que chegaram (a fila
+// alta fica no lado JS; no C nao entra copia extra do corpo inteiro). O
+// rede_pedir drena isto DURANTE a espera cooperativa — nao so depois do EOF.
+// 0 = esgotado.
+EM_JS(int, nv_http_fluxo_pedaco, (int id, void *dst, unsigned cap), {
+  var reg = Module.nvFioReqs && Module.nvFioReqs[id];
+  if (!reg || !reg.parts) return 0;
+  while (reg.pi < reg.parts.length) {
+    var p = reg.parts[reg.pi], k = p.length - reg.pos;
+    if (k > cap) k = cap;
+    if (k > 0) { HEAPU8.set(p.subarray(reg.pos, reg.pos + k), dst); reg.pos += k; }
+    if (reg.pos >= p.length) { reg.parts[reg.pi] = null; reg.pi++; reg.pos = 0; }
+    if (k > 0) return k;
+  }
+  return 0;
+});
+EM_JS(void, nv_http_fluxo_soltar, (int id), {
+  if (Module.nvFioReqs) delete Module.nvFioReqs[id];
+});
+#endif
 int rede_pedir(const RedePedido *p, RedeResposta *r) {
   if (!r) return 0;
   memset(r, 0, sizeof *r);
@@ -553,11 +620,39 @@ int rede_pedir(const RedePedido *p, RedeResposta *r) {
       !p->janela_corpo_ms && !p->ca_arquivo && !p->tls_pessoal && !p->pino_publico &&
       !p->max_cabecalhos && p->prazo_ms<=300000 && p->max_bytes<=REDE_CORPO_MAXIMO) {
     unsigned total=0;
+#ifdef NV_UM_FIO
+    int id = nv_http_fluxo_iniciar(p->url, p->prazo_ms?p->prazo_ms:15000,
+        p->max_bytes?p->max_bytes:REDE_CORPO_PADRAO);
+    if (id <= 0) { r->erro = REDE_INDISPONIVEL; return 0; }
+    // A espera cooperativa tambem DRENA o fluxo: cada fatia vai ao
+    // receber_corpo assim que o fetch a entrega (contrato de rede.h), e o
+    // retorno 0 aborta o fetch NA HORA — igual ao nv_http_fluxo do build com
+    // pthread. fio1_ceder entre fatias mantem o passo do escalonador curto
+    // mesmo drenando um corpo de 32 MiB.
+    unsigned char bloco[16384];
+    int k, recusou = 0;
+    for (;;) {
+      while ((k = nv_http_fluxo_pedaco(id, bloco, sizeof bloco)) > 0) {
+        if (!p->receber_corpo(bloco, (size_t)k, p->corpo_usuario)) { recusou = 1; break; }
+        fio1_ceder();
+      }
+      if (recusou) { nv_http_abortar(id); break; }
+      if (nv_http_pronto_assinc(id)) break;
+      if (redeParou()) { redeCancelouLocal = 1; nv_http_abortar(id); break; }
+      fio1_ceder();
+    }
+    r->erro = nv_http_fluxo_colher(id, &r->status, &total);
+    r->n_corpo = total;
+    if (recusou) r->erro = REDE_TRANSPORTE;
+    nv_http_fluxo_soltar(id);
+    return r->erro==REDE_OK;
+#else
     r->erro=nv_http_fluxo(p->url,p->prazo_ms?p->prazo_ms:15000,
         p->max_bytes?p->max_bytes:REDE_CORPO_PADRAO,
         (int)p->receber_corpo,p->corpo_usuario,&r->status,&total);
     r->n_corpo=total;
     return r->erro==REDE_OK;
+#endif
   }
   r->erro = REDE_INDISPONIVEL;
   return 0; /* nenhum XHR: nao prometer teto, timeout ou cancel inexistentes */
@@ -594,6 +689,7 @@ void rede_avisar_host(void (*f)(const char *url, int codigo, int http, unsigned 
 // recomenda.c, xtream.c, avisos.c, noticias.c, tex_cache.c): tools/env.sh so
 // emite o -D quando o servico de recomendacoes esta configurado, e uma build
 // sem ele nao pode falhar a compilar por causa disto.
+#include "nvbackend.h"
 #ifndef NV_REC_URL
 #define NV_REC_URL ""
 #endif
@@ -626,7 +722,8 @@ void rede_avisar_host(void (*f)(const char *url, int codigo, int http, unsigned 
 //     desta distincao aqui: aquela funcao NUNCA tenta o proxy (ver embaixo)
 //     e devolve "desconhecido" em vez de "morta" quando o bloqueio acontece.
 static int vidaaNuncaProxiar(const char *url) {
-  if (NV_REC_URL[0] && !strncmp(url, NV_REC_URL, strlen(NV_REC_URL))) return 1;
+  char rec[400];
+  if (nv_rec_url_copiar(rec, sizeof rec) && !strncmp(url, rec, strlen(rec))) return 1;
   if (!strncmp(url, NV_VIDAA_PROXY_URL, strlen(NV_VIDAA_PROXY_URL))) return 1;
 #ifdef NV_SUPABASE_URL
   if (NV_SUPABASE_URL[0] && !strncmp(url, NV_SUPABASE_URL, strlen(NV_SUPABASE_URL))) return 1;
@@ -818,8 +915,10 @@ static char *pedir2(const char *metodo, const char *url, int segundos, const cha
       char *cabs2 = juntarCabs(cab, extraCab);
       int n2 = 0, http2 = 0;
       char fim2[512];
+      char rec[400];
       char *r2;
       fim2[0] = 0;
+      nv_rec_url_copiar(rec, sizeof rec);
       unsigned long gastoPedido = redeAgoraMs() - inicioPedido;
       int resta = nvPrazo(segundos) - (int)gastoPedido;
       r2 = resta > 0 ? nv_http(metodo, urlP, cabs2, corpo, &n2, &http2, fim2, (int)sizeof fim2, etag, (int)tamEtag, NULL, resta) : NULL;
@@ -838,7 +937,7 @@ static char *pedir2(const char *metodo, const char *url, int segundos, const cha
       // proxy quebrado do mesmo jeito. Agora so anota quando o proxy entregou,
       // e o erro do worker sai com o nome certo no log.
       if (r2 && !strncmp(fim2, "http", 4) &&
-          !(NV_REC_URL[0] && !strncmp(fim2, NV_REC_URL, strlen(NV_REC_URL))) &&
+          !(rec[0] && !strncmp(fim2, rec, strlen(rec))) &&
           strncmp(fim2, NV_VIDAA_PROXY_URL, strlen(NV_VIDAA_PROXY_URL))) {
         char host[128];
         corpoResp = r2; n = n2; http = http2;
@@ -927,6 +1026,11 @@ char *rede_baixar(const char *url, int segundos) {
 
 char *rede_baixar_bin(const char *url, int segundos, long *tam) {
   return pedir("GET", url, segundos, NULL, NULL, NULL, tam, NULL);
+}
+char *rede_baixar_bin_seguro(const char *url, int segundos, long *tam) {
+  // No navegador (.wgt) o TLS e sempre verificado pela plataforma — mesma
+  // funcao; so o nativo tem o caminho publico sem verificacao.
+  return rede_baixar_bin(url, segundos, tam);
 }
 
 char *rede_baixar_com(const char *url, int segundos, const char *const *cab) {
@@ -1286,6 +1390,10 @@ static _Thread_local unsigned redeFinalTam;
 // so trechoUmaVez liga. Ver a nota la.
 static _Thread_local int redeParcialOk;
 #endif
+#if !defined(NV_TPK40) && !defined(NV_UM_FIO)
+static _Thread_local unsigned long redePrazoAtualMs;
+static _Thread_local int redeSemRecuoV4;
+#endif
 
 // Constantes da libcurl escritas a mao: nao ha curl.h no SDK do aparelho, e
 // puxar o header inteiro so por meia duzia de numeros nao se paga. Os valores
@@ -1317,6 +1425,8 @@ static _Thread_local int redeParcialOk;
 #define INFO_TEMPO_DNS       3145732
 #define INFO_TEMPO_TCP       3145733
 #define INFO_TEMPO_TLS       3145761
+// CURLINFO_PRIMARY_IP = CURLINFO_STRING (0x100000) + 32: IP do socket conectado.
+#define INFO_IP_PRIMARIO     1048608
 // Cabecalhos de RESPOSTA. So rede_baixar_etag os pede; ver a nota la.
 #define OPT_HEADERFUNCTION  20079
 #define OPT_HEADERDATA      10029
@@ -1348,7 +1458,15 @@ static _Thread_local int redeParcialOk;
 #define OPT_CAINFO 10065
 #define OPT_ERRORBUFFER 10010
 #define OPT_POSTFIELDSIZE 60
+// CURLOPT_REDIR_PROTOCOLS em bitmask (7.19.4+): o *_STR da libcurl 7.85 nao
+// existe nas libcurl antigas das TVs. CURLPROTO_HTTPS = 2.
+#define OPT_REDIR_PROTOCOLS 182
+// CURLOPT_MAXREDIRS: teto de saltos de uma cadeia de redirects.
+#define OPT_MAXREDIRS        68
 #define OPT_PROTOCOLS 181
+// CURLOPT_IPRESOLVE (7.10.8+): 0 = qualquer familia, 1 = so IPv4, 2 = so IPv6.
+// Ver o "v6 ruim" por host junto de performV4.
+#define OPT_IPRESOLVE        113
 
 // Ouvinte unico dos 401 — ver rede_avisar_401 no cabecalho. (O ramo
 // Emscripten tem a sua propria definicao, porque os dois lados do #ifdef
@@ -1407,6 +1525,9 @@ static int urlSetopt(void *c, const char *url) {
 #define curl_setopt(c, op, v) ((op) == 10002 ? urlSetopt((c), (const char *)(uintptr_t)(v)) \
                                               : curl_setopt_f((c), (op), (v)))
 static int   (*curl_perform)(void *);
+// ROTA IPv6 QUEBRADA POR HOST (#707): a declaracao completa (com a vigia)
+// fica junto das do cancelVigia, logo depois das funcoes multi.
+static unsigned long conexaoMs(unsigned long prazoMs);
 static void  (*curl_cleanup)(void *);
 static int   (*curl_global)(long);
 static void *(*curl_multi_init)(void);
@@ -1430,6 +1551,9 @@ typedef struct { void *multi; int ligado; } CancelVigia;
 static int cancelVigiaPerform(CancelVigia *v, void *c);
 static int cancelVigiaLigar(void *c, CancelVigia *v);
 static void cancelVigiaSoltar(CancelVigia *v, int ligado, void *c);
+// O recuo IPv4 do #707 roda cada tentativa por cancelVigiaPerform — ver
+// performV4 logo depois de hostDaUrl. v->multi NULL cai no easy perform.
+static int performV4(void *c, const char *url, CancelVigia *v);
 
 #ifdef NV_TPK
 static void *dnsShare;
@@ -1479,6 +1603,11 @@ static int tmdbFallback(void *c, int r, const char *pedido, void *cv) {
   long http = 0;
   if (!(r == 35 || r == 7 || r == 56 || r == 52) ||
       redeCancelouLocal || !curl_getinfo) return r;
+  // ESCRITA que pode ja ter sido aplicada nao repete no alias: resposta
+  // perdida (52: o servidor recebeu e calou) ou corpo cortado no retorno (56)
+  // deixam o POST no servidor — reenviar duplicaria a acao (#707 r2). O flag
+  // e o mesmo que ja barra o recuo IPv4 no caminho do POST.
+  if (redeSemRecuoV4 && (r == 52 || r == 56)) return r;
   // Um redirect de outro host ao TMDB nao autoriza reenviar seus cabecalhos.
   origem = tmdbUrl(pedido);
   if (!origem) return r;
@@ -1486,7 +1615,9 @@ static int tmdbFallback(void *c, int r, const char *pedido, void *cv) {
   if (curl_getinfo(c, INFO_RESPONSE_CODE, &http) || http ||
       curl_getinfo(c, INFO_URL_FINAL, &url) || !(alias = tmdbUrl(url))) return r;
   if (!curl_setopt_f(c, OPT_URL, alias)) {
-    r = cancelVigiaPerform((CancelVigia *)cv, c); /* uma unica tentativa, sem recursao */
+    /* Uma unica tentativa no alias, sem recursao: com o recuo IPv4 ela tambem
+       pode ter duas performs, cada uma cancelavel pela vigia ja armada. */
+    r = performV4(c, alias, (CancelVigia *)cv);
     if (!r) tmdbLigou();
   }
   free(alias);
@@ -1494,7 +1625,7 @@ static int tmdbFallback(void *c, int r, const char *pedido, void *cv) {
 }
 static int performTmdbCv(void *c, const char *url, void *cv) {
   return tmdbFallback(c,
-           cv ? cancelVigiaPerform((CancelVigia *)cv, c) : curl_perform(c),
+           cv ? performV4(c, url, (CancelVigia *)cv) : performV4(c, url, NULL),
            url, cv);
 }
 // TODA perform sem vigia propria vai pelo multi do fio quando a interface
@@ -1502,12 +1633,12 @@ static int performTmdbCv(void *c, const char *url, void *cv) {
 // no multi, que o fio guarda e que viaja no estacionamento JUNTO com a easy.
 // Com curl_easy_perform a conexao ficaria na easy de um fio e o fio consumidor
 // a associaria ao proprio multi — o HEAD aquecido nunca seria reusado. Sem a
-// interface multi (libcurl antiga), cancelVigiaPerform cai no easy perform.
+// interface multi (libcurl antiga), performV4 cai no easy perform.
 static int performTmdb(void *c, const char *url) {
   CancelVigia cv;
   int on, r;
   on = cancelVigiaLigar(c, &cv);
-  r = tmdbFallback(c, cancelVigiaPerform(&cv, c), url, on ? &cv : NULL);
+  r = tmdbFallback(c, performV4(c, url, &cv), url, on ? &cv : NULL);
   cancelVigiaSoltar(&cv, on, c);
   return r;
 }
@@ -1688,6 +1819,146 @@ static int hostOcioso(const char *url, unsigned long agora) {
     if (usoHost[i].ms && !strcmp(usoHost[i].h, h))
       return agora - usoHost[i].ms > ociosoMaxMs;
   return 0;
+}
+
+// "V6 RUIM" POR HOST (#707). O relato: o roteador do aparelho anunciava uma
+// rota IPv6 MORTA (Tizen 10, MediaFusion + TorBox). O connect de um host com
+// AAAA+A ia pelo v6 e nunca chegava — e a libcurl 7.53.1 da TV nao refaz em
+// IPv4 sozinha em todo caminho. Na interface virava N falhas de transporte
+// seguidas em hosts diferentes (a sonda de cada fonte), que e exatamente o
+// criterio do "sem internet" da redesaude: a pessoa lia "sem internet" com a
+// casa online — e o Stremio, que recua para v4, tocava o mesmo titulo.
+//
+// Mecanismo, irmao do calmaHost (#385): a tentativa em familia QUALQUER que
+// falhou ANTES de abrir a conexao (o nome nao resolveu, o connect caiu ou o
+// prazo morreu sem resposta) refaz o pedido UMA vez com IPRESOLVE=V4 no MESMO
+// handle, e o host (esquema+host+porta) fica marcado: os pedidos seguintes ja
+// saem direto em v4, sem pagar a tentativa v6. A marca caduca — a rota pode
+// voltar — e cai fora do vetor por rodizio, como os demais caches por host.
+//
+// O QUE NAO DISPARA: cancelamento (42), corpo parado (o pedido ja tinha
+// conexao aberta), resposta HTTP de erro (o servidor respondeu) e TLS (35):
+// o aperto de mao so comeca DEPOIS do connect, entao a familia ja deu certo.
+#define REDE_V4_HOSTS 8
+#define REDE_V4_MARCA_MS (10UL * 60UL * 1000UL)
+typedef struct { char h[96]; unsigned long ate; } V4Host;
+static V4Host v4Host[REDE_V4_HOSTS];
+static int v4Prox;
+static pthread_mutex_t v4Trava = PTHREAD_MUTEX_INITIALIZER;
+
+static int v4Marcado(const char *url, unsigned long agora) {
+  char h[96];
+  int i, achou = 0;
+  hostDaUrl(url, h, sizeof h);
+  if (!h[0]) return 0;
+  pthread_mutex_lock(&v4Trava);
+  for (i = 0; i < REDE_V4_HOSTS; i++)
+    if (v4Host[i].h[0] && !strcmp(v4Host[i].h, h)) {
+      if (v4Host[i].ate > agora) achou = 1;
+      else v4Host[i].h[0] = 0;   // caducou: a rota v6 pode ter voltado
+      break;
+    }
+  pthread_mutex_unlock(&v4Trava);
+  return achou;
+}
+static void v4Marcar(const char *url, unsigned long agora) {
+  char h[96];
+  int i, achou = -1;
+  hostDaUrl(url, h, sizeof h);
+  if (!h[0]) return;
+  pthread_mutex_lock(&v4Trava);
+  for (i = 0; i < REDE_V4_HOSTS; i++)
+    if (v4Host[i].h[0] && !strcmp(v4Host[i].h, h)) { achou = i; break; }
+  if (achou < 0) {
+    achou = v4Prox; v4Prox = (v4Prox + 1) % REDE_V4_HOSTS;
+    snprintf(v4Host[achou].h, sizeof v4Host[achou].h, "%s", h);
+  }
+  v4Host[achou].ate = agora + REDE_V4_MARCA_MS;
+  pthread_mutex_unlock(&v4Trava);
+}
+
+// A conexao TCP abriu? Sinal da libcurl, nunca limiar de tempo: loopback e
+// LAN conectam em dezenas de us, e um 28 com o TLS parado nao e rota v6.
+// CONNECT_TIME > 0 = connect fechado nesta tentativa; IP primario preenchido =
+// havia socket conectado (a 8.x zera o CONNECT_TIME de conexao REUSADA que
+// estoura, mas mantem o IP). Sem conexao (6, 7, connect engolido) as duas
+// vem zeradas. Getinfo que falha conta como "abriu": na duvida nao recua.
+static int v4TcpAbriu(void *c) {
+  double tcp = 0;
+  char *ip = NULL;
+  if (curl_getinfo(c, INFO_TEMPO_TCP, &tcp) || tcp != 0.0) return 1;
+  if (curl_getinfo(c, INFO_IP_PRIMARIO, &ip)) return 1;
+  return ip && ip[0];
+}
+// Conexao que nem abriu e a rota v6 pode ser a culpada: o nome nao resolveu
+// (6, o AAAA que morre no caminho v6 quebrado), o connect caiu (7: sem rota,
+// recusa, blackhole que responde RST tarde) ou o prazo morreu sem nenhuma
+// resposta HTTP (28 com http=0: o connect v6 engolido em silencio). Cancelado
+// e codigo sem libcurl/getinfo ficam de fora.
+static int v4Vale(int r, void *c) {
+  long http = 0;
+  if (redeCancelouLocal || redeParou()) return 0;
+  if (r == 6 || r == 7) return 1;
+  if (r != 28) return 0;
+  if (!curl_getinfo) return 0;
+  curl_getinfo(c, INFO_RESPONSE_CODE, &http);
+  if (http != 0) return 0;
+  return !v4TcpAbriu(c);
+}
+// A easy do pedido cancelavel esta associada ao multi do FIO (pool); uma
+// vigia temporaria em cima dele deixa cada tentativa cancelavel sem mexer no
+// fluxo de cancelVigiaLigar/Soltar de quem chamou — o multi volta para o pool
+// por la, com o cache de conexoes junto.
+static void v4VigiaPegar(void *c, CancelVigia *v) {
+  HandlePool *p;
+  v->multi = NULL;
+  v->ligado = 0;
+  if (!curl_reset || !curl_multi_init || !curl_multi_add || !curl_multi_remove ||
+      !curl_multi_perform || !curl_multi_cleanup || !curl_multi_info_read ||
+      !(curl_multi_poll || curl_multi_wait)) return;
+  pthread_once(&handleUma, handleCriarChave);
+  p = (HandlePool *)pthread_getspecific(handleChave);
+  if (p && p->c == c && p->multi) v->multi = p->multi;
+}
+
+// curl_easy_perform com o recuo IPv6->IPv4 do #707 e a vigia de cancelamento
+// do #775 por tentativa: cada tentativa (dual-stack e, se valer, so IPv4) e um
+// cancelVigiaPerform no mesmo multi — a 1a usa a easy ja associada por
+// cancelVigiaLigar, a 2a a reassocia; redeParou() vale nas duas. Sem multi
+// (v NULL sem pool, libcurl antiga) cai no curl_easy_perform de sempre. Vale para TODO caminho que passa por aqui: sonda de
+// fonte, GET/POST, aquecimento, Range lateral — todos o chamam direto ou pelo
+// performTmdb/performTmdbCv. A marca e do host DO URL DO PEDIDO: um
+// redirecionamento que a libcurl segue internamente herda a familia desta
+// tentativa, como sempre.
+static int performV4(void *c, const char *url, CancelVigia *v) {
+  CancelVigia local;
+  unsigned long t0 = redeAgoraMs();
+  unsigned long agora, prazoMs = redePrazoAtualMs;
+  int r, marcado = v4Marcado(url, t0);
+  long restMs;
+  if (!v) { v4VigiaPegar(c, &local); v = &local; }
+  curl_setopt(c, OPT_IPRESOLVE, (long)marcado);
+  r = cancelVigiaPerform(v, c);
+  if (marcado || redeSemRecuoV4 || !v4Vale(r, c)) return r;
+  agora = redeAgoraMs();
+  if (prazoMs > 0) {
+    restMs = (long)(t0 + prazoMs > agora ? t0 + prazoMs - agora : 0UL);
+    if (restMs < 500) return r;
+    curl_setopt(c, OPT_TIMEOUT_MS, restMs);
+    curl_setopt(c, OPT_CONNECTTIMEOUT_MS, (long)conexaoMs((unsigned long)restMs));
+  }
+  { char seg[120];
+    printf("[rede] conexao falhou (curl %d) em %s: de novo so em IPv4\n",
+           r, rede_url_publica(url, seg, sizeof seg));
+    fflush(stdout); }
+  curl_setopt(c, OPT_IPRESOLVE, (long)1);
+  r = cancelVigiaPerform(v, c);
+  { char seg[120];
+    if (r) printf("[rede] IPv4 tambem falhou (curl %d) em %s\n",
+                  r, rede_url_publica(url, seg, sizeof seg));
+    else v4Marcar(url, redeAgoraMs());
+    fflush(stdout); }
+  return r;
 }
 
 // HANDLES AQUECIDOS (2.0.2). O handle e do FIO, e o fio que confere a fonte
@@ -1910,7 +2181,103 @@ static unsigned long conexaoMs(unsigned long prazoMs) {
   if (m > 10000) m = 10000;
   return m < prazoMs ? m : prazoMs;
 }
+// 1 quando algum cabecalho do pedido carrega credencial do dono. Usado para
+// verificar o TLS e nao seguir redirect (ver rede_baixar_interno3).
+static int carregaCredencial(const char *const *cab) {
+  static const char *const nomes[] = { "authorization:", "apikey:", "x-api-key:", "trakt-api-key:",
+    "x-emby-token:", "x-plex-token:", "x-mediabrowser-token:", "cookie:", NULL };
+  int k, i;
+  for (k = 0; cab && cab[k]; k++)
+    for (i = 0; nomes[i]; i++)
+      if (!strncasecmp(cab[k], nomes[i], strlen(nomes[i]))) return 1;
+  return 0;
+}
+// 1 quando a QUERY da URL leva credencial do dono: ?token= no requestdl do
+// TorBox, ?api_key= do TMDB/fanart, ?apikey= do mdblist, ?password= dos
+// paineis Xtream, ?key= e nomes de token/segredo de outras APIs. O nome do
+// parametro casa INTEIRO (depois de ? ou &) e a comparacao ignora maiuscula
+// — "monkey=1" ou "tokenize=1" nao contam. Ficam de fora de proposito os
+// parametros de assinatura de conteudo (sig, signature, expires): protegem o
+// recurso, nao a conta, e alargar o freio ao GET publico quebra midia de
+// addon que redireciona.
+static int credencialNaQuery(const char *url) {
+  static const char *const nomes[] = { "token", "apikey", "api_key", "api-key",
+    "key", "access_token", "auth_token", "refresh_token", "id_token",
+    "client_secret", "secret", "password", "passwd", "auth", NULL };
+  const char *q = url ? strchr(url, '?') : NULL;
+  const char *frag = url ? strchr(url, '#') : NULL;
+  // O `?` tem de ser da QUERY DE VERDADE: um `#` antes dele o deixa dentro do
+  // fragmento, e o fragmento nao sai no pedido — ?token= ali nao e credencial
+  // (media de addon com #help?token= perdia o redirect e o TLS aberto).
+  if (!q || (frag && frag < q)) return 0;
+  for (q++; *q && *q != '#';) {
+    const char *e, *f = q;
+    size_t n;
+    int i;
+    while (*f && *f != '&' && *f != '#') f++;
+    for (e = q; e < f && *e != '='; e++) {}
+    n = (size_t)(e - q);
+    for (i = 0; nomes[i]; i++)
+      if (strlen(nomes[i]) == n && !strncasecmp(q, nomes[i], n)) return 1;
+    if (*f != '&') break;
+    q = f + 1;
+  }
+  return 0;
+}
+// Pedido sensivel: credencial no cabecalho OU na query — nos dois casos o TLS
+// e verificado e o redirect fica desligado (ver rede_baixar_interno3).
+static int pedidoComCredencial(const char *url, const char *const *cab) {
+  return carregaCredencial(cab) || credencialNaQuery(url);
+}
+// Prefixo oficial de anexos de release — o MESMO de AT_DL_PREFIXO em
+// atualizacao.c. O GitHub responde 302 do releases/download ao CDN de assets,
+// entao no caminho binario verificado (rede_baixar_bin_seguro) o redirect so
+// vale para URL daqui.
+static int urlAnexoOficial(const char *url) {
+  static const char prefixo[] =
+    "https://github.com/iqui27/nuvio-native-legacy/releases/download/";
+  return !strncmp(url, prefixo, sizeof prefixo - 1);
+}
+// DESTINO permitido de um redirect do download verificado. O prefixo so
+// controla a URL INICIAL; sem esta lista um 302 levava o artefato para onde o
+// transporte quisesse. So https:// e so os hosts que o GitHub usa para servir
+// os anexos: o proprio github.com (o releases/download que responde o 302) e
+// os CDNs de assets. Host EXATO com porta opcional — comparacao de prefixo
+// deixaria passar github.com.evil.test; URL relativa ou com credencial
+// (user@host) nao casa e o salto e recusado.
+static int destinoAnexoOk(const char *url) {
+  static const char *const hosts[] = {
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com", NULL };
+  const char *h, *f, *r, *p;
+  int i;
+  if (!url || strncasecmp(url, "https://", 8)) return 0;
+  // Espaco, CR/LF, tab e controles nao cabem num salto: a linha do cabecalho
+  // os traz crus (caminho com espaco) ou a reserva os resolve de um valor
+  // dobrado — e o transporte seguiria mesmo assim, com o caminho saindo
+  // codificado no segundo GET ou o destino costurado fora do lido. A recusa
+  // e ANTES de seguir e vale nos dois caminhos verificados (receberCab e
+  // viaAndroidSeguro), mesma politica dos dois lados.
+  for (p = url; *p; p++)
+    if (*(const unsigned char *)p <= 0x20 || *(const unsigned char *)p == 0x7f)
+      return 0;
+  h = url + 8;
+  f = h + strcspn(h, "/?#");
+  // userinfo nao entra: https://oficial@evil tem autoridade valida para a
+  // libcurl (host = evil) mesmo que o prefixo case num host oficial.
+  if (memchr(h, '@', (size_t)(f - h))) return 0;
+  for (i = 0; hosts[i]; i++) {
+    size_t n = strlen(hosts[i]);
+    if (strncasecmp(h, hosts[i], n)) continue;
+    r = h + n;
+    if (r == f) return 1;
+    if (*r == ':' && r + 1 < f && r + 1 + strspn(r + 1, "0123456789") == f) return 1;
+  }
+  return 0;
+}
 static void opcoesComuns(void *c, unsigned long prazoMs) {
+  redePrazoAtualMs = prazoMs;
 #ifdef NV_TPK
   if (dnsShare) curl_setopt(c, 10100 /* CURLOPT_SHARE */, dnsShare);
 #endif
@@ -2096,14 +2463,16 @@ static char *rede_baixar_interno2(const char *url, int segundos, long *tam,
                                   char *etag, unsigned tamEtag);
 static char *rede_baixar_interno3(const char *url, int segundos, long *tam,
                                   const char *const *cab, int *status,
-                                  char *etag, unsigned tamEtag, int *retry);
+                                  char *etag, unsigned tamEtag, int *retry, int bin);
 
-// Onde o ETag da resposta e anotado, quando alguem o pediu.
-typedef struct { char *dst; unsigned tam; int *retry; } CacaCab;
+// Onde o ETag da resposta e anotado, quando alguem o pediu. `confereDestino`
+// liga o filtro de Location do download verificado (rede_baixar_interno3).
+typedef struct { char *dst; unsigned tam; int *retry; int confereDestino; } CacaCab;
 
 // A libcurl entrega UMA linha de cabecalho por chamada, com o CRLF no fim. So
 // o ETag interessa; devolver menos bytes do que recebeu abortaria a
-// transferencia, entao o retorno e sempre o tamanho inteiro.
+// transferencia, entao o retorno e sempre o tamanho inteiro — EXCETO o
+// Location recusado do download verificado, que e justamente o aborto.
 static size_t receberCab(void *dados, size_t tam, size_t qtd, void *u) {
   CacaCab *c = (CacaCab *)u;
   const char *s = (const char *)dados;
@@ -2111,6 +2480,39 @@ static size_t receberCab(void *dados, size_t tam, size_t qtd, void *u) {
   if (bytes >= 5 && !strncasecmp(s, "HTTP/", 5)) {
     if (c && c->retry) *c->retry = 0;
     if (c && c->dst && c->tam) c->dst[0] = 0;
+  }
+  if (c && c->confereDestino) {
+    // CONTINUACAO DOBRADA (obs-fold): uma linha que COMECA com espaco ou tab
+    // estende o cabecalho anterior — e nao ha como provar qual era. Dobrado,
+    // um Location mau cabe em duas linhas: a 1a com a parte que passa no
+    // filtro e a continuacao com o resto, que a libcurl costura e segue.
+    // No caminho verificado QUALQUER dobra recusa a resposta (GitHub e os
+    // CDNs de anexo nao dobram; a RFC 7230 proibe obs-fold novo).
+    if (bytes && (*s == ' ' || *s == '\t')) return 0;
+    if (bytes > 9 && !strncasecmp(s, "location:", 9)) {
+      // Cada salto do download verificado e conferido ANTES de ser seguido:
+      // so https:// e so host oficial (destinoAnexoOk). Fora da lista a linha
+      // volta curta, a libcurl aborta com write-error e o 302 nao e seguido —
+      // e o que impede a cadeia de levar o artefato a http:// ou a outro CDN.
+      // A conferencia vale so para a linha INTEIRA (mesmo limite do alvo da
+      // reserva segura): um Location maior que a copia nao pode ser validado
+      // por pedaco — o corte pode ler "host oficial + porta decimal" de uma
+      // autoridade que continua (userinfo, outro host) e a libcurl segue a
+      // linha completa. Nao coube, o salto e recusado.
+      char loc[2048];
+      s += 9; bytes -= 9;
+      while (bytes && (*s == ' ' || *s == '\t')) { s++; bytes--; }
+      while (bytes && (s[bytes - 1] == '\r' || s[bytes - 1] == '\n' ||
+                       s[bytes - 1] == ' ')) bytes--;
+      n = bytes < sizeof loc ? bytes : sizeof loc - 1;
+      memcpy(loc, s, n); loc[n] = 0;
+      if (n < bytes || !destinoAnexoOk(loc)) {
+        char seg[120];
+        printf("[rede] redirect recusado: %s\n", rede_url_publica(loc, seg, sizeof seg));
+        fflush(stdout);
+        return 0;
+      }
+    }
   }
   if (c && c->retry && bytes > 12 && !strncasecmp(s, "retry-after:", 12)) {
     *c->retry = retrySegundos(s + 12, bytes - 12);
@@ -2260,6 +2662,82 @@ static void prepararOpenSSL(void) {
   fflush(stdout);
 }
 
+// ------------------------------------------------- saida do processo (#F110)
+//
+// O processo pode terminar com fios SOLTOS dentro da libcurl/OpenSSL: o fio
+// de episodios e detachado por desenho (fechar a tela nao espera a busca), e
+// os fios de arte e noticia do arranque valem o mesmo. O que acontecia na
+// saida — destrinchado pelo TSan e pelos crashs de tests/detail_assistido,
+// ~3/4 das corridas (139/134):
+//
+//   1. o primeiro OPENSSL_init_ssl da libcurl registra OPENSSL_cleanup via
+//      atexit; no exit() do fio principal ele da free() no estado global da
+//      libcrypto;
+//   2. o fio solto seguia no CRYPTO_zalloc do MESMO heap — free() e zalloc()
+//      concorrentes corrompiam os freelists ("corrupted size vs. prev_size",
+//      "double free or corruption") ou o malloc do fio pisava num no ja
+//      liberado (SIGSEGV dentro da libcrypto). O relatorio do TSan e literal:
+//      OPENSSL_cleanup (fio principal) x CRYPTO_zalloc (fio de episodios)
+//      no mesmo endereco.
+//
+// O remedio e tirar o desmanche do caminho do fio — nao ha ponto onde todos
+// os fios de rede possam ser juntados antes do return do main (o app e os
+// testes saem direto) e a lista deles muda a cada versao. O conserto e
+// OPENSSL_init_crypto(OPENSSL_INIT_NO_ATEXIT) ANTES do curl_global_init:
+// a chamada consome o RUN_ONCE "register_atexit" com a variante que NAO
+// registra — a init seguinte da libcurl acha a vez gasta e o
+// OPENSSL_cleanup nunca entra na fila do exit(). E o mecanismo oficial
+// para quem nao pode garantir fio fora do OpenSSL na saida. No OpenSSL
+// 1.0 o simbolo nem existe — e ele tambem nao se desmonta sozinho.
+//
+// (A versao anterior tambem abria a libcurl com RTLD_NODELETE para "tirar
+// as libs do _dl_fini". A revisao provou o ramo inocuo — o destrutor de
+// uma .so NODELETE roda no exit() do mesmo jeito, e a glibc nao desmapeia
+// nada fora do dlclose, que nunca chamamos — e o mutante sem ele seguia
+// 0/25. Saiu: o conserto e so o NO_ATEXIT acima.)
+//
+// Nada e liberado, de proposito: o kernel recolhe tudo no _exit. O que nao
+// pode acontecer e teardown disputando heap e codigo com fio vivo.
+
+// Chamada com abrirTrava tomada, depois do dlopen da libcurl e ANTES do
+// curl_global_init — e esse init quem registra o OPENSSL_cleanup.
+//
+// O OPENSSL_init_crypto e procurado na libcrypto que a libcurl usa de fato,
+// nesta ordem: 1) no handle da propria libcurl — dlsym num handle de dlopen
+// busca nela e nas dependencias dela, o que acerta a libcrypto certa quando
+// DUAS estao residentes, cobre OpenSSL estatico exportado por ela e soname
+// fora da lista (ex.: libcrypto.3.dylib do Homebrew); 2) em RTLD_DEFAULT —
+// uma libcrypto do escopo global fora da arvore dela; 3) na lista de sonames
+// JA residentes (RTLD_NOLOAD, para nao carregar uma .so do nada so para
+// marcar; sem a flag o dlopen tenta pelo nome mesmo, como antes). Sem
+// simbolo — libcurl sem OpenSSL dinamico (mbedTLS, GnuTLS, SecureTransport)
+// ou OpenSSL 1.0 — retorna sem tocar em nada.
+static void segurarSaidaRede(void *curl) {
+  static const char *const crypto[] = {
+    "libcrypto.so.3", "libcrypto.so.1.1", "libcrypto.so.1.0.2",
+    "libcrypto.so.1.0.0", "libcrypto.so.10", "libcrypto.so.1",
+    "libcrypto.so", "libcrypto.dylib", NULL };
+  int (*initCrypto)(unsigned long long, const void *) = NULL;
+  int i;
+  *(void **)(&initCrypto) = dlsym(curl, "OPENSSL_init_crypto");
+#ifdef RTLD_DEFAULT
+  if (!initCrypto)
+    *(void **)(&initCrypto) = dlsym(RTLD_DEFAULT, "OPENSSL_init_crypto");
+#endif
+  for (i = 0; crypto[i] && !initCrypto; i++) {
+    void *hc;
+#ifdef RTLD_NOLOAD
+    hc = dlopen(crypto[i], RTLD_NOLOAD | RTLD_NOW);
+#else
+    hc = dlopen(crypto[i], RTLD_NOW);
+#endif
+    if (hc) *(void **)(&initCrypto) = dlsym(hc, "OPENSSL_init_crypto");
+  }
+  // 0x80000 = OPENSSL_INIT_NO_ATEXIT (openssl/crypto.h). Sem headers como o
+  // resto do arquivo: a constante e ABI e nao muda.
+  if (initCrypto) initCrypto(0x80000ULL, NULL);
+}
+
 #ifdef NV_HTTP_HOST
 #include <fcntl.h>
 #include <poll.h>
@@ -2381,6 +2859,7 @@ static int abrirReal(void) {
     pthread_mutex_unlock(&abrirTrava);
     return 0;
   }
+  segurarSaidaRede(h);   // antes do curl_global_init — ele registra o OPENSSL_cleanup
 #ifdef NV_ANDROID
   // #266: a Shield (Tegra) para em "rede_preparar" sem imprimir mais nada; a
   // libcurl 8 + mbedTLS 3.6 inicia o PSA/entropia aqui dentro. Marca cada lado.
@@ -2546,6 +3025,96 @@ static char *viaAndroid(const char *verbo, const char *url, int segundos,
   redeBytesLocal = bytes;
   return r;
 }
+// RESERVA SEGURA do download verificado (F94, rede_baixar_bin_seguro). A
+// reserva comum nao serve para o artefato de release: o httpPedir liga
+// instanceFollowRedirects e um 302 levaria o binario para fora da lista. O
+// httpPedirSeguro faz UM salto por chamada — o redirect fica desligado no
+// Java e, num 3xx, o "corpo" devolvido e o Location ja resolvido contra a URL
+// do salto. Quem decide o proximo passo e aqui, com a MESMA regra do caminho
+// libcurl: a URL inicial e https, salto so quando ela esta no prefixo oficial
+// de anexos (e sem credencial no pedido), cada destino conferido por
+// destinoAnexoOk (so https, so host oficial) e no maximo 5 saltos. O TLS e
+// verificado pela pilha do proprio Android em cada salto.
+static char *viaAndroidSeguro(const char *url, int segundos, const char *const *cab,
+                              int *status, long *tam, int *retryAfter) {
+  redeBytesLocal = 0;
+  if (status) *status = 0;
+  if (retryAfter) *retryAfter = 0;
+#ifdef NV_ANDROID
+  { char *cabs, *r = NULL, erro[200] = "", h[96], alvo[2048];
+    size_t n = 1;
+    int k, st = 0, saltos = 0, segue;
+    long bytes = 0;
+    unsigned long t0 = redeAgoraMs();
+    static int logados;
+    if (strncmp(url, "https://", 8) || strlen(url) >= sizeof alvo) return NULL;
+    // A regra do segredo precede, como no caminho libcurl: com credencial no
+    // pedido nenhum salto e seguido (e o prefixo oficial so libera a URL
+    // inicial — cada Location continua conferida pela lista).
+    segue = urlAnexoOficial(url) && !pedidoComCredencial(url, cab);
+    for (k = 0; cab && cab[k]; k++) n += strlen(cab[k]) + 1;
+    cabs = (char *)malloc(n);
+    if (!cabs) return NULL;
+    cabs[0] = 0;
+    for (k = 0; cab && cab[k]; k++) { strcat(cabs, cab[k]); strcat(cabs, "\n"); }
+    snprintf(alvo, sizeof alvo, "%s", url);
+    for (;;) {
+      long nb = 0;
+      free(r); r = NULL;
+      if (redeCancelouLocal || redeParou()) break;
+      st = 0;
+      r = android_http_seguro("GET", alvo, cabs, NULL,
+                              (segundos > 0 ? segundos : 20) * 1000,
+                              &st, retryAfter, &nb, erro, sizeof erro);
+      if (!r) break;
+      bytes = nb;
+      if (st < 300 || st >= 400) break;
+      // Num 3xx o "corpo" e o Location ABSOLUTO resolvido pelo host — o unico
+      // dado de fora que ainda nao passou pela lista. Recusa: salto proibido
+      // (fora do prefixo ou com credencial), 3xx sem Location, mais de 5
+      // saltos, destino fora da lista ou comprido demais.
+      if (!segue || !nb || ++saltos > 5 || !destinoAnexoOk(r) ||
+          strlen(r) >= sizeof alvo) {
+        char seg[120];
+        printf("[rede] reserva segura: salto recusado%s%s\n",
+               nb ? " para " : " (3xx sem Location)",
+               nb ? rede_url_publica(r, seg, sizeof seg) : "");
+        fflush(stdout);
+        free(r); r = NULL; st = 0;
+        break;
+      }
+      snprintf(alvo, sizeof alvo, "%s", r);
+    }
+    free(cabs);
+    hostDaUrl(alvo, h, sizeof h);
+    if (__atomic_add_fetch(&logados, 1, __ATOMIC_RELAXED) <= 12 || !r) {
+      printf("[rede] via Android seguro GET %s: http=%d em %lu ms%s%s\n",
+             h[0] ? h : "?", st, redeAgoraMs() - t0, r ? "" : " FALHOU: ", r ? "" : erro);
+      fflush(stdout);
+    }
+    if (!r) { snprintf(redeErroTxt, sizeof redeErroTxt, "android: %.180s", erro); return NULL; }
+    redeErroTxt[0] = 0;
+    redeBytesLocal = bytes;
+    if (st == 401 && aviso401) aviso401(alvo);
+    if (status) *status = st;
+    else if (st < 200 || st > 299) { free(r); return NULL; }
+    if (tam) *tam = bytes;
+    return r;
+  }
+#else
+  // Host sem o modo salto-a-salto (iOS usa a mesma trilha): o caminho
+  // verificado falha de proposito em vez de cair na reserva comum, que
+  // seguiria redirect sem a lista. Nenhum chamador do download verificado
+  // existe nessas plataformas hoje.
+  { char seg[120];
+    printf("[rede] reserva segura indisponivel neste host: %s\n",
+           rede_url_publica(url, seg, sizeof seg));
+    fflush(stdout); }
+  snprintf(redeErroTxt, sizeof redeErroTxt, "curl %d", 5);
+  (void)segundos; (void)cab; (void)tam;
+  return NULL;
+#endif
+}
 // 1 = este pedido simples vai direto pelo Android (sem tocar na libcurl).
 static int androidPrimeiro(void) {
   if (__atomic_load_n(&curlRuim, __ATOMIC_ACQUIRE)) return 1;
@@ -2599,6 +3168,12 @@ void rede_preparar(void) { abrir(); }
 
 char *rede_baixar_bin(const char *url, int segundos, long *tam) {
   return rede_baixar_interno(url, segundos, tam, NULL);
+}
+char *rede_baixar_bin_seguro(const char *url, int segundos, long *tam) {
+  // bin=1: download verificado so para artefato de release (.so do .tpk,
+  // .apk) — ver o bloco `bin` em rede_baixar_interno3. Legenda, cartaz e
+  // fonte seguem no caminho publico de rede_baixar_bin.
+  return rede_baixar_interno3(url, segundos, tam, NULL, NULL, NULL, 0, NULL, 1);
 }
 
 char *rede_baixar(const char *url, int segundos) {
@@ -2679,7 +3254,7 @@ char *rede_baixar_st(const char *url, int segundos, const char *const *cab,
 }
 char *rede_baixar_st_retry(const char *url, int segundos, const char *const *cab,
                            int *status, int *retryAfter) {
-  return rede_baixar_interno3(url, segundos, NULL, cab, status, NULL, 0, retryAfter);
+  return rede_baixar_interno3(url, segundos, NULL, cab, status, NULL, 0, retryAfter, 0);
 }
 
 char *rede_baixar_etag(const char *url, int segundos, const char *const *cab,
@@ -2716,11 +3291,11 @@ static int valeRepetir(int r, const Vigia *v, size_t bytes) {
 static char *rede_baixar_interno2(const char *url, int segundos, long *tam,
                                   const char *const *cab, int *status,
                                   char *etag, unsigned tamEtag) {
-  return rede_baixar_interno3(url, segundos, tam, cab, status, etag, tamEtag, NULL);
+  return rede_baixar_interno3(url, segundos, tam, cab, status, etag, tamEtag, NULL, 0);
 }
 static char *rede_baixar_interno3(const char *url, int segundos, long *tam,
                                   const char *const *cab, int *status,
-                                  char *etag, unsigned tamEtag, int *retry) {
+                                  char *etag, unsigned tamEtag, int *retry, int bin) {
   Balde b = {0};
   CacaCab caca;
   Vigia vigia;
@@ -2744,7 +3319,13 @@ static char *rede_baixar_interno3(const char *url, int segundos, long *tam,
   if (!status && negcache_barra(url, (long)time(NULL))) return NULL;
 #ifdef NV_HTTP_HOST
   // libcurl nunca ficou pronta: GET simples (catalogo, imagem) pelo Android.
-  if (!abrir()) return viaAndroid("GET", url, segundos, cab, NULL, status, tam, retry, "libcurl fora");
+  if (!abrir()) {
+    // O DOWNLOAD VERIFICADO nao pode cair na reserva comum: o httpPedir segue o
+    // 302 sozinho e sairia da lista oficial. Salto a salto com a mesma regra
+    // do receberCab — ver viaAndroidSeguro.
+    if (bin) return viaAndroidSeguro(url, segundos, cab, status, tam, retry);
+    return viaAndroid("GET", url, segundos, cab, NULL, status, tam, retry, "libcurl fora");
+  }
 #else
   if (!abrir()) return NULL;
 #endif
@@ -2765,7 +3346,13 @@ static char *rede_baixar_interno3(const char *url, int segundos, long *tam,
     // curl_easy_reset limpa as opcoes entre pedidos, entao deixar o recebedor
     // instalado aqui nao respinga no pedido seguinte do mesmo fio — mas tambem
     // nao ha por que pagar uma chamada por cabecalho em todo download de imagem.
-    if (caca.dst || caca.retry) {
+    // A EXCECAO e o download verificado do anexo oficial: a resposta pode
+    // trazer um Location para o CDN e cada salto precisa ser conferido
+    // (ver receberCab). Pedido com credencial fica de fora: o redirect dele
+    // esta desligado no ramo abaixo, entao nao ha salto a conferir.
+    caca.confereDestino = bin && !strncmp(url, "https://", 8) &&
+                          !pedidoComCredencial(url, cab) && urlAnexoOficial(url);
+    if (caca.dst || caca.retry || caca.confereDestino) {
       curl_setopt(c, OPT_HEADERFUNCTION, receberCab);
       curl_setopt(c, OPT_HEADERDATA, &caca);
     }
@@ -2773,6 +3360,38 @@ static char *rede_baixar_interno3(const char *url, int segundos, long *tam,
     curl_setopt(c, OPT_WRITEDATA, &b);
     curl_setopt(c, OPT_FOLLOWLOCATION, (long)1);
     opcoesComuns(c, resta);
+    // Pedido que leva credencial (Authorization, apikey, token) NO CABECALHO
+    // OU NA QUERY: TLS verificado e nenhum redirect — um 3xx reenviaria os
+    // cabecalhos do dono (apikey, trakt-api-key...) a outro host, e sem
+    // verificar qualquer um no caminho le a senha/token, em cabecalho ou na
+    // URL (?token= do requestdl do TorBox, ?api_key= do TMDB, ?password= dos
+    // paineis Xtream). As APIs (Supabase, Trakt, debrid) nao redirecionam.
+    if (pedidoComCredencial(url, cab) && !strncmp(url, "https://", 8)) {
+      curl_setopt(c, OPT_SSL_VERIFYPEER, (long)1);
+      curl_setopt(c, OPT_SSL_VERIFYHOST, (long)2);
+      if (discordCa[0]) curl_setopt(c, OPT_CAINFO, discordCa);
+      curl_setopt(c, OPT_FOLLOWLOCATION, (long)0);
+    } else if (bin && !strncmp(url, "https://", 8)) {
+      // DOWNLOAD BINARIO VERIFICADO (rede_baixar_bin_seguro): e o caminho dos
+      // artefatos da release (.so do .tpk, .apk), que viram codigo nativo —
+      // certificado e hostname conferidos pela CA do pacote, como no pedido
+      // com credencial. O redirect fica ligado SO no prefixo oficial de
+      // anexos: o GitHub responde 302 do releases/download ao CDN de assets,
+      // e sem credencial no pedido nada vaza ao host seguinte. Fora do
+      // prefixo um 3xx volta como esta, sem seguir.
+      curl_setopt(c, OPT_SSL_VERIFYPEER, (long)1);
+      curl_setopt(c, OPT_SSL_VERIFYHOST, (long)2);
+      if (discordCa[0]) curl_setopt(c, OPT_CAINFO, discordCa);
+      if (!urlAnexoOficial(url)) curl_setopt(c, OPT_FOLLOWLOCATION, (long)0);
+      else {
+        // O prefixo so libera a URL INICIAL; a cadeia tem regra propria:
+        // saltos so em https (bitmask — a *_STR da 7.85 nao existe nas
+        // libcurl das TVs), teto de saltos, e cada Location conferida pelo
+        // receberCab contra a lista oficial de hosts (destinoAnexoOk).
+        curl_setopt(c, OPT_REDIR_PROTOCOLS, (long)2 /* CURLPROTO_HTTPS */);
+        curl_setopt(c, OPT_MAXREDIRS, (long)5);
+      }
+    }
     ligarVigia(c, &vigia, prazoMs);
     cvOn = cancelVigiaLigar(c, &cv);
     curl_setopt(c, OPT_ACCEPT_ENCODING, "");   // "" = todas as que a lib suporta
@@ -2790,13 +3409,13 @@ static char *rede_baixar_interno3(const char *url, int segundos, long *tam,
         primeira = 0;
         snprintf(m, sizeof m, "begin https-1 %s", rede_url_publica(url, seg, sizeof seg));
         nv_tpk40_etapa(m);
-        tbVooEntrar(url); r = cancelVigiaPerform(&cv, c); tbVooSair(url);
+        r = performV4(c, url, &cv);
         { long http = 0; if (curl_getinfo) curl_getinfo(c, INFO_RESPONSE_CODE, &http);
           snprintf(m, sizeof m, "ok https-1 curl=%d http=%ld", r, http); }
         nv_tpk40_etapa(m);
-      } else { tbVooEntrar(url); r = cancelVigiaPerform(&cv, c); tbVooSair(url); } }
+      } else r = performV4(c, url, &cv); }
 #else
-    tbVooEntrar(url); r = cancelVigiaPerform(&cv, c); tbVooSair(url);
+    r = performV4(c, url, &cv);
 #endif
     { long novas = -1;
       if (curl_getinfo) curl_getinfo(c, INFO_NUM_CONNECTS, &novas);
@@ -3097,6 +3716,16 @@ char *rede_apagar(const char *url, int segundos, const char *const *cab,
   curl_setopt(c, OPT_WRITEFUNCTION, receber);
   curl_setopt(c, OPT_WRITEDATA, &b);
   opcoesComuns(c, (unsigned long)(segundos > 0 ? segundos : 20) * 1000UL);
+  // DELETE autenticado (Trakt /sync/playback leva Authorization): mesmo
+  // tratamento do GET com credencial — TLS verificado e sem redirect, que
+  // numa alca reusada do pool pode vir ligado de um GET anterior. A
+  // credencial na query vale igual (ex.: ?token=).
+  if (pedidoComCredencial(url, cab) && !strncmp(url, "https://", 8)) {
+    curl_setopt(c, OPT_SSL_VERIFYPEER, (long)1);
+    curl_setopt(c, OPT_SSL_VERIFYHOST, (long)2);
+    if (discordCa[0]) curl_setopt(c, OPT_CAINFO, discordCa);
+    curl_setopt(c, OPT_FOLLOWLOCATION, (long)0);
+  }
   curl_setopt(c, OPT_CUSTOMREQUEST, "DELETE");
   if (slist_append) {
     int k;
@@ -3170,7 +3799,7 @@ int rede_baixar_fluxo(const char *url, int segundos, const char *const *cab,
     for (k = 0; cab[k]; k++) lista = slist_append(lista, cab[k]);
     if (lista) curl_setopt(c, OPT_HTTPHEADER, lista);
   }
-  tbVooEntrar(url); r = cancelVigiaPerform(&cv, c); tbVooSair(url);
+  r = performV4(c, url, &cv);
   cancelVigiaSoltar(&cv, cvOn, c);
   if (r == 42 && vigia.parou) r = 28;
   if (curl_getinfo) curl_getinfo(c, INFO_RESPONSE_CODE, &http);
@@ -3204,7 +3833,7 @@ static char *postarNativo(const char *url, int segundos, const char *const *cab,
                           const char *corpo, int *status, int seguro, int *retryAfter,
                           const char *verbo) {
   Balde b = {0};
-  CacaCab respostaCab = { NULL, 0, retryAfter };
+  CacaCab respostaCab = { .retry = retryAfter };
   Vigia vigia;
   CancelVigia cv;
   if (retryAfter) *retryAfter = 0;
@@ -3224,6 +3853,16 @@ static char *postarNativo(const char *url, int segundos, const char *const *cab,
   opcoesComuns(c, (unsigned long)(segundos > 0 ? segundos : 20) * 1000UL);
   if(redeParar)ligarVigia(c,&vigia,(unsigned long)(segundos > 0 ? segundos : 20)*1000UL);
   cvOn = cancelVigiaLigar(c, &cv);
+  // POST de API (login, token, sync): o corpo e/ou os cabecalhos levam senha,
+  // refresh token ou chave. opcoesComuns desliga a verificacao para a MIDIA
+  // publica dos addons; aqui o destino e sempre uma API com certificado valido.
+  if (!strncmp(url, "https://", 8)) {
+    curl_setopt(c, OPT_SSL_VERIFYPEER, (long)1);
+    curl_setopt(c, OPT_SSL_VERIFYHOST, (long)2);
+    if (discordCa[0]) curl_setopt(c, OPT_CAINFO, discordCa);
+    if (pedidoComCredencial(url, cab))
+      curl_setopt(c, OPT_FOLLOWLOCATION, (long)0);
+  }
   if (seguro) {
     // OAuth credentials require authenticated TLS and never follow redirects.
     curl_setopt(c, OPT_SSL_VERIFYPEER, (long)1);
@@ -3248,7 +3887,9 @@ static char *postarNativo(const char *url, int segundos, const char *const *cab,
     for (k = 0; cab && cab[k]; k++) lista = slist_append(lista, cab[k]);
     if (lista) curl_setopt(c, OPT_HTTPHEADER, lista);
   }
+  redeSemRecuoV4 = 1;
   r = performTmdbCv(c, url, cvOn ? &cv : NULL);
+  redeSemRecuoV4 = 0;
   cancelVigiaSoltar(&cv, cvOn, c);
   redeCurlLocal = r;
   anotarErro(r);
@@ -3978,7 +4619,9 @@ static char *range64(const char *url, const char *headers,
     uint64_t hop_ms = pedidoAgoraMs();
     unsigned active = __atomic_add_fetch(&rangeDiagActive, 1, __ATOMIC_RELAXED);
 #endif
-    result = performTmdb(c, url);
+    // O hop manual segue `current` (o redirect ja aplicado): marcar a familia
+    // pelo host realmente alcancado, nao pela URL original (#707 r2).
+    result = performTmdb(c, current);
 #ifdef NV_HTTP_BUFFER_DIAG
     __atomic_sub_fetch(&rangeDiagActive, 1, __ATOMIC_RELAXED);
 #endif
@@ -4161,6 +4804,10 @@ static int fluxo64(const char *url, const char *headers, int64_t start,
     if (!c) return -1;
     opcoesComuns(c, 15000);                 /* connect deadline from here...      */
     curl_setopt(c, OPT_TIMEOUT_MS, (long)0); /* ...but no limit on the whole body */
+    /* O recuo IPv4 do #707 le redePrazoAtualMs como prazo total do pedido: um
+     * stream longo com dados chegando nao pode ganhar os 15 s de opcoesComuns
+     * (regressao da r2). 0 = sem teto, igual ao OPT_TIMEOUT_MS acima. */
+    redePrazoAtualMs = 0;
     curl_setopt(c, OPT_SSL_VERIFYPEER, (long)1);
     curl_setopt(c, OPT_SSL_VERIFYHOST, (long)2);
     if (discordCa[0]) curl_setopt(c, OPT_CAINFO, discordCa);
@@ -4180,7 +4827,9 @@ static int fluxo64(const char *url, const char *headers, int64_t start,
     uint64_t hop_ms = pedidoAgoraMs();
     unsigned active = __atomic_add_fetch(&rangeDiagActive, 1, __ATOMIC_RELAXED);
 #endif
-    result = performTmdb(c, url);
+    // O hop manual segue `current` (o redirect ja aplicado): marcar a familia
+    // pelo host realmente alcancado, nao pela URL original (#707 r2).
+    result = performTmdb(c, current);
 #ifdef NV_HTTP_BUFFER_DIAG
     __atomic_sub_fetch(&rangeDiagActive, 1, __ATOMIC_RELAXED);
 #endif
