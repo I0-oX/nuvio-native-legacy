@@ -129,6 +129,7 @@ namespace NuvioTpk
         [DllImport("libcapi-media-player.so.0")] static extern int player_get_streaming_buffering_time(IntPtr p, out int preMs, out int reMs);
         FnAspecto fAspecto;
         bool aspectoRecusado;
+        long posAmostraTs;   // Stopwatch timestamp (middle of the last position query) the stamped subtitle clock uses; 0 = none
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int FnPos();
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FnEscolher(int tipo, int idx);
 
@@ -974,6 +975,7 @@ namespace NuvioTpk
             // que volta depois encontra a geracao andada pelo ack/falha.
             lock (trocaTrava) { acabou = false; posLidoMs = -1; buscaEmVoo = true; Interlocked.Increment(ref posGer); }
             bool expirou = false;
+            long buscaInicio = System.Diagnostics.Stopwatch.GetTimestamp();
             try {
                 Task busca;
                 try { busca = p.SetPlayPositionAsync(ms, exata); }
@@ -1040,7 +1042,6 @@ namespace NuvioTpk
             }
             finally { if (!expirou && minha == Volatile.Read(ref sessao)) buscando = false; }
             if (minha != Volatile.Read(ref sessao)) return;
-            if (refazRapido) { int alvo = buscaPend >= 0 ? buscaPend : ms; buscaPend = -1; Buscar(alvo); return; }
             // SetPlayPositionAsync terminou: nao disputar Pause/outro seek com
             // a transicao que produz evento 3; o cache ja recebeu o alvo aceito.
             if (buscaPend >= 0) { int alvo = buscaPend; buscaPend = -1; Buscar(alvo); }
