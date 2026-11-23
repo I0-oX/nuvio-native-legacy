@@ -40,15 +40,6 @@ int main(void) {
      asssinais_nome("Typesetting") && asssinais_nome("Forced"), "name: signs & songs tracks");
   OK(!asssinais_nome("Full") && !asssinais_nome("Dialogue") && !asssinais_nome("Full (incl. Signs & Songs)") &&
      !asssinais_nome("English") && !asssinais_nome(NULL), "name: full / dialogue / plain");
-  OK(asssinais_tipografia("{\\fnKomika Hand\\frz8\\an7}Fuku's note", "Default", 0) &&
-     asssinais_tipografia("{\\frz-3}x", NULL, 0) && asssinais_tipografia("{\\fr12}x", NULL, 0) &&
-     asssinais_tipografia("{\\fry20}x", NULL, 0) && asssinais_tipografia("{\\fax0.1}x", NULL, 0) &&
-     asssinais_tipografia("{\\fnArial}x", NULL, 0), "typesetting: rotation, shear, font change");
-  OK(asssinais_tipografia("plain", "Sign Note", 0) && asssinais_tipografia("plain", "Default", 7.5),
-     "typesetting: sign style name, rotated style");
-  OK(!asssinais_tipografia("{\\i1}Hello{\\i0} there", "Default", 0) &&
-     !asssinais_tipografia("{\\fad(200,200)\\fs40}x", "Main", 0) && !asssinais_tipografia("a \\frz5 outside", NULL, 0) &&
-     !asssinais_tipografia(NULL, NULL, 0), "typesetting: dialogue (italics, fade, size) stays dialogue");
 
   /* No partner: nothing matches, never active. */
   asssinais_definir(7, 0, 0, 1000000UL);
@@ -61,7 +52,7 @@ int main(void) {
   asssinais_definir(8, 0, 3, 1000000UL);
   OK(asssinais_relay_faixa() == 3 && !asssinais_trilha_sinais(8), "partner set");
   asssinais_bloco(65000, b, n);              // Cluster 65000 + 100 = 65100 ms
-  OK(asssinais_ativo(8), "active after one partner line");
+  OK(asssinais_ativo(8), "active with a partner (rule 2 can decide where known)");
   OK(asssinais_casa(8, 65100, h1), "match: same start, the Full line has other tags");
   OK(asssinais_casa(8, 65150, h2) && asssinais_casa(8, 65045, h2), "match: within 60 ms (also across a 100 ms bucket)");
   OK(!asssinais_casa(8, 65200, h2), "no match: 100 ms off");
@@ -95,7 +86,65 @@ int main(void) {
     snprintf(p, sizeof p, "line %d", 199999);
     OK(asssinais_casa(12, 1999990, asssinais_hash(p)), "200 000 lines: the newest still found");
   }
-  { int l; long q, c; asssinais_estatisticas(&l, &q, &c); OK(l > 0 && q > 0 && c > 0, "stats counted and reset"); }
+  { AssSinaisEst e; asssinais_estatisticas(&e); OK(e.linhas > 0, "stats: lines counted");
+    asssinais_estatisticas(&e); OK(e.linhas == 0 && e.consultas == 0, "stats reset"); }
+
+  /* Owner 19/11/2026: libass's rule until the partner is known, then the
+   * partner alone. Clusters every 5 s on one relay connection. */
+  { int A = 1, B = 2; unsigned hs = asssinais_hash("Shuchiin"), hd = asssinais_hash("Ishigami");
+    AssSinaisEst e;
+    asssinais_definir(20, 0, 3, 1000000UL);
+    OK(asssinais_ativo(20), "partner set: active before any line");
+    OK(asssinais_decidir(20, 12000, hs) == -1, "nothing passed yet: waiting (libass rule)");
+    asssinais_cluster(&A, 10000);
+    n = bloco(b, 3, 2000, "3,0,Sign,,0,0,0,,{\\pos(1,1)}Shuchiin");
+    asssinais_bloco(10000, b, n);
+    OK(asssinais_decidir(20, 12000, hs) == 1, "a partner line: sign at once");
+    OK(asssinais_decidir(20, 12000, hd) == -1, "not in the partner, cluster not whole yet: waiting");
+    { unsigned v = asssinais_versao(); asssinais_cluster(&A, 15000);
+      OK(asssinais_versao() != v, "known stretch grew: version moved (lines re-checked)"); }
+    OK(asssinais_decidir(20, 12000, hd) == 0, "cluster passed, not in the partner: dialogue (whatever its tags)");
+    OK(asssinais_decidir(20, 16000, hd) == -1, "the newest cluster is not whole: waiting");
+    OK(asssinais_decidir(20, 9000, hd) == -1, "before the first cluster seen: waiting");
+    asssinais_cluster(&A, 20000);
+    OK(asssinais_decidir(20, 16000, hd) == 0, "the next cluster arrived: known");
+    /* A jump (seek): the gap is never known. */
+    asssinais_salto();
+    asssinais_cluster(&A, 40000); asssinais_cluster(&A, 45000);
+    OK(asssinais_decidir(20, 30000, hd) == -1, "after a jump: the skipped stretch stays unknown");
+    OK(asssinais_decidir(20, 42000, hd) == 0, "after a jump: the new run is known");
+    /* A big gap between two clusters on the same connection is a jump too. */
+    asssinais_cluster(&A, 90000);
+    OK(asssinais_decidir(20, 60000, hd) == -1, "a 45 s gap: not known");
+    /* Another connection never extends this run. */
+    asssinais_cluster(&B, 95000);
+    asssinais_cluster(&A, 95000);
+    OK(asssinais_decidir(20, 92000, hd) == -1, "clusters from two connections: no run across them");
+    /* Seeking back into a known stretch and playing on past its end joins it. */
+    asssinais_salto();
+    asssinais_cluster(&A, 15000); asssinais_cluster(&A, 20000); asssinais_cluster(&A, 25000);
+    OK(asssinais_decidir(20, 22000, hd) == 0 && asssinais_decidir(20, 12000, hd) == 0, "re-read and extended: known");
+    /* The same track reloaded under a new generation keeps everything. */
+    asssinais_trocar_geracao(20, 21);
+    OK(asssinais_decidir(21, 12000, hs) == 1 && asssinais_decidir(21, 12000, hd) == 0, "generation 20 -> 21: lines and stretches kept");
+    OK(asssinais_decidir(20, 12000, hs) == -1, "the old generation no longer decides");
+    asssinais_trocar_geracao(99, 22);
+    OK(asssinais_decidir(21, 12000, hs) == 1, "a swap from another generation is ignored");
+    OK(asssinais_decidir_desenho(21, 12000, hs) == 1, "decide for drawing: same answer");
+    asssinais_estatisticas(&e);
+    OK(e.consultas > 0 && e.sinais > 0 && e.dialogos > 0 && e.esperando > 0 && e.trechos > 0 && e.guardadas > 0,
+       "stats: signs, dialogue, waiting, stretches, held");
+    { long antes; asssinais_estatisticas(&e); antes = e.consultas;
+      asssinais_decidir_desenho(21, 12000, hs); asssinais_estatisticas(&e);
+      OK(antes == 0 && e.consultas == 0, "decide for drawing is not counted"); }
+    /* A new track forgets everything. */
+    asssinais_definir(23, 0, 3, 1000000UL);
+    OK(asssinais_decidir(23, 12000, hs) == -1, "new track: nothing known");
+    /* More stretches than slots: never stuck, the newest kept. */
+    { int i;
+      for (i = 0; i < 100; i++) { asssinais_salto(); asssinais_cluster(&A, (unsigned long)(i * 100000)); asssinais_cluster(&A, (unsigned long)(i * 100000 + 5000)); }
+      OK(asssinais_decidir(23, 99 * 100000 + 1000, hd) == 0, "100 stretches: the newest still known"); }
+  }
   printf(falhas ? "asssinais: %d FAIL\n" : "asssinais: ok\n", falhas);
   return falhas != 0;
 }

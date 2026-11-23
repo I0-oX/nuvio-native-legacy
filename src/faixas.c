@@ -143,6 +143,11 @@ static int legOverlayEsperaTV;
 // a definitive no-go gives the track back to that row, the only one the TV has.
 static int legOverlayOrigemTV = -1;
 #endif
+// The probe came back while the player was being reopened on the same source
+// (owner 23/11/2026, log 11): the TV's track list was empty or reset, so the
+// decision waits for it - from that moment, at most LEG_ESPERA_REAB_MS.
+#define LEG_ESPERA_REAB_MS 6000u
+static Uint32 legOverlayEsperaReab;   // 0 = not waiting
 
 // LEGENDA AUTOMATICA DA SESSAO (#129): 1 do inicio de uma reproducao ate a
 // decisao (ligou, nao havia o que ligar, ou a pessoa escolheu na folha).
@@ -471,7 +476,7 @@ static int autoTrocaUrl(const char *url, char *nome, unsigned tamNome) {
 static void reiniciarFaixas(int preservarPrebusca) {
   legsync_definir_trocador(autoTroca);
   legsync_definir_trocador_url(autoTrocaUrl);
-  legExterna = -1; legExternaId[0] = 0; legOverlay = legOverlayNoGo = legOverlayEsperando = -1; aberta = 0;
+  legExterna = -1; legExternaId[0] = 0; legOverlay = legOverlayNoGo = legOverlayEsperando = -1; legOverlayEsperaReab = 0; aberta = 0;
   legOverlayFalhas = legOverlayRecusas = legOverlayNoGoEstado = 0; legOverlayRetomar = 0;
   legOverlayTV = legOverlayColhidos = 0;
   if (!preservarPrebusca) mkvass_parar();
@@ -732,9 +737,9 @@ enum { EST_FONTE = 1, EST_COR = 2, EST_RESTAURAR = 9, EST_COR_BORDA = 10,
         * .tpk only (calibrated on the Samsung picture); picture sync is on
         * both, from the file's own frame rate and HDR (legimagem.h). */
        EST_LIBASS, EST_ASS_TAM, EST_ASS_OPAC, EST_CONTRASTE, EST_GAMA, EST_ESCALA, EST_SINC,
-       /* Owner 19/11/2026: the Custom auto instruments (shown only while
-        * Render resolution is Custom auto) and Dialogue by libass. */
-       EST_TXTRES, EST_BLURRES, EST_DIALIB,
+       /* The renderer test rows (Custom auto's text / blur, Every frame,
+        * Renderer preset and the KeijoMika rows) are gone: fixed values
+        * since 23/11/2026 (assperf.h). */
 #endif
        /* MAIN / SECOND (owner 12/11): "Edit" switches the column between the
         * main subtitle and the second one (shown only while a second subtitle
@@ -750,7 +755,6 @@ static const char *const EST_ROT[EST_TOTAL] = {
   "Negrito", "Restaurar padrão", "Cor da borda"
 #ifdef FX_ASSUI
   , "libass", "Tamanho", "Opacidade", "Contraste", "Gama", "Resolução das legendas", "Sincronia com a imagem"
-  , "Resolução do texto (teste)", "Resolução do desfoque (teste)", "Diálogo pelo libass"
 #endif
   , "Editar",
   "Tamanho", "Fonte da legenda", "Cor", "Opacidade", "Fundo", "Posição", "Posição da segunda legenda",
@@ -818,12 +822,11 @@ static void estMapa(void) {
 #ifdef FX_ASSUI
   if (estFaixaAss()) {
     if (assperf_get(AP_LIBASS)) {
-      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CALIB_LINHAS EST_ESCALA,
-                               EST_TXTRES, EST_BLURRES, EST_SINC_LINHA EST_DIALIB, EST_LIBASS, EST_RESTAURAR };
-      for (i = 0; i < (int)(sizeof L / sizeof L[0]); i++) {
-        if ((L[i] == EST_TXTRES || L[i] == EST_BLURRES) && assperf_get(AP_ESCALA) != AP_RES_CUSTOM) continue;
-        estLinhas[estNLinhas++] = L[i];
-      }
+      /* libass's dialogue Size/Opacity, then the engine rows. */
+      static const int L[] = { EST_ASS_TAM, EST_ASS_OPAC, 7, EST_CONTRASTE, EST_GAMA, EST_ESCALA,
+                               EST_SINC, EST_LIBASS, EST_RESTAURAR };
+      int nL = (int)(sizeof L / sizeof L[0]);
+      for (i = 0; i < nL; i++) estLinhas[estNLinhas++] = L[i];
       return;
     }
     /* Restore defaults stays the last cell (owner 27/10), after libass. */
@@ -916,14 +919,8 @@ static void valorEstilo(int linha, char *dst, size_t tam) {
       if (g) snprintf(dst, tam, "%+d", g); else snprintf(dst, tam, "%s", i18n("Desligado"));
       break; }
     case EST_ESCALA: { int v = assperf_get(AP_ESCALA);
-      if (v == AP_RES_AUTO50) snprintf(dst, tam, "%s 50%%", i18n("Auto"));
-      else if (v == AP_RES_AUTO75) snprintf(dst, tam, "%s 75%%", i18n("Auto"));
-      else if (v == AP_RES_CUSTOM) snprintf(dst, tam, "%s", i18n("Auto personalizado"));
-      else snprintf(dst, tam, "%s", v == AP_RES_75 ? "75%" : "100%");
+      snprintf(dst, tam, "%s", i18n(v == AP_RES_MEDIO ? "Auto médio" : v == AP_RES_ALTO ? "Auto alto" : "Auto baixo"));
       break; }
-    case EST_TXTRES: snprintf(dst, tam, "%d%%", assperf_get(AP_TXTRES)); break;
-    case EST_BLURRES: snprintf(dst, tam, "%d%%", assperf_get(AP_BLURRES)); break;
-    case EST_DIALIB: snprintf(dst, tam, "%s", i18n(assperf_get(AP_DIALIB) ? "Ligado" : "Desligado")); break;
     case EST_SINC: { int lv, ps, ag;
       legimagem_valores(&lv, &ps, &ag);
       if (ctl == EST_SINC) snprintf(dst, tam, sincPesada ? "%d / [%d] ms" : "[%d] / %d ms", lv, ps);
@@ -961,7 +958,6 @@ static void ciclarEstilo(int linha) {
     case EST_RESTAURAR:
 #ifdef FX_ASSUI
       if (estFaixaAss() && assperf_get(AP_LIBASS)) {
-        int dialib = assperf_get(AP_DIALIB);
         assperf_restaurar();
 #if defined(NV_TPK) || defined(NV_WEBOS)
         legimagem_restaurar();
@@ -970,26 +966,17 @@ static void ciclarEstilo(int linha) {
 #if defined(NV_TPK) || defined(NV_WEBOS)
         sincPesada = 0;
 #endif
-        if (dialib != assperf_get(AP_DIALIB)) escolherLegenda(legendaAtiva());   // dialogue back to libass
         break;
       }
 #endif
       player_leg_estilo_restaurar();
       return;
-#ifdef FX_ASSUI
-    case EST_ESCALA: {   // Auto 50 -> Auto 75 -> Custom auto -> 100 % -> 75 % (owner 19/11/2026)
+#ifdef NV_TPK
+    case EST_ESCALA: {   // Low -> Medium -> High auto (owner 23/11/2026: Custom auto gone)
       int v = assperf_get(AP_ESCALA);
-      assperf_definir(AP_ESCALA, v == AP_RES_AUTO50 ? AP_RES_AUTO75 : v == AP_RES_AUTO75 ? AP_RES_CUSTOM :
-                                 v == AP_RES_CUSTOM ? AP_RES_100 : v == AP_RES_100 ? AP_RES_75 : AP_RES_AUTO50);
-      foco[FX_COL_ESTILO] = estPos(EST_ESCALA);   // the test rows come and go under it
+      assperf_definir(AP_ESCALA, v == AP_RES_BAIXO ? AP_RES_MEDIO : v == AP_RES_MEDIO ? AP_RES_ALTO : AP_RES_BAIXO);
+      foco[FX_COL_ESTILO] = estPos(EST_ESCALA);
       return; }
-    case EST_DIALIB:
-      /* The same track again: the app's cue copy and libass split the lines
-       * anew (dialogue to the app's text, signs & songs to libass). */
-      assperf_definir(AP_DIALIB, !assperf_get(AP_DIALIB));
-      escolherLegenda(legendaAtiva());
-      foco[FX_COL_ESTILO] = estPos(EST_DIALIB);
-      return;
     case EST_LIBASS:
       /* The same track again, so libass takes it (or lets it go). */
       assperf_definir(AP_LIBASS, !assperf_get(AP_LIBASS));
@@ -1021,8 +1008,6 @@ static const EstSlider EST_SL[EST_TOTAL] = {
   [EST_ASS_OPAC] = { 20, 100, 5, 10, 1 },                         // dialogue opacity %
   [EST_CONTRASTE] = { 0, 50, 1, 5, 2 },                           // the TV's numbers, its whole range
   [EST_GAMA] = { -20, 20, 1, 5, 2 },                              // past the TV's -5..+5 (owner 16/11/2026)
-  [EST_TXTRES] = { 25, 100, 5, 5, 1 },                            // Custom auto: text %, steps of 5 (owner 19/11/2026)
-  [EST_BLURRES] = { 25, 100, 5, 5, 1 },                           // Custom auto: blur %, steps of 5
 #endif
   // The second subtitle: steps through the choices of its setting (the value
   // shown is the setting's own text); Delay in ms like the main.
@@ -1058,8 +1043,6 @@ static int estLer(int i) {
     case EST_ASS_OPAC: return assperf_get(AP_ASSOPAC);
     case EST_CONTRASTE: return 30 + assperf_get(AP_CONTRASTE);
     case EST_GAMA: return assperf_get(AP_GAMA);
-    case EST_TXTRES: return assperf_get(AP_TXTRES);
-    case EST_BLURRES: return assperf_get(AP_BLURRES);
 #endif
     case 0: return e->tamanho;
     case 3: return leg_opacidade_pct(e->opacidade);
@@ -1084,8 +1067,6 @@ static void estGravar(int i, int v) {
     case EST_ASS_OPAC: assperf_definir(AP_ASSOPAC, v); return;
     case EST_CONTRASTE: assperf_definir(AP_CONTRASTE, v - 30); return;
     case EST_GAMA: assperf_definir(AP_GAMA, v); return;
-    case EST_TXTRES: assperf_definir(AP_TXTRES, v / 5 * 5); return;
-    case EST_BLURRES: assperf_definir(AP_BLURRES, v / 5 * 5); return;
 #endif
     case 0: e->tamanho = v; break;
     case 3: e->opacidade = leg_opacidade_modo(v); break;
@@ -1237,7 +1218,7 @@ static void escolherLegenda(int i) {
     // v1.4.7), adota o fio vivo com o que ele ja leu antes do video — parar
     // aqui jogaria isso fora.
     if (!vaiAoApp) mkvass_parar();
-    legOverlay = -1; legOverlayEsperando = -1; legOverlayRetomar = 0; legOverlayTV = 0;
+    legOverlay = -1; legOverlayEsperando = -1; legOverlayEsperaReab = 0; legOverlayRetomar = 0; legOverlayTV = 0;
     if (i < 0)        { pilZerar(); pil.espera = 0; video_escolher_legenda(-1); legenda_desligar(); legExterna = -1; legExternaId[0] = 0;
                         legsync_primaria_outra(0); }   // F05: sem externa, sem AutoSync
     else if (i < emb) {
@@ -1267,7 +1248,7 @@ static void escolherLegenda(int i) {
         const char *motivo = motivoTV(i);
         int esperar = f && i != legOverlayNoGo && video_url_atual()[0] && video_mkv_sondado() == 0;
         if (esperar) {
-          legOverlayEsperando = i;
+          legOverlayEsperando = i; legOverlayEsperaReab = 0;
           video_sondar_mkv_agora();
         }
 #ifdef NV_WEBOS
@@ -1508,6 +1489,18 @@ static void legendaAutomatica(Uint32 agora) {
   if (origem == LEGMEM_DE_TITULO && mt->tipo) {
     r = legendaExata(mt, nEmb, nAdd);
     if (r < 0 && !(mt->tipo == 'e' ? embFechado : addFechado)) return;
+#ifdef NV_TPK
+    /* Burned in (owner 23/11/2026, LOG 2: Kaguya and Married Couple): the
+     * exact track of this title skipped the burned-in mask below, so Nuvio
+     * drew an embedded ASS track over TorBox's burned picture. While burned
+     * the remembered track counts only if it is not an ASS track; else the
+     * usual pick runs over the other tracks. */
+    if (r >= 0 && r < nEmb && video_tpk_leg_oculta(r)) {
+      printf("[legenda] automatica: faixa exata deste titulo (embutida %d) e ASS com a queima ligada: fora; escolha normal sobre as outras\n", r);
+      fflush(stdout);
+      r = -1;
+    }
+#endif
     if (r >= 0) {
       legAuto = 0;
       printf("[legenda] automatica: ultima escolha '%s' -> %s %d (faixa exata deste titulo) aos %u ms\n",
@@ -1813,6 +1806,21 @@ void faixas_atualizar(float dt, Uint32 agora) {
   { int v = video_tpk_queimar_voltou();
     if (v == 1) player_toast_ex(i18n("Legenda queimada do TorBox indisponível: o Nuvio desenha a legenda"), 6000, "pl_captions", 1);
     if (v && legendaAtiva() < 0) { legAuto = 1; legAutoDesde = 0; } }
+  /* Re-added file ready mid-episode (owner 19/11/2026): a notice; OK switches
+   * (player.c). After the switch, Main leaves the ASS track TorBox now burns. */
+  { int v = video_tpk_queimar_aviso();
+    if (v == 1) player_toast_ex(i18n("Legenda queimada pronta: aperte OK para trocar"), 20000, "pl_captions", 0); }
+  /* The burned picture is on (owner 22/11/2026): Nuvio stops drawing Main
+   * whenever it is an embedded ASS track (burned or not); the automatic
+   * pick then runs over the non-ASS tracks. */
+  if (video_tpk_queimar_tirar_main()) {
+    int a = legendaAtiva(), q = video_tpk_queimada();
+    if (a >= 0 && a < video_n_legenda() && video_tpk_leg_queimavel(a)) {
+      escolherLegenda(-1); legAuto = 1; legAutoDesde = 0;
+      printf("[tbburn] burned picture on: Main was embedded ASS track %d (burned: %d) -> off, automatic pick over the other tracks\n", a, q);
+    } else printf("[tbburn] burned picture on: Main %d is not an embedded ASS track -> kept\n", a);
+    fflush(stdout);
+  }
 #endif
   // #202: the platform refused the speed (LG/.tpk answer after the request):
   // the row is gone and playback is back at 1x; say it once.
@@ -1973,13 +1981,11 @@ void faixas_atualizar(float dt, Uint32 agora) {
   if (legOverlayEsperando >= 0) {
     int i = legOverlayEsperando;
     const VideoFaixa *f = video_legenda(i);
-    int escolhida = video_legenda_atual() == i;
     video_sondar_mkv_agora();          // se o sourceInfo chegou depois da escolha
 #ifdef NV_WEBOS
     // Waiting with the LG renderer off (escolherLegenda): the choice stands
     // while legOverlayEsperando does (any new pick resets it). Too long: the
     // TV draws for the time being, and the probe can still hand it to the app.
-    escolhida = 1;
     if (video_mkv_sondado() == 0 && !legOverlayEsperaTV &&
         SDL_GetTicks() - legOverlayEsperaDesde > FX_ESPERA_SONDA_MS) {
       legOverlayEsperaTV = 1;
@@ -1990,8 +1996,28 @@ void faixas_atualizar(float dt, Uint32 agora) {
 #endif
     if (video_mkv_sondado() != 0) {
       int ord = video_legenda_ordinal_mkv(i);
-      legOverlayEsperando = -1;
-      if (f && vaiOverlay(f) && ord >= 0 && escolhida && video_url_atual()[0]) {
+      int reab = 0;
+#ifdef NV_TPK
+      reab = video_tpk_reabrindo();
+#endif
+      /* A reopen in progress (the local fix hides the ASS tracks from the TV,
+       * a CDN renewal): the list is empty or about to change. Wait for the
+       * track, once said in the log. The wait ends the frame the track is
+       * there; it gives up LEG_ESPERA_REAB_MS after the reopen finished
+       * (log 11: the reopen alone took 4.2-4.8 s). */
+      if (!f || (reab && !(vaiOverlay(f) && ord >= 0))) {
+        if (!legOverlayEsperaReab) {
+          printf("[legenda] sonda voltou during a reopen: waiting for the track list (faixa %d)\n", i);
+          fflush(stdout);
+        }
+        if (!legOverlayEsperaReab || reab) legOverlayEsperaReab = agora | 1u;
+        if (agora - legOverlayEsperaReab < LEG_ESPERA_REAB_MS) return;
+      }
+      legOverlayEsperando = -1; legOverlayEsperaReab = 0;
+      /* Decided by the app's own pick: any newer pick has already cleared
+       * legOverlayEsperando. The TV's selection is not asked: after a reopen
+       * with the ASS tracks hidden it is -1 by design (log 11, session 2). */
+      if (f && vaiOverlay(f) && ord >= 0 && video_url_atual()[0]) {
         printf("[legenda] sonda voltou: faixa %d (%s), o app assume\n", i, f->codec);
         overlayAssumir(i, ord);
       } else {
@@ -2791,7 +2817,7 @@ void faixas_escolher_externa(const Legenda *l) {
   if (!l || !l->url[0]) return;
   legAuto = 0;
   mkvass_parar();
-  legOverlay = -1; legOverlayEsperando = -1; legOverlayRetomar = 0; legOverlayTV = 0;
+  legOverlay = -1; legOverlayEsperando = -1; legOverlayEsperaReab = 0; legOverlayRetomar = 0; legOverlayTV = 0;
   video_escolher_legenda(-1);
   legsync_primaria_externa(l->url, legenda_idioma(l->idioma, l->arquivo), l->provedor);   // F05: carrega e vira documento do AutoSync
   // emTroca = o AutoSync trocando sozinho: nao e escolha da pessoa.

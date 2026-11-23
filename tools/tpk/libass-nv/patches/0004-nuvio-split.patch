@@ -142,8 +142,8 @@ index 3b24a68..b4989ba 100644
      state->explicit = state->evt_type != EVENT_NORMAL ||
                        ass_event_has_hard_overrides(event->Text);
 +    /* Nuvio 0004: a sign for the app's dialogue settings (opacity, size,
-+     * skip): libass's own rule, or marked by the app (ASS_Event.nv_sign). */
-+    state->nv_sign = state->explicit || event->nv_sign > 0;
++     * skip): app says sign (> 0), else libass's rule unless app says dialogue (-1). */
++    state->nv_sign = event->nv_sign > 0 || (state->explicit && event->nv_sign != -1);
 +    {
 +        long long layer = (long long) event->Layer + 32768;
 +        layer = layer < 0 ? 0 : layer > 0xFFFF ? 0xFFFF : layer;
@@ -350,10 +350,10 @@ index 4d9e0ec..db72816 100644
      ASS_RenderPriv *render_priv;
 +
 +    /* Nuvio TPK (tools/tpk/libass-nv, 0004): > 0 = the app knows this line
-+     * is a sign or song (e.g. it is also in the file's "Signs & Songs" track):
-+     * no dialogue opacity, size or skipping, whatever its tags. <= 0 (the app
-+     * may keep its own bookkeeping there) = libass's own rule (\pos, \move,
-+     * \clip, \org, \pbo, a drawing or an Effect). */
++     * is a sign or song (it is in the file's "Signs & Songs" track): no dialogue
++     * opacity, size or skipping, whatever its tags. -1 = the app knows it is
++     * dialogue (that track was read there and lacks it), whatever its tags.
++     * Other values (app bookkeeping) = libass's rule (\pos, \move, drawing...). */
 +    int nv_sign;
  } ASS_Event;
  

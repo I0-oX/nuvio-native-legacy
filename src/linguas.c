@@ -698,6 +698,17 @@ static int autoFmtEscolher(const char *pref, const char *audio, int forcadaAuto,
   return addFechado ? LING_AUTO_NADA : LING_AUTO_ESPERA;
 }
 
+// Namer's format-aware picker: the same decision as before (`evitaSdh` off),
+// now with per-track LING_FMT_* so a release's ASS beats plain text and image.
+// The 2.1 non-fmt paths (ling_legenda_auto_tipo / _tipo2) stay unchanged.
+int ling_legenda_auto_fmt(const char *pref, const char *audio, int forcadaAuto,
+                          const char *const *emb, const int *tipoEmb, const int *fmtEmb,
+                          int nEmb, int embFechado,
+                          const char *const *add, int nAdd, int addFechado) {
+  return autoFmtEscolher(pref, audio, forcadaAuto, 0, emb, tipoEmb, fmtEmb,
+                         nEmb, embFechado, add, nAdd, addFechado);
+}
+
 // `evitaSdh` (#743): SDH/CC nunca e escolha automatica — nem como ultimo
 // recurso da lista embutida. E o que a pessoa pede quando o arquivo so traz a
 // faixa para surdos e ela prefere a do addon (ou nenhuma) a ler "[trovao]".

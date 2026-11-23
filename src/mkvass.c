@@ -87,6 +87,12 @@
 #ifndef MKVASS_MAX_PONTOS
 #define MKVASS_MAX_PONTOS  200000
 #endif
+/* The whole Tracks element, read once (owner 23/11/2026, log 9: Fate/strange
+ * Fake PMR remuxes have 4.4 and 17.1 MB Tracks; 16 MB, the body cap, missed
+ * the second and the episode never started). */
+#ifndef MKVASS_TRACKS_MAX
+#define MKVASS_TRACKS_MAX  (32L * 1024 * 1024)
+#endif
 #ifndef MKVASS_CORPO_MAX
 #define MKVASS_CORPO_MAX   (16L * 1024 * 1024)
 #endif
@@ -1721,10 +1727,11 @@ static int escolherNoCabecalho(Fio *f, const unsigned char *p, long n) {
   Iter it = { p, n, 0 }; unsigned long id; const unsigned char *d; long t;
   char idiomas[MKVASS_MAX_LEGENDAS][16];
   const char *vetor[MKVASS_MAX_LEGENDAS];
+  unsigned char sinais[MKVASS_MAX_LEGENDAS];
   int nLeg = 0, ord;
   while (proximo(&it, &id, &d, &t) && nLeg < MKVASS_MAX_LEGENDAS) {
     Iter j = { d, t, 0 }; unsigned long fid; const unsigned char *fd; long ft;
-    int tipo = 0; char lang[16] = "", bcp[16] = "";
+    int tipo = 0; char lang[16] = "", bcp[16] = "", nome[128] = "";
     if (id != ID_TRACKENTRY) continue;
     while (proximo(&j, &fid, &fd, &ft)) {
       if (fid == ID_TRACKTYPE) tipo = (int)lerUint(fd, ft);
@@ -1732,12 +1739,13 @@ static int escolherNoCabecalho(Fio *f, const unsigned char *p, long n) {
         char *dst = fid == ID_LANGUAGE ? lang : bcp;
         size_t z = (size_t)ft < 15 ? (size_t)ft : 15;
         memcpy(dst, fd, z); dst[z] = 0;
-      }
+      } else if (fid == 0x536E) { size_t z = (size_t)ft < sizeof nome - 1 ? (size_t)ft : sizeof nome - 1; memcpy(nome, fd, z); nome[z] = 0; }
     }
     if (tipo != 17) continue;
     // Sem Language o padrao do Matroska e "eng" — o mesmo que mkv.c le.
     snprintf(idiomas[nLeg], sizeof idiomas[nLeg], "%s", bcp[0] ? bcp : lang[0] ? lang : "eng");
     vetor[nLeg] = idiomas[nLeg];
+    sinais[nLeg] = (unsigned char)asssinais_nome(nome);
     nLeg++;
   }
   ord = nLeg && f->escolherCom
@@ -1747,6 +1755,20 @@ static int escolherNoCabecalho(Fio *f, const unsigned char *p, long n) {
     printf("[mkvass] pre-busca: %d legenda(s) no arquivo, nenhuma no idioma preferido\n", nLeg);
     fflush(stdout);
     return -1;
+  }
+  /* The chooser only sees languages: it took a Signs & Songs track while the
+   * same language has a Full/Dialogue one (logs 13/15: the prefetch read the
+   * Signs & Songs track's header, Cues and fonts, then the dialogue track was
+   * picked). The dialogue track first; the Signs & Songs one is read as data
+   * only, from the relay (asssinais.h). */
+  if (sinais[ord]) {
+    int k;
+    for (k = 0; k < nLeg; k++)
+      if (!sinais[k] && !strcasecmp(idiomas[k], idiomas[ord])) {
+        printf("[mkvass] pre-busca: ordinal %d is Signs & Songs; taking the %s dialogue track (ordinal %d)\n",
+               ord, idiomas[ord], k);
+        ord = k; break;
+      }
   }
   f->ordinal = ord;
   f->faixa = -ord - 1;
@@ -2065,7 +2087,7 @@ static int lerCabecalho(Fio *f) {
     // 96 KB; com os 64 KB fixos acima o elemento vinha cortado e a faixa ASS
     // virava "nao e ASS", indo para a TV como texto simples. Agora pede o
     // elemento inteiro (teto de MKVASS_CORPO_MAX, o mesmo do corpo ASS).
-    if (tam > 0 && tam <= MKVASS_CORPO_MAX && ui + ut + tam > n) {
+    if (tam > 0 && tam <= MKVASS_TRACKS_MAX && ui + ut + tam > n) {
       long total = ui + ut + tam;
       free(p);
       p = rangeInsistir(f, f->posTracks, total, &n);
@@ -3713,7 +3735,7 @@ static int entregarCorpoSeAtual(Fio *f, const char *corpo) {
       travado = 0;
 #endif
       if (legenda_geracao() == f->legG) {
-        unsigned g;
+        unsigned g, velha = f->legG;
 #ifdef NV_WEBOS
         long tFontes = agoraMs(), tDoc;
 #endif
@@ -3739,6 +3761,11 @@ static int entregarCorpoSeAtual(Fio *f, const char *corpo) {
 #else
         if (g) { f->legG = g; ok = 1; estadoDoFio(f)->fontesLegG = f->nFontes ? g : 0; }
 #endif
+        /* The same track loaded again (the attached fonts arrived: logs 13
+         * and 15, owner 19/11/2026): the Signs & Songs matching follows it to
+         * the new generation. It stayed on the first one, so no line was ever
+         * looked up ("lookups=0"). */
+        if (g && f->sinaisDitos) asssinais_trocar_geracao(velha, g);
       }
     } else {
       // #412: parse/recriacao do ASS pode levar >120 ms. O quadro usa
@@ -3768,7 +3795,7 @@ static int entregarCorpoSeAtual(Fio *f, const char *corpo) {
     } else if (ok && f->sinaisDitos && f->legG != f->sinaisG) {
       // The late-fonts reload delivered this track again as a new subtitle
       // generation: the same lines and partner, so the state moves with it.
-      asssinais_regerar(f->sinaisG, f->legG);
+      asssinais_trocar_geracao(f->sinaisG, f->legG);
       f->sinaisG = f->legG;
     }
   }
@@ -4203,22 +4230,88 @@ static void relayLimpar(void) {
   pthread_mutex_unlock(&relayTrava);
 }
 
+/* BLOCKS SEEN BEFORE THE PICK (owner 23/11/2026, log 11: "after I select a
+ * track, the subtitles don't show up until I seek forward"). The relay used
+ * to read the stream only while a harvest was on, so the blocks already in
+ * the TV player's buffer when a track was picked (tens of seconds ahead of
+ * the playhead) had gone by unread: they could only come by Range, late, and
+ * a seek (the TV reading those bytes again) was what made them appear. Now
+ * mkvfix hands over every block of the hidden ASS tracks; with no harvest on
+ * that track they wait here (the newest RELAY_ANTES_BYTES), and a harvest
+ * that starts takes its track's blocks into the queue at once. */
+#define RELAY_ANTES_MAX   4096
+#define RELAY_ANTES_BYTES (4L << 20)
+typedef struct { RelayBloco r; long trk; } RelayAntes;
+static RelayAntes relayAntes[RELAY_ANTES_MAX];   // sob relayTrava
+static int relayAntesIni, relayAntesN;
+static long relayAntesBytes;
+static void relayAntesSair_locked(void) {
+  RelayAntes *a = &relayAntes[relayAntesIni];
+  relayAntesBytes -= a->r.n; free(a->r.b); a->r.b = NULL;
+  relayAntesIni = (relayAntesIni + 1) % RELAY_ANTES_MAX; relayAntesN--;
+}
+static int relayTempoRel(const unsigned char *b, long n, long *trk, int *rel);
+void mkvass_relay_antes(long long clPos, int clHdr, unsigned long clTs, int temTs,
+                        long long blkPos, const unsigned char *b, long n) {
+  long trk = -1; int rel = 0;
+  RelayAntes *a;
+  if (!ASS_NOVO || !b || n <= 0 || n > RELAY_ANTES_BYTES / 8 || !temTs || !relayTempoRel(b, n, &trk, &rel)) return;
+  pthread_mutex_lock(&relayTrava);
+  /* Full: the oldest goes (the newest are the ones ahead of the playhead). */
+  while (relayAntesN && (relayAntesN >= RELAY_ANTES_MAX || relayAntesBytes + n > RELAY_ANTES_BYTES)) relayAntesSair_locked();
+  a = &relayAntes[(relayAntesIni + relayAntesN) % RELAY_ANTES_MAX];
+  a->r.b = malloc((size_t)n);
+  if (a->r.b) {
+    memcpy(a->r.b, b, (size_t)n); a->r.n = n; a->trk = trk;
+    a->r.clPos = clPos; a->r.clHdr = clHdr; a->r.clTs = clTs; a->r.temTs = temTs; a->r.blkPos = blkPos; a->r.t = 0;
+    relayAntesN++; relayAntesBytes += n;
+  }
+  pthread_mutex_unlock(&relayTrava);
+}
+void mkvass_relay_antes_limpar(void) {
+  pthread_mutex_lock(&relayTrava);
+  while (relayAntesN) relayAntesSair_locked();
+  relayAntesIni = 0; relayAntesBytes = 0;
+  pthread_mutex_unlock(&relayTrava);
+}
+
 static void relayLigar(Fio *f, int ligar) {
 #ifndef NV_TPK
   (void)f; (void)ligar; return;   /* relay so no .tpk */
 #endif
+  int antes = 0;
   pthread_mutex_lock(&relayTrava);
   if (ligar) {
+    int k;
     if (relayDono) soltarEstado(relayDono);
     relayDono = reterEstado(estadoDoFio(f));
     __atomic_store_n(&relayFaixa, f->faixa, __ATOMIC_RELEASE);
+    /* The queue starts with what the relay already saw of this track (above);
+     * the rest of the old queue was another harvest's. */
+    while (relayN) { free(relayFila[relayIni].b); relayFila[relayIni].b = NULL; relayIni = (relayIni + 1) % RELAY_MAX; relayN--; }
+    relayBytes = 0;
+    relayParqueLimpar();
+    for (k = 0; k < relayAntesN && relayN < RELAY_MAX; k++) {
+      RelayAntes *a = &relayAntes[(relayAntesIni + k) % RELAY_ANTES_MAX];
+      RelayBloco *r;
+      if (a->trk != f->faixa || !a->r.b || relayBytes + a->r.n > RELAY_BYTES) continue;
+      r = &relayFila[(relayIni + relayN) % RELAY_MAX];
+      *r = a->r;
+      r->b = malloc((size_t)a->r.n);
+      if (!r->b) break;
+      memcpy(r->b, a->r.b, (size_t)a->r.n);
+      relayN++; relayBytes += r->n; antes++;
+    }
   } else if (relayDono == estadoDoFio(f)) {
     soltarEstado(relayDono); relayDono = NULL;
     __atomic_store_n(&relayFaixa, 0, __ATOMIC_RELEASE);
     relayParqueLimpar();   // a colheita parou (troca, aviso de memoria): os estacionados saem
   }
   pthread_mutex_unlock(&relayTrava);
-  if (ligar) relayLimpar();
+  if (ligar && antes) {
+    printf("[mkvass] relay: %d block(s) of track %d the TV had already read, taken without a Range\n", antes, f->faixa);
+    fflush(stdout);
+  }
 }
 
 // Track number e relativo de tempo de um bloco (elemento inteiro em b).

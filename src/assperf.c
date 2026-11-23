@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -20,11 +21,13 @@
 #define AP_ARQ   "assperf.txt"
 #define AP_MARCA "assperf-ativo.txt"   // old crash-guard mark (GPU blur, gone 27/10): deleted at start
 
-/* The person's options start here and live in assperf.txt. */
+/* The person's options start here and live in assperf.txt. Keys of the
+ * removed test rows (txtres, blurres, todos_quadros, divididos, pos_inteira,
+ * hinting, caches_pequenos, pequenos_100) are ignored when read and dropped on
+ * the next save (owner 23/11/2026). */
 static const struct { const char *chave; int min, max, padrao; } PESSOA[AP_N] __attribute__((unused)) = {
-  [AP_ESCALA] = { "escala", 0, 5, 5 }, [AP_GAMA] = { "gamma", -20, 20, 0 }, [AP_CONTRASTE] = { "contrast", -30, 20, 0 },
+  [AP_ESCALA] = { "escala", 0, 7, 5 }, [AP_GAMA] = { "gamma", -20, 20, 0 }, [AP_CONTRASTE] = { "contrast", -30, 20, 0 },
   [AP_LIBASS] = { "libass", 0, 1, 1 }, [AP_ASSTAM] = { "asstam", 50, 200, 100 }, [AP_ASSOPAC] = { "assopac", 20, 100, 100 },
-  [AP_TXTRES] = { "txtres", 25, 100, 100 }, [AP_BLURRES] = { "blurres", 25, 100, 50 }, [AP_DIALIB] = { "dialogo", 0, 1, 1 },
 };
 
 static int val[AP_N] __attribute__((unused));   // off the .tpk and webOS: read only by the tests
@@ -32,13 +35,13 @@ static int iniciado;
 static unsigned versao;
 static pthread_mutex_t trava = PTHREAD_MUTEX_INITIALIZER;
 
-#ifdef AP_PERSISTE
+#if defined(AP_PERSISTE) || defined(NV_ASSPERF_TESTE)
 static int valido(int id, int v) {
-  if (id == AP_ESCALA)   // 100 %, 75 %, Auto 75, Auto 50 (the old "Auto" 5), Custom auto
-    return v == AP_RES_100 || v == AP_RES_75 || v == AP_RES_AUTO75 || v == AP_RES_AUTO50 || v == AP_RES_CUSTOM;
-  if ((id == AP_TXTRES || id == AP_BLURRES) && v % 5) return 0;
+  if (id == AP_ESCALA) return AP_RES_AUTO(v);
   return v >= PESSOA[id].min && v <= PESSOA[id].max;
 }
+#endif
+#ifdef AP_PERSISTE
 
 static void gravar(void) {
   char b[256]; size_t o = 0;
@@ -53,6 +56,41 @@ static void gravar(void) {
 // with the values in place, so an assperf_get from another thread never reads
 // half a file. The first use is always an ASS track or the Style sheet, long
 // after avisos_iniciar (the crash guard needs it).
+/* A saved value as read from the file (owner 22/11/2026): the fixed 100 %
+ * reads as High auto, the fixed 75 % as Medium auto. A saved Custom auto
+ * (AP_RES_CUSTOM_VELHO, removed 23/11/2026) is not valid: the TV's default
+ * stays, as if nothing were saved. */
+#if defined(AP_PERSISTE) || defined(NV_ASSPERF_TESTE)
+static int valorLido(int id, int v) {
+  if (id == AP_ESCALA && v == AP_RES_100_VELHO) return AP_RES_ALTO;
+  if (id == AP_ESCALA && v == AP_RES_75_VELHO) return AP_RES_MEDIO;
+  return v;
+}
+#endif
+
+/* Default render mode by the TV (owner 23/11/2026): Tizen 7+ High auto, 6/6.5
+ * Medium auto, 4/5 Low auto; unknown Medium. Only when nothing is saved. */
+static int tizenMaior;      /* __atomic: video_tpk.c, once */
+static int escalaSalva;     /* the file had "escala" (under trava) */
+static int escala_padrao(void) {
+#ifdef NV_TPK40
+  return AP_RES_BAIXO;
+#else
+  int t = __atomic_load_n(&tizenMaior, __ATOMIC_RELAXED);
+  return t >= 7 ? AP_RES_ALTO : t == 6 ? AP_RES_MEDIO : t >= 4 ? AP_RES_BAIXO : AP_RES_MEDIO;
+#endif
+}
+void assperf_tizen_definir(int maior) {
+  __atomic_store_n(&tizenMaior, maior, __ATOMIC_RELAXED);
+  /* Read before the version was known and nothing saved: take the TV's default now. */
+  pthread_mutex_lock(&trava);
+  if (iniciado && !escalaSalva && val[AP_ESCALA] != escala_padrao()) {
+    __atomic_store_n(&val[AP_ESCALA], escala_padrao(), __ATOMIC_RELAXED);
+    __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
+  }
+  pthread_mutex_unlock(&trava);
+}
+
 void assperf_iniciar(void) {
   if (__atomic_load_n(&iniciado, __ATOMIC_ACQUIRE)) return;
   pthread_mutex_lock(&trava);
@@ -62,6 +100,7 @@ void assperf_iniciar(void) {
     char *t = dados_ler(AP_ARQ);
     int i, novo[AP_N] = {0}, velho[AP_N] = {0}, velhoV[AP_N] = {0};
     for (i = 0; i < AP_N; i++) val[i] = PESSOA[i].padrao;
+    val[AP_ESCALA] = escala_padrao();   /* by the TV until a saved value is read */
     if (t) {
       char *l = t, *nl;
       for (; l && *l; l = nl) {
@@ -70,8 +109,10 @@ void assperf_iniciar(void) {
         eq = strchr(l, '=');
         if (!eq) continue;
         *eq = 0;
-        for (i = 0; i < AP_N; i++)
-          if (!strcmp(l, PESSOA[i].chave) && valido(i, atoi(eq + 1))) { val[i] = atoi(eq + 1); novo[i] = 1; }
+        for (i = 0; i < AP_N; i++) {
+          int v = valorLido(i, atoi(eq + 1));
+          if (!strcmp(l, PESSOA[i].chave) && valido(i, v)) { val[i] = v; novo[i] = 1; }
+        }
         /* Files written before the wider ranges (16/11/2026): "gama" was 0 off,
          * 1..5 = -1..-5, 6..10 = +5..+1; "contraste" was 30 minus the TV's
          * number. A new key in the same file wins. */
@@ -80,6 +121,7 @@ void assperf_iniciar(void) {
           if (!strcmp(l, "contraste") && v >= 0 && v <= 30) velho[AP_CONTRASTE] = 1, velhoV[AP_CONTRASTE] = -v; }
       }
       for (i = 0; i < AP_N; i++) if (velho[i] && !novo[i]) val[i] = velhoV[i];
+      escalaSalva = novo[AP_ESCALA];
       free(t);
     }
     { char *marca = dados_ler(AP_MARCA); if (marca) { free(marca); dados_apagar(AP_MARCA); } }
@@ -92,9 +134,13 @@ void assperf_iniciar(void) {
 #ifdef NV_ASSPERF_TESTE
 /* Tests on the computer (no NV_TPK, no NV_WEBOS): set the person's options without a file. */
 void assperf_teste_definir(int id, int v) {
+  /* The first call starts from the defaults, like the file-less .tpk. */
+  if (!__atomic_load_n(&iniciado, __ATOMIC_ACQUIRE)) { int i; for (i = 0; i < AP_N; i++) val[i] = PESSOA[i].padrao; }
   __atomic_store_n(&iniciado, 1, __ATOMIC_RELEASE);
   if (id >= 0 && id < AP_N) { val[id] = v; __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL); }
 }
+/* What a saved line "key=v" becomes (-1 = not accepted). */
+int assperf_teste_lido(int id, int v) { v = valorLido(id, v); return valido(id, v) ? v : -1; }
 #endif
 
 int assperf_get(int id) {
@@ -132,6 +178,7 @@ void assperf_restaurar(void) {
   assperf_iniciar();
   pthread_mutex_lock(&trava);
   for (i = 0; i < AP_N; i++) if (i != AP_LIBASS) __atomic_store_n(&val[i], PESSOA[i].padrao, __ATOMIC_RELAXED);
+  __atomic_store_n(&val[AP_ESCALA], escala_padrao(), __ATOMIC_RELAXED);   /* the TV's default mode */
   gravar();
   pthread_mutex_unlock(&trava);
   __atomic_add_fetch(&versao, 1, __ATOMIC_ACQ_REL);
@@ -245,13 +292,12 @@ int assperf_pesado(void) {
   pthread_mutex_unlock(&autoTrava);
   return r;
 }
-
 /* ---- Render resolution Auto -----------------------------------------------
  * 100 % normally; lower while the subtitles are busy (owner 25/10: "only as a
  * fallback when subtitles get heavy"). At least 5 s reduced and 2 s at 100 %
  * between switches: each one redraws everything at the new size.
- * Owner 19/11/2026: Auto 50 % (default) / Auto 75 % reduce the whole frame;
- * Custom auto reduces the text to AP_TXTRES and the blur to AP_BLURRES. */
+ * Owner 19/11/2026: while busy, Auto 50 % (default) draws the text at 50 % and
+ * the blur at 40 %, Auto 75 % the text at 75 % and the blur at 55 %. */
 #define AUTO_MIN75_S  5.0
 #define AUTO_MIN100_S 2.0
 static struct { int em75; double desde; } A;
@@ -270,13 +316,68 @@ int assperf_tv_lenta(void) {
 }
 static void auto_trocar_locked(int em75, double t) { A.em75 = em75; A.desde = t; }
 
+/* ---- Clean blur (owner 22/11/2026) ----------------------------------------
+ * Gradients built from thin stacked strips show horizontal lines when the
+ * strip edges land unevenly on the pixel rows. Even for any strip offset when
+ * screen pixels per script pixel f is 1/n; for strips on whole script pixels
+ * also at whole f. Simulated (22/11): 1/4, 1/3, 2/5, 1/2, 1, 2, 3, 4. */
+#define AP_LIMPO_N 8
+static const double LIMPO[AP_LIMPO_N] = { 0.25, 1.0 / 3.0, 0.4, 0.5, 1.0, 2.0, 3.0, 4.0 };
+static int gradeAlt = 1080, gradePry = 1080;   /* __atomic: the worker sets them */
+void assperf_grade_definir(int alturaPx, int playResY) {
+  if (alturaPx < 16) alturaPx = 1080;
+  if (playResY <= 0) playResY = 288;   /* libass's default when the script has none */
+  __atomic_store_n(&gradeAlt, alturaPx, __ATOMIC_RELAXED);
+  __atomic_store_n(&gradePry, playResY, __ATOMIC_RELAXED);
+}
+void assperf_grade(int *alturaPx, int *playResY) {
+  *alturaPx = __atomic_load_n(&gradeAlt, __ATOMIC_RELAXED);
+  *playResY = __atomic_load_n(&gradePry, __ATOMIC_RELAXED);
+}
+/* The % (as a scale) of clean step c on the current grid. */
+static double limpo_p(int c) {
+  int alt, pry; assperf_grade(&alt, &pry);
+  return LIMPO[c] * (double)pry / (double)alt;
+}
+static double blur_limpo(double alvo, double teto) {
+  double melhor = -1.0, maior = -1.0;
+  int c;
+  for (c = 0; c < AP_LIMPO_N; c++) {
+    double p = limpo_p(c);
+    if (p < 0.25 - 1e-9 || p > teto + 1e-9) continue;
+    if (p >= alvo - 1e-9 && (melhor < 0 || p < melhor)) melhor = p;
+    if (p > maior) maior = p;
+  }
+  return melhor > 0 ? melhor : maior > 0 ? maior : alvo;
+}
 /* The two scales of mode v while reduced (busy). texto == blur: one pass. */
 static void escalas_reduzidas(int v, double *texto, double *blur) {
-  if (v == AP_RES_CUSTOM) {
-    *texto = assperf_get(AP_TXTRES) / 100.0; *blur = assperf_get(AP_BLURRES) / 100.0;
-    if (!(*texto >= 0.25 && *texto <= 1.0)) *texto = 1.0;
-    if (!(*blur >= 0.25 && *blur <= 1.0)) *blur = 0.5;
-  } else *texto = *blur = v == AP_RES_AUTO75 ? 0.75 : 0.5;
+  int alt, pry;
+  assperf_grade(&alt, &pry);
+  /* Scripts of 540 lines or fewer: 100 % (owner: 480p renders at 100). */
+  if (pry <= 540) { *texto = 1.0; *blur = blur_limpo(1.0 + 1e-6, 1.0); return; }
+  if (v == AP_RES_ALTO) { *texto = AP_ALTO_TEXTO; *blur = blur_limpo(AP_ALTO_BLUR, AP_BLUR_TETO); }
+  else if (v == AP_RES_MEDIO) { *texto = AP_MEDIO_TEXTO; *blur = blur_limpo(AP_MEDIO_BLUR, AP_BLUR_TETO); }
+  else {
+    /* Low (owner 22/11/2026, log 1): when the text scale is clean itself (50 %
+     * of a 1080p script on a 1080 or 4K UI), the blur uses it too: one libass
+     * pass at 50 costs less than 50 + 40, and there's no split to composite. */
+    int c;
+    *texto = AP_BAIXO_TEXTO; *blur = blur_limpo(AP_BAIXO_BLUR, AP_BLUR_TETO);
+    for (c = 0; c < AP_LIMPO_N; c++)
+      if (fabs(limpo_p(c) - AP_BAIXO_TEXTO) < 1e-6) { *blur = AP_BAIXO_TEXTO; break; }
+  }
+}
+
+void assperf_modo_texto(char *b, int n) {
+  static const char *const NOMES[8] = { "?", "?", "?", "Medium auto", "?", "Low auto", "?", "High auto" };
+  int v = assperf_get(AP_ESCALA), alt, pry;
+  double tx = 1.0, bl = 1.0;
+  assperf_grade(&alt, &pry);
+  escalas_reduzidas(v, &tx, &bl);
+  snprintf(b, (size_t)n, "%s (busy: text %.0f / blur %.1f; px per script px %.2f / %.2f; frame %d px, PlayResY %d)",
+           v >= 0 && v < 8 ? NOMES[v] : "?", tx * 100.0, bl * 100.0,
+           tx * alt / pry, bl * alt / pry, alt, pry);
 }
 
 int assperf_resolucao_quadro(double *texto, double *blur) {
@@ -287,13 +388,14 @@ int assperf_resolucao_quadro(double *texto, double *blur) {
     pthread_mutex_lock(&autoTrava);
     A.em75 = 0;
     pthread_mutex_unlock(&autoTrava);
-    *texto = v == AP_RES_75 ? 0.75 : 1.0;
+    *texto = 1.0;
     return 0;
   }
   t = agoraS();
   pthread_mutex_lock(&autoTrava);
   { int pesado = pesado_locked(t) || CG.prevCedo;
-    if (!A.em75 && pesado && t - A.desde >= AUTO_MIN100_S) auto_trocar_locked(1, t);
+    if (!A.em75 && pesado) auto_trocar_locked(1, t);
+    else if (A.em75 && pesado) A.desde = t;
     else if (A.em75 && !pesado && t - A.desde >= AUTO_MIN75_S) auto_trocar_locked(0, t); }
   if (A.em75) escalas_reduzidas(v, texto, blur);
   else *texto = *blur = 1.0;
@@ -312,7 +414,7 @@ void assperf_escala_reset(void) {
 double assperf_escala(void) {
   int v = assperf_get(AP_ESCALA), em75;
   double tx, bl;
-  if (!AP_RES_AUTO(v)) return v == AP_RES_75 ? 0.75 : 1.0;
+  if (!AP_RES_AUTO(v)) return 1.0;
   pthread_mutex_lock(&autoTrava); em75 = A.em75; pthread_mutex_unlock(&autoTrava);
   if (!em75) return 1.0;
   escalas_reduzidas(v, &tx, &bl);
@@ -322,7 +424,7 @@ double assperf_escala(void) {
 double assperf_escala_blur(void) {
   int v = assperf_get(AP_ESCALA), em75;
   double tx, bl;
-  if (v != AP_RES_CUSTOM) return 0.0;
+  if (!AP_RES_AUTO(v)) return 0.0;
   pthread_mutex_lock(&autoTrava); em75 = A.em75; pthread_mutex_unlock(&autoTrava);
   if (!em75) return 0.0;
   escalas_reduzidas(v, &tx, &bl);

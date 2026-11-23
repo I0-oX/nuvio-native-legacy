@@ -51,6 +51,9 @@ int  tba_modo(void);
 /* The session failed to prepare (TorBox playlist, original file): 1 with the
  * reason (no URL). The player's open fails too; video_tpk.c falls back. */
 int  tba_falhou(char *motivo, size_t n);
+/* That failure was TorBox sending no video: its playlist came, segment 0
+ * did not (owner 22/11/2026). video_tpk.c skips the retry and re-adds. */
+int  tba_sem_video(void);
 /* 1 once the playlists are built (tracks known). */
 int  tba_pronto(void);
 /* Passthrough: renditions the session can serve, in order (with so_uma the

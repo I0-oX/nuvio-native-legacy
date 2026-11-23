@@ -94,4 +94,22 @@ int  queda_relatar_sessao(const char *arquivo, int caiu, long caiuS, FILE *saida
 // Devolve o numero de arquivos apagados; -1 quando a API falha (sem /proc,
 // dir inexistente) — o diagnóstico fica no log, nada e removido.
 int  queda_podar_cores(const char *dir, FILE *log);
+
+/* WORKER THREADS (.tpk relay, owner 23/11/2026). The previous session died in
+ * an "nv-relay" thread (the mkvfix local server) with no record: .NET's
+ * handler ran, ours left nothing. These give such a thread what the record
+ * needs:
+ *  - queda_fio_iniciar: at the start of the thread. Its own signal stack (64
+ *    KB, so a stack overflow there still reaches the handler) and a
+ *    breadcrumb slot. queda_fio_fim before the thread returns.
+ *  - queda_passo: what the thread is doing now (`passo` must be a string
+ *    literal; a/b any two numbers, e.g. a byte position and a size). The
+ *    crash record and the live "[queda] fault" line carry the last one.
+ *  - queda_vigiar_fio: queda_vigiar from that thread, at most every 100 ms,
+ *    so a handler that replaced ours is caught there too, not only once per
+ *    frame on the app thread. */
+void queda_fio_iniciar(void);
+void queda_fio_fim(void);
+void queda_passo(const char *passo, long long a, long long b);
+void queda_vigiar_fio(void);
 #endif

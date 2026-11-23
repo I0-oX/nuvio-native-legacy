@@ -213,6 +213,10 @@ int    video_reconectando(void);
 // the target instead of the stale position.
 int    video_busca_em_voo(void);
 unsigned video_busca_falhas(void);
+// The player is being reopened on the same source (the local fix for hidden
+// subtitle tracks, a CDN link renewal, a reconnection) and its track list is
+// not back yet. faixas.c waits for it before deciding an early subtitle pick.
+int      video_tpk_reabrindo(void);
 #endif
 #if defined(NV_TPK) || defined(NV_WEBOS)
 // SUBTITLE CLOCK (owner 25/10; webOS 14/11). The position is a real reading,
