@@ -2743,7 +2743,6 @@ static long lerBloco(Fio *f, const unsigned char *p, long n, const ClCache *cl,
             if (!f->imagem && f->atrasados <= 20)
               printf("[mkvass] fala %.3f-%.3f colhida TARDE: playhead %.3f (%+.0f ms)\n",
                      ini, fim, f->posRef, (f->posRef - ini) * 1000.0);
-            }
           }
         }
         off += tams[fi];
@@ -4345,8 +4344,8 @@ static double alcanceFrente(const Fio *f) {
 // diante (o que esta na tela agora e o que vem); o resto de [ini, perto) por
 // ultimo.
 static int proximoPendente(const Fio *f, double ini, double fim, int *noJanela) {
-  int i, frente = -1, atras = -1;
-  double pos = ini + MKVASS_ATRAS_SEG;
+  int i, frente = -1, atras = -1, antigo = -1;
+  double pos = ini + MKVASS_ATRAS_SEG, perto = pos - MKVASS_PERTO_SEG;
   int pausa = !f->imagem && f->folgaJan >= 0.0 && f->folgaJan < MKVASS_VARRE_FOLGA_SEG;
   *noJanela = 0;
   for (i = 0; i < f->nPontos; i++) {
