@@ -404,7 +404,9 @@ int main(void) {
       frescoItem = 900; frescoAPartir = 4; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 1;
       tbburn_fonte("https://s/12s", "", "B.S01E12.mkv", 2012);
       tbburn_pedir("https://s/12s", 1, 1);
-      CHECA(fimPedido() == TBB_PRONTO && viuEsperando && adicoes == 1 && frescoN == 1 &&
+      // Owner 23/11/2026: the first ask is right after the add; TorBox
+      // answering there means no wait at all (no TBB_ESPERANDO).
+      CHECA(fimPedido() == TBB_PRONTO && !viuEsperando && adicoes == 1 && frescoN == 1 &&
             strstr(ultRota, "createstream?id=900&file_id=7") != NULL);
       CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
       // The next request for that file uses item 900 at once.
@@ -417,7 +419,30 @@ int main(void) {
     frescoItem = 0; frescoAPartir = 0; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 0; sumido900 = 1;
     tbburn_fonte("https://s/12t", "", "B.S01E13.mkv", 2013);
     tbburn_pedir("https://s/12t", 1, 1);
-    CHECA(fimPedido() == TBB_FALHOU && viuEsperando && adicoes == 1 && frescoN == 1 && criacoes >= 3);
+    // Owner 23/11/2026: four asks at most (now, 2 s, then 2 s and 8 s into
+    // playback): createstream for item 500 once + 4 for torrent 900.
+    CHECA(fimPedido() == TBB_FALHOU && viuEsperando && adicoes == 1 && frescoN == 1 && criacoes == 5);
+    // s2) The original opens only after the 2nd ask: TBB_ESPERANDO comes with
+    //     item 500's createstream + 2 asks done; TorBox ready later -> PRONTO.
+    { int c0;
+      frescoN = criacoes = adicoes = 0; sumido900 = 1; pronto900 = 0;
+      tbburn_fonte("https://s/12t2", "", "B.S01E13.mkv", 2013);
+      tbburn_pedir("https://s/12t2", 1, 1);
+      for (int k = 0; k < 400 && tbburn_resultado(NULL, 0, NULL, 0) != TBB_ESPERANDO; k++) dormir(1);
+      c0 = criacoes;
+      CHECA(tbburn_resultado(NULL, 0, NULL, 0) == TBB_ESPERANDO && c0 == 3);
+      pronto900 = 1;
+      tbburn_registro_tocando();
+      CHECA(fimPedido() == TBB_PRONTO && criacoes == 4 && adicoes == 1); }
+    // s3) Log 17 (E03, owner 23/11/2026): ITEM_NOT_FOUND with the item's hash
+    //     known from the lookup: re-added at once, no list download.
+    { partesAchar = 1; snprintf(partesHashItem, sizeof partesHashItem, "%s", "3434343434343434343434343434343434343434");
+      frescoN = criacoes = adicoes = 0; sumido900 = 0; pronto900 = 1;
+      tbburn_fonte("https://s/12t3", "", "B.S01E21.mkv", 2021);
+      tbburn_pedir("https://s/12t3", 1, 1);
+      CHECA(fimPedido() == TBB_PRONTO && frescoN == 0 && adicoes == 1 &&
+            !strcmp(adicionouHash, "3434343434343434343434343434343434343434") && strstr(ultRota, "createstream?id=900&") != NULL);
+      partesHashItem[0] = 0; }
     sumido900 = 0; pronto900 = 1;
     // t) Cancelled while waiting (another pick / the player left): stops asking.
     { int n0;
@@ -467,7 +492,7 @@ int main(void) {
       CHECA(tbburn_item_na_conta("https://s/12z") == 500 && !tbburn_item_na_conta("https://s/other") && !tbburn_item_na_conta(""));
       frescoItem = 900; frescoAPartir = 1; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 1;
       tbburn_readicionar("https://s/12z", 1, 1);
-      CHECA(fimPedido() == TBB_PRONTO && viuEsperando && adicoes == 1 &&
+      CHECA(fimPedido() == TBB_PRONTO && !viuEsperando && adicoes == 1 &&
             !strcmp(adicionouHash, "1212121212121212121212121212121212121212") && strstr(ultRota, "createstream?id=900&") != NULL);
       CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
       CHECA(tbburn_item_na_conta("https://s/12z") == 900);   // the re-added torrent is the one known now

@@ -1359,6 +1359,16 @@ static int tocarFonteGuardada(void) {
   preparoEspera = 0; // A late preflight result must not replace local resume.
   voltaAtiva = 1;
   voltaDesde = SDL_GetTicks();
+  /* Log 18 (owner 23/11/2026): an earlier Play (E03) closed while its source
+   * search was still on its way left aguardandoFonte at 1. E09 then opened
+   * from its saved link, and when E09's background search finished the
+   * automatic pick reopened the same source: E09 started over at 0 s. The
+   * saved link plays now, so nothing waits for a decision. */
+  if (aguardandoFonte) {
+    printf("[fonte] saved link plays: a source wait left from an earlier Play is cleared (no reopen when the search ends)\n");
+    fflush(stdout);
+    aguardandoFonte = 0;
+  }
   return 1;
 }
 // Test hook for tests/detail_ep_fonte.c. Same function the router calls.
@@ -2852,6 +2862,11 @@ static int tocarParteGuardada(void) {
   marco("abrir: parte guardada, sem busca");
   printf("[partes] resume: opening the saved part at %.0f s\n", p.pos);
   fflush(stdout);
+  if (aguardandoFonte) {   // log 18: same leftover as in tocarFonteGuardada
+    printf("[fonte] saved part plays: a source wait left from an earlier Play is cleared\n");
+    fflush(stdout);
+    aguardandoFonte = 0;
+  }
   return 1;
 }
 // Nao deu na parte guardada: a escolha normal assume, com a busca de fundo

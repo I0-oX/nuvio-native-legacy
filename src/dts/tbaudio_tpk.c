@@ -818,9 +818,8 @@ static int prepTorbox(Sessao *s) {
   // and gave its playlist, but segment 0 never came (4 tries, 30 s each; the
   // same session's Kaguya had it in 1.1 s). A file TorBox can't read: after
   // TB_SEG0_PRAZO_MS the session fails as "no video" (tba_sem_video), and
-  // video_tpk.c opens the original at once. Owner 23/11/2026 (log 15): the
-  // original then plays until TorBox's encoded stream answers (video_tpk.c
-  // tbAquecer), and a notice asks for OK to switch.
+  // video_tpk.c opens the original at once (owner 23/11/2026: and stops
+  // there; Burn in asks again).
   { unsigned char *h = NULL;
     int semResposta = 0;
     s->prazoMs = TB_SEG0_PRAZO_MS;

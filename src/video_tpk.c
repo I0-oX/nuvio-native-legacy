@@ -286,16 +286,12 @@ static struct {
   // the notice, 2 = switched (Main leaves the burned ASS track), read once.
   int registrando, tardio, aviso;
   int tirarMain;   // the burned picture just opened: Main leaves the burned ASS track (faixas.c, 22/11/2026)
-  int aquecerDepois;   // re-added after "no video": wait for its video (tbAquecer) before the notice
   Uint32 tardioAte;
   char urlTardio[4096];
 } tb;
 #ifndef TB_TARDIO_MS
 #define TB_TARDIO_MS 20000u   // how long OK switches to the late burned stream
 #endif
-static void tbAquecerParar(const char *porque);      // waiting for TorBox's encoder (log 15)
-static void tbAquecerComecar(const char *m3u8, double pos);
-static int tbAquecendo(void);
 static volatile int mkvN, mkvEstado, faixasNovas;
 // The file's own length (MKV Segment > Info > Duration), 0 = unknown. TorBox's
 // burned HLS rounds its last segment up to 5 s and the TV reports that length
@@ -1124,8 +1120,6 @@ static void tbPedir(int i, const char *porque) {
   if ((tb.ativo || tb.pend) && tb.sub == sub && tb.audio == aud) { tb.leg = i; return; }
   tb.leg = i; tb.sub = sub; tb.audio = aud; tb.pend = 1; tb.pediuEm = SDL_GetTicks();
   tb.registrando = 0; tb.tardio = 0;   // a new request replaces a re-add still waiting
-  tb.aquecerDepois = 0;
-  tbAquecerParar("a new burn-in request");
   if (!tb.ativo) tb.durOrig = durMs / 1000.0;
   printf("[tbburn] burn in subtitle %d (%s, %s) [%s]: asking TorBox (subtitle %d, audio %d; playing %s)\n", i,
          faixaLeg[i].rotulo, faixaLeg[i].codec, porque, sub, aud, tb.ativo ? "TorBox's stream" : tb.pre ? "nothing yet" : "the original file");
@@ -1164,8 +1158,6 @@ void video_tpk_queimar_faixa(int i) {
     if (tbHdr()) tbburn_hdr_lembrar(0);
     NV_PASSO("Burn in Off: cancel/release");
     if (tb.pend || tb.registrando) { tb.pend = 0; tb.registrando = 0; tb.tardio = 0; tbburn_cancelar(); printf("[tbburn] request dropped: Burn in Off\n"); fflush(stdout); }
-    tb.aquecerDepois = 0;
-    tbAquecerParar("Burn in Off");
     if (tb.pre) tbSoltar("Burn in Off");
     NV_PASSO("Burn in Off: back to the original");
     if (tb.ativo) tbDesligar("Burn in Off", 0);
@@ -1204,6 +1196,7 @@ int video_tpk_queimar_aviso(void) { int v = tb.aviso; tb.aviso = 0; return v; }
 int video_tpk_queimar_tirar_main(void) { int v = tb.tirarMain; tb.tirarMain = 0; return v; }
 /* OK with the controls hidden while the late notice is up (player.c): opens
  * TorBox's burned stream at the current point. 1 = done (the OK is used). */
+static void tbTardioAbrir(const char *m);
 int video_tpk_queimar_tardio_ok(void) {
   if (!tb.tardio) return 0;
   if (SDL_GetTicks() - tb.tardioAte < 0x80000000u || !ativo || emTrailer || !tb.urlTardio[0]) {
@@ -1212,13 +1205,21 @@ int video_tpk_queimar_tardio_ok(void) {
     return 0;
   }
   tb.tardio = 0;
-  tbUrlPlayer(tb.urlTardio);
+  printf("[tbburn] late burn-in: OK pressed\n");
+  tbTardioAbrir(tb.urlTardio);
+  return 1;
+}
+/* Opens TorBox's burned stream `m` at the current point (the original was
+ * playing meanwhile). */
+static void tbTardioAbrir(const char *m) {
+  char u[sizeof tb.urlTardio];
+  snprintf(u, sizeof u, "%s", m);
+  tbUrlPlayer(u);
   tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = video_pos(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
-  printf("[tbburn] late burn-in: OK pressed, opening TorBox's burned stream at %.1f s\n", tb.alvo);
+  printf("[tbburn] opening TorBox's burned stream at %.1f s\n", tb.alvo);
   fflush(stdout);
   tb.tirarMain = 1;   // Main leaves the ASS track TorBox now burns (if it is that track)
   tbReabrir(tb.alvo);
-  return 1;
 }
 
 // TORBOX FIRST (owner 13/11): with "Burn in ASS with TorBox" on, a file whose
@@ -1502,196 +1503,6 @@ static void tbcBombear(void) {
   pthread_mutex_lock(&tbcTrava); tbcRodando = 0; pthread_mutex_unlock(&tbcTrava);
 }
 
-// ---- waiting for TorBox's encoder (owner 23/11/2026, log 15) ------------------
-// Hajimete no Gal S01E09 (FLE, needs_transcoding:true): createstream and the
-// playlist answered, but segment 0 did not come within 10 s on any try, while
-// the same stream played in the owner's phone browser. The owner: play the
-// original normally until TorBox's encoded file is there. So after "TorBox
-// sent no video" the original plays with Nuvio's subtitles, and this thread
-// asks TorBox's playlist for segment 0 and for the segment ~20 s past the
-// playhead (where an OK would land), whole (no Range, the first 256 KB), one
-// at a time, every 15 s for up to 10 min. When both answer, the late notice
-// asks for OK (TB_TARDIO_MS), as after a re-add. One TorBox connection, closed
-// after each try (the subtitle reader is capped at 2 meanwhile: 4 in all).
-#ifndef TB_AQUECER_PASSO_MS
-#define TB_AQUECER_PASSO_MS 15000u
-#endif
-#ifndef TB_AQUECER_TOTAL_MS
-#define TB_AQUECER_TOTAL_MS 600000u
-#endif
-#ifndef TB_AQUECER_PRAZO_MS
-#define TB_AQUECER_PRAZO_MS 30000u   // one segment request
-#endif
-#define TB_AQUECER_ADIANTE_S 20.0
-enum { AQ_NADA = 0, AQ_ESPERANDO, AQ_PRONTO, AQ_DESISTIU };
-static pthread_mutex_t aqTrava = PTHREAD_MUTEX_INITIALIZER;
-static unsigned aqGer;          // bumped to stop the thread
-static int aqEstado;            // AQ_*
-static double aqPos;            // the playhead, from tbBombear
-static Uint32 aqDesde;
-static char aqUrl[4096], aqMotivo[160];
-static int aqVivo(unsigned g) {
-  int v;
-  pthread_mutex_lock(&aqTrava); v = aqGer == g && aqEstado == AQ_ESPERANDO; pthread_mutex_unlock(&aqTrava);
-  return v;
-}
-static int aqDormir(unsigned g, unsigned ms) {
-  Uint32 t0 = SDL_GetTicks();
-  while (SDL_GetTicks() - t0 < ms) {
-    struct timespec t = { 0, 100000000L };
-    if (!aqVivo(g)) return 0;
-    nanosleep(&t, NULL);
-  }
-  return aqVivo(g);
-}
-static void aqTerminar(unsigned g, int estado, const char *motivo) {
-  pthread_mutex_lock(&aqTrava);
-  if (aqGer == g && aqEstado == AQ_ESPERANDO) { aqEstado = estado; snprintf(aqMotivo, sizeof aqMotivo, "%s", motivo ? motivo : ""); }
-  pthread_mutex_unlock(&aqTrava);
-}
-static void *tbAquecerFio(void *u) {
-  char *url = u, *final = malloc(4096);
-  unsigned g;
-  int tent, plOk = 0, seg0Ok = 0;
-  TbaPl pl;
-  Uint32 t0 = SDL_GetTicks();
-  memset(&pl, 0, sizeof pl);
-  pthread_mutex_lock(&aqTrava); g = aqGer; pthread_mutex_unlock(&aqTrava);
-  if (!final) { aqTerminar(g, AQ_DESISTIU, "out of memory"); goto fim; }
-  for (tent = 1; ; tent++) {
-    size_t n = 0;
-    int st = 0, k = 0;
-    unsigned char *b;
-    Uint32 t1;
-    double pos, alvo = 0;
-    if (tent > 1 && !aqDormir(g, TB_AQUECER_PASSO_MS)) break;
-    if (!aqVivo(g)) break;
-    if (SDL_GetTicks() - t0 > TB_AQUECER_TOTAL_MS) {
-      printf("[tbburn] waiting for TorBox: no encoded video in %u min; Nuvio keeps drawing (pick Burn in to ask again)\n",
-             TB_AQUECER_TOTAL_MS / 60000u);
-      fflush(stdout);
-      aqTerminar(g, AQ_DESISTIU, "TorBox's encoder did not answer");
-      break;
-    }
-    if (!plOk) {
-      t1 = SDL_GetTicks();
-      b = tbcBaixar(url, 4u * 1024u * 1024u, 0, &n, final, 4096, &st);
-      tba_pl_liberar(&pl); memset(&pl, 0, sizeof pl);
-      if (b && tba_pl_ler((char *)b, final, &pl) && pl.master) {
-        char var[4096];
-        snprintf(var, sizeof var, "%s", pl.variante);
-        free(b); tba_pl_liberar(&pl); memset(&pl, 0, sizeof pl);
-        b = tbcBaixar(var, 4u * 1024u * 1024u, 0, &n, final, 4096, &st);
-        if (b && !tba_pl_ler((char *)b, final, &pl)) { free(b); b = NULL; }
-      } else if (b && !pl.nseg) { free(b); b = NULL; }
-      plOk = b && !pl.master && pl.nseg > 0;
-      free(b);
-      rede_fio_fechar();
-      if (!plOk) {
-        printf("[tbburn] waiting for TorBox: try %d (%u s): playlist HTTP %d in %u ms, not usable\n",
-               tent, (unsigned)(SDL_GetTicks() - t0) / 1000u, st, (unsigned)(SDL_GetTicks() - t1));
-        fflush(stdout);
-        if (st == 401 || st == 403 || st == 404 || st == 410) {   // the link itself is gone
-          aqTerminar(g, AQ_DESISTIU, "TorBox's stream link no longer answers");
-          break;
-        }
-        continue;
-      }
-    }
-    pthread_mutex_lock(&aqTrava); pos = aqPos; pthread_mutex_unlock(&aqTrava);
-    for (k = 0; k < pl.nseg - 1 && alvo + pl.seg[k].dur <= pos + TB_AQUECER_ADIANTE_S; k++) alvo += pl.seg[k].dur;
-    if (!seg0Ok) {
-      t1 = SDL_GetTicks();
-      b = tbcBaixar(pl.seg[0].uri, 256u * 1024u, TB_AQUECER_PRAZO_MS, &n, NULL, 0, &st);
-      rede_fio_fechar();
-      printf("[tbburn] waiting for TorBox: try %d (%u s): segment 0 (whole, no Range) HTTP %d, %zu bytes in %u ms\n",
-             tent, (unsigned)(SDL_GetTicks() - t0) / 1000u, st, b ? n : (size_t)0, (unsigned)(SDL_GetTicks() - t1));
-      fflush(stdout);
-      if (!b && (st == 401 || st == 403 || st == 410)) { aqTerminar(g, AQ_DESISTIU, "TorBox's stream link no longer answers"); break; }
-      if (!b) continue;
-      free(b);
-      seg0Ok = 1;
-      if (!aqVivo(g)) break;
-    }
-    if (k > 0) {
-      t1 = SDL_GetTicks();
-      b = tbcBaixar(pl.seg[k].uri, 256u * 1024u, TB_AQUECER_PRAZO_MS, &n, NULL, 0, &st);
-      rede_fio_fechar();
-      printf("[tbburn] waiting for TorBox: try %d (%u s): segment %d (%.0f s, playhead %.0f s; whole, no Range) HTTP %d, %zu bytes in %u ms\n",
-             tent, (unsigned)(SDL_GetTicks() - t0) / 1000u, k, alvo, pos, st, b ? n : (size_t)0, (unsigned)(SDL_GetTicks() - t1));
-      fflush(stdout);
-      if (!b && (st == 401 || st == 403 || st == 410)) { aqTerminar(g, AQ_DESISTIU, "TorBox's stream link no longer answers"); break; }
-      if (!b) continue;
-      free(b);
-    }
-    printf("[tbburn] waiting for TorBox: the encoded stream answers after %u s (try %d)\n",
-           (unsigned)(SDL_GetTicks() - t0) / 1000u, tent);
-    fflush(stdout);
-    aqTerminar(g, AQ_PRONTO, NULL);
-    break;
-  }
-fim:
-  tba_pl_liberar(&pl);
-  free(final); free(url);
-  rede_fio_fechar();
-  return NULL;
-}
-static void tbAquecerParar(const char *porque) {
-  int estava;
-  pthread_mutex_lock(&aqTrava);
-  estava = aqEstado == AQ_ESPERANDO;
-  aqGer++; aqEstado = AQ_NADA; aqUrl[0] = 0;
-  pthread_mutex_unlock(&aqTrava);
-  if (estava && porque) { printf("[tbburn] waiting for TorBox stopped: %s\n", porque); fflush(stdout); }
-}
-static void tbAquecerComecar(const char *m3u8, double pos) {
-  pthread_t f;
-  char *u;
-  if (!m3u8 || !m3u8[0]) return;
-  tbAquecerParar(NULL);
-  u = strdup(m3u8);
-  if (!u) return;
-  pthread_mutex_lock(&aqTrava);
-  aqEstado = AQ_ESPERANDO; aqPos = pos; aqDesde = SDL_GetTicks(); aqMotivo[0] = 0;
-  snprintf(aqUrl, sizeof aqUrl, "%s", m3u8);
-  pthread_mutex_unlock(&aqTrava);
-  printf("[tbburn] waiting for TorBox's encoder: the original plays with Nuvio's subtitles; asking TorBox every %u s "
-         "(up to %u min), a notice asks for OK when its video answers\n", TB_AQUECER_PASSO_MS / 1000u, TB_AQUECER_TOTAL_MS / 60000u);
-  fflush(stdout);
-  if (pthread_create(&f, NULL, tbAquecerFio, u) == 0) { pthread_detach(f); return; }
-  free(u);
-  tbAquecerParar(NULL);
-}
-/* Every frame (tbBombear): the playhead for the thread; its result. */
-static void tbAquecerBombear(void) {
-  int e;
-  char m[sizeof aqUrl], mt[sizeof aqMotivo];
-  Uint32 desde;
-  pthread_mutex_lock(&aqTrava);
-  e = aqEstado;
-  if (e == AQ_ESPERANDO) aqPos = video_pos();
-  if (e == AQ_PRONTO || e == AQ_DESISTIU) {
-    snprintf(m, sizeof m, "%s", aqUrl); snprintf(mt, sizeof mt, "%s", aqMotivo); desde = aqDesde;
-    aqEstado = AQ_NADA; aqUrl[0] = 0;
-  }
-  pthread_mutex_unlock(&aqTrava);
-  if (e == AQ_PRONTO) {
-    if (tb.ativo || tb.pend || tb.registrando || !ativo || emTrailer) {
-      printf("[tbburn] waiting for TorBox: ready, but burn-in moved on meanwhile; no notice\n");
-    } else {
-      snprintf(tb.urlTardio, sizeof tb.urlTardio, "%s", m);
-      tb.tardio = 1; tb.tardioAte = SDL_GetTicks() + TB_TARDIO_MS; tb.aviso = 1;
-      printf("[tbburn] late burn-in: TorBox's encoded stream answers %u s after the original took over; notice up, OK within %u s switches\n",
-             (unsigned)(SDL_GetTicks() - desde) / 1000u, TB_TARDIO_MS / 1000u);
-    }
-    fflush(stdout);
-  } else if (e == AQ_DESISTIU) {
-    printf("[tbburn] waiting for TorBox ended: %s; Nuvio keeps drawing the subtitles\n", mt[0] ? mt : "no video");
-    fflush(stdout);
-  }
-}
-static int tbAquecendo(void) { int v; pthread_mutex_lock(&aqTrava); v = aqEstado == AQ_ESPERANDO; pthread_mutex_unlock(&aqTrava); return v; }
-
 // TorBox's video without its audio + the original file's audio (only with the
 // converter in this build); TorBox audio = TorBox's URL as it is.
 static void tbUrlPlayer(const char *m) {
@@ -1732,7 +1543,9 @@ static void tbBombear(void) {
   int e;
   tbburn_arquivo_tem_ass(mkvN > 0 && mkvTemAss());
   tbburn_cedo_bombear();   // the early TorBox lookup of the source just opened (owner 18/11)
-  tbAquecerBombear();      // waiting for TorBox's encoder (log 15)
+  // A re-added file registering: its last two asks count from when the
+  // original plays (owner 23/11/2026).
+  if (tb.registrando && pronto && !emTrailer) tbburn_registro_tocando();
   if (tb.cabEspera) { tbCabEsperar(); return; }
   if (tb.cabDesistiuEm && mkvEstado == 1) tbCabecalhoJa();   // a late header: noticed now, not at sondaMkv's next look
   if (tb.cabDesistiuEm && mkvEstado == 3) {
@@ -1744,7 +1557,7 @@ static void tbBombear(void) {
   // Subtitle reader: 2 connections while burned, 1 while sync's reference is
   // on the network (it closes its own after): never more than 4 on TorBox
   // (TV player 1 + original audio 1 + these). Owner 13/11.
-  mkvass_teto_conexoes(tb.ativo || tb.pend || tbAquecendo() ? (legref_em_rede() > 0 ? 1 : 2) : 0);
+  mkvass_teto_conexoes(tb.ativo || tb.pend ? (legref_em_rede() > 0 ? 1 : 2) : 0);
   // Header known only after the open (no TorBox first): decide once, then.
   // !faixasNovas: only after the header's codecs are on the player's tracks
   // (faixasmkv_aplicar). Deciding on the bare player list found no ASS track,
@@ -1760,12 +1573,12 @@ static void tbBombear(void) {
   if (tb.tardio && SDL_GetTicks() - tb.tardioAte < 0x80000000u) (void)video_tpk_queimar_tardio_ok();   // ran out: logs, drops it
   if (tb.pend || tb.registrando) {
     e = tbburn_resultado(m, sizeof m, motivo, sizeof motivo);
-    /* Re-added file (owner 19/11/2026): TorBox may need minutes. The original
-     * opens / keeps playing with Nuvio drawing the ASS (the tracks come back
-     * to Main); the request keeps asking in the background. */
+    /* Re-added file (owner 19/11/2026): the original opens / keeps playing
+     * with Nuvio drawing the ASS (the tracks come back to Main); the request
+     * asks twice more, 2 s and 8 s into playback (owner 23/11/2026). */
     if (e == TBB_ESPERANDO && tb.pend) {
       printf("[tbburn] TorBox is registering the re-added file: %s; Nuvio draws the subtitles meanwhile, "
-             "a notice asks for OK when TorBox's stream is ready\n", tb.pre ? "opening the original now" : "the original keeps playing");
+             "and switches to TorBox's stream by itself when it is ready\n", tb.pre ? "opening the original now" : "the original keeps playing");
       fflush(stdout);
       tb.pend = 0; tb.registrando = 1; tb.voltar = 2;
       tb.aviso = 2;   // log 12 (owner 23/11/2026): say it's on its way, not "not in your TorBox"
@@ -1775,16 +1588,18 @@ static void tbBombear(void) {
     if (tb.registrando) {
       if (e == TBB_ESPERANDO) return;
       tb.registrando = 0;
-      if (e == TBB_PRONTO && tb.aquecerDepois) {
-        // Re-added after "no video" (owner 23/11/2026): its video must answer first.
-        tb.aquecerDepois = 0;
-        printf("[tbburn] re-added file: TorBox gave a stream %u ms after the request\n", (unsigned)(SDL_GetTicks() - tb.pediuEm));
-        tbAquecerComecar(m, video_pos());
-      } else if (e == TBB_PRONTO) {
-        snprintf(tb.urlTardio, sizeof tb.urlTardio, "%s", m);
-        tb.tardio = 1; tb.tardioAte = SDL_GetTicks() + TB_TARDIO_MS; tb.aviso = 1;
-        printf("[tbburn] late burn-in: TorBox's stream is ready %u ms after the request; notice up, OK within %u s switches\n",
-               (unsigned)(SDL_GetTicks() - tb.pediuEm), TB_TARDIO_MS / 1000u);
+      if (e == TBB_PRONTO) {
+        // Owner 23/11/2026: TorBox is asked only twice in the first ~30 s
+        // after a re-add, so the switch is always near the start: it is
+        // automatic (the original played a moment, then TorBox's burned
+        // stream reopens at the same point), as before 19/11. No notice.
+        if (!ativo || emTrailer || !m[0]) {
+          printf("[tbburn] burn-in: TorBox's stream is ready, but playback moved on: not switching\n");
+        } else {
+          printf("[tbburn] burn-in: TorBox's stream is ready %u ms after the request: switching now (automatic)\n",
+                 (unsigned)(SDL_GetTicks() - tb.pediuEm));
+          tbTardioAbrir(m);
+        }
       } else {
         printf("[tbburn] re-added file: %s; Nuvio keeps drawing the subtitles\n", motivo[0] ? motivo : "TorBox gave no stream");
         tbburn_cancelar();
@@ -2062,7 +1877,6 @@ int video_tocar(const char *u) {
   if (cv.ativo || cv.sondando) dts_tpk_fechar();
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
   if (tb.pend || tb.registrando) tbburn_cancelar();   // a re-add still waiting stops asking too
-  tbAquecerParar("playback closed or another file");
   if (tb.tba) tba_fechar();
   tbr_encerrar();
   memset(&tb, 0, sizeof tb);
@@ -3358,44 +3172,17 @@ void video_bombear(void) {
   if (tb.ativo && pronto) tb.esperaDesde = 0;
   /* Owner 22/11/2026 (log 1, Married Couple CRUCiBLE): TorBox gave the
    * playlist but no video. Nuvio's stream failed already (tba_sem_video,
-   * 10 s): the original opens now (no 30 s wait, no retry in the same mode)
-   * and the file is re-added to TorBox by its hash, once per file. When
-   * TorBox's stream is ready the late notice asks for OK. */
-  /* Owner 23/11/2026 (log 15, Hajimete no Gal FLE, needs_transcoding:true):
-   * the item is still in the account, so a re-add only gives it back; TorBox's
-   * encoder was just slow. The original plays normally and tbAquecer asks
-   * TorBox until its video answers, then the late notice asks for OK. Only a
-   * file whose item isn't known in the account is re-added (then waited for
-   * the same way). Once per file per session: a second "no video" after the
-   * switch stays on the original. */
+   * 10 s): the original opens now (no 30 s wait, no retry in the same mode).
+   * Owner 23/11/2026 (logs 15-18): no re-add and no background asking after
+   * that ("we shouldn't spam TorBox and the TV"); Burn in asks again. */
   if (tb.ativo && tb.tba && tb.esperaDesde && !pronto && !reconErroPend && !retomando && tba_sem_video()) {
-    static char readdFeito[sizeof urlAtual];
-    int sub = tb.sub, aud = tb.audio, jaFeito = !strcmp(readdFeito, urlAtual), item = tbburn_item_na_conta(urlAtual);
-    char m[sizeof tb.urlTb];
-    snprintf(m, sizeof m, "%s", tb.urlTb);
+    int item = tbburn_item_na_conta(urlAtual);
     tb.esperaDesde = 0;
-    printf("[tbburn] TorBox sent no video %u ms after Nuvio's stream opened: back to the original now%s\n",
-           (unsigned)(SDL_GetTicks() - tb.abriuEm),
-           jaFeito ? " (this file fell back once already this session: Nuvio keeps drawing)" :
-           item > 0 ? "; waiting for TorBox's encoder" : "; re-adding the file");
+    printf("[tbburn] TorBox sent no video %u ms after Nuvio's stream opened: back to the original now "
+           "(item %d%s); Nuvio draws the subtitles, pick Burn in to ask again\n",
+           (unsigned)(SDL_GetTicks() - tb.abriuEm), item, item > 0 ? " in your TorBox" : ", not known");
     fflush(stdout);
     tbDesligar("TorBox sent no video for this file", 1);
-    if (!jaFeito && urlAtual[0] && tbburn_pode()) {
-      snprintf(readdFeito, sizeof readdFeito, "%s", urlAtual);
-      tb.sub = sub; tb.audio = aud;
-      tb.registrando = 0; tb.tardio = 0;
-      if (item > 0) {
-        printf("[tbburn] TorBox's stream for this file did not start (item %d still in your TorBox): not re-adding\n", item);
-        fflush(stdout);
-        tb.voltar = 2;   // no "unavailable" toast: it's on its way
-        tb.aviso = 2;    // "Getting ready in TorBox"
-        tbAquecerComecar(m, video_pos());
-      } else {
-        tb.pend = 1; tb.pediuEm = SDL_GetTicks();
-        tb.aquecerDepois = 1;   // the re-added stream is waited for before the notice
-        tbburn_readicionar(urlAtual, sub, aud);
-      }
-    }
   }
   if (tb.ativo && tb.esperaDesde && !pronto && !parado && !reconErroPend && !retomando && SDL_GetTicks() - tb.esperaDesde > 30000u) {
     printf("[tbburn] %s did not start in 30 s (no error from the TV player): treated as a player error\n",
@@ -3503,7 +3290,6 @@ void video_parar(void) {
   if (cv.ativo || cv.sondando) dts_tpk_fechar();
   memset(&cv, 0, sizeof cv); cv.buscarMs = -1; naoSupPend = 0;
   if (tb.pend || tb.registrando) tbburn_cancelar();   // a re-add still waiting stops asking too
-  tbAquecerParar("playback closed or another file");
   if (tb.tba) tba_fechar();
   tbr_encerrar();
   memset(&tb, 0, sizeof tb);
