@@ -629,7 +629,9 @@ void mkvfix_memoria_soltar(const char *porque) { (void)porque; }
 #define MF_VIVOS      8          // conexoes do player ao mesmo tempo
 #define MF_PARADO_MS  25000L     // o CDN sem mandar byte por isto: desiste da conexao
 #define MF_CAB        4096
-#define MF_TRACKS_MAX (4L * 1024 * 1024)   // Tracks maior que isto: nao esconde (nunca visto: 243 KB)
+/* Tracks bigger than this: not hidden. Was 4 MB ("never seen: 243 KB"); owner 23/11/2026: raised,
+ * Fate/strange Fake PMR remuxes carry 4.4 MB and 17.1 MB Tracks (log 9). Read once, freed after. */
+#define MF_TRACKS_MAX (32L * 1024 * 1024)
 
 typedef struct {
   unsigned id;

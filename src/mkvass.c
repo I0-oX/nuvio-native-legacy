@@ -85,6 +85,12 @@
 #ifndef MKVASS_MAX_PONTOS
 #define MKVASS_MAX_PONTOS  200000
 #endif
+/* The whole Tracks element, read once (owner 23/11/2026, log 9: Fate/strange
+ * Fake PMR remuxes have 4.4 and 17.1 MB Tracks; 16 MB, the body cap, missed
+ * the second and the episode never started). */
+#ifndef MKVASS_TRACKS_MAX
+#define MKVASS_TRACKS_MAX  (32L * 1024 * 1024)
+#endif
 #ifndef MKVASS_CORPO_MAX
 #define MKVASS_CORPO_MAX   (16L * 1024 * 1024)
 #endif
@@ -1935,7 +1941,7 @@ static int lerCabecalho(Fio *f) {
     // 96 KB; com os 64 KB fixos acima o elemento vinha cortado e a faixa ASS
     // virava "nao e ASS", indo para a TV como texto simples. Agora pede o
     // elemento inteiro (teto de MKVASS_CORPO_MAX, o mesmo do corpo ASS).
-    if (tam > 0 && tam <= MKVASS_CORPO_MAX && ui + ut + tam > n) {
+    if (tam > 0 && tam <= MKVASS_TRACKS_MAX && ui + ut + tam > n) {
       long total = ui + ut + tam;
       free(p);
       p = rangeInsistir(f, f->posTracks, total, &n);
