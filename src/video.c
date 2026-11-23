@@ -955,7 +955,7 @@ static char reconLegUrl[1024];
 #ifdef NV_WEBOS
 static int tocarInterno(const char *url, int comDV);
 static struct {
-  int ativo, pend, desistiu, voltar;
+  int ativo, pend, desistiu, voltar, tirarMain;   // tirarMain: the burned picture just opened (faixas.c, owner 22/11)
   int pre, preFeito, decidido;   // TorBox first: the player is held for TorBox; decidido = auto choice made
   Uint32 preDesde;
   int leg, sub, audio;           // the burned menu entry, TorBox's subtitle/audio indices
@@ -1517,6 +1517,7 @@ static void tbBombear(void) {
       printf("[tbburn] TorBox first: opening TorBox's burned stream %u ms after the hold began\n",
              (unsigned)(SDL_GetTicks() - tb.preDesde));
       fflush(stdout);
+      tb.tirarMain = 1;   // Nuvio stops drawing the track TorBox burns
       tbAbrir(0);
       return;
     }
@@ -1539,6 +1540,7 @@ static void tbBombear(void) {
       printf("[tbburn] opening TorBox's burned stream at %.1f s (%u ms after the request)\n", tb.alvo,
              (unsigned)(SDL_GetTicks() - tb.pediuEm));
       fflush(stdout);
+      tb.tirarMain = 1;
       tbAbrir(tb.alvo);
     } else if (e == TBB_FALHOU || (Uint32)(SDL_GetTicks() - tb.pediuEm) > 30000u) {
       tb.pend = 0; tb.desistiu = 1; tb.voltar = !tb.ativo;
@@ -1600,6 +1602,11 @@ int video_tpk_leg_queimavel(int i) { return tbLegAss(i); }
 int video_tpk_leg_oculta(int i) { return (tb.ativo || tb.pend) && tbLegAss(i); }
 int video_tpk_queimada(void) { return tb.ativo || tb.pend ? tb.leg : -1; }
 int video_tpk_queimar_voltou(void) { int v = tb.voltar; tb.voltar = 0; return v; }
+int video_tpk_queimar_tirar_main(void) { int v = tb.tirarMain; tb.tirarMain = 0; return v; }
+// The re-added-file late notice (OK to switch) is the .tpk's flow; webOS gives up
+// after 30 s and Nuvio draws the subtitles, so it never raises it.
+int video_tpk_queimar_aviso(void) { return 0; }
+int video_tpk_queimar_tardio_ok(void) { return 0; }
 
 // ---- Audio menu: original audio with burn-in (tbburn.h) ---------------------
 // One row under the audio tracks (faixas.c), where the Burn in row would be:
