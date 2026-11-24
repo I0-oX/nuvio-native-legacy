@@ -775,6 +775,11 @@ static void ass_fila_publicar_locked(AssCpuFrame *f) {
  * bytes por volta (16 bytes por iteracao), avalanche final de 64 bits.  Nunca 0. */
 static unsigned long long ass_chave_bitmap(const unsigned char *b, int w, int h, unsigned extra) {
   uint64_t a, c;
+  if (w <= 0 || h <= 0 || (size_t)w > SIZE_MAX / (size_t)h) {
+    uint64_t r = UINT64_C(0x9E3779B97F4A7C15) ^ ((uint64_t)(unsigned)w << 32) ^
+                 (uint64_t)(unsigned)h ^ ((uint64_t)extra << 17);
+    return r ? r : 1;
+  }
   size_t n = (size_t)w * (size_t)h, i = 0;
   a = UINT64_C(0x9E3779B97F4A7C15) ^ ((uint64_t)(unsigned)w << 32) ^ (uint64_t)(unsigned)h ^
       ((uint64_t)extra << 17) ^ ((uint64_t)n * UINT64_C(0xC2B2AE3D27D4EB4F));
