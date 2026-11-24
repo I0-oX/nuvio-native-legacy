@@ -771,20 +771,48 @@ static void ass_fila_publicar_locked(AssCpuFrame *f) {
   memset(f, 0, sizeof *f);
 }
 
-/* assperf (texcache): chave do CONTEUDO de uma imagem, para a textura de um
- * letreiro que nao mudou nao subir de novo. Palavra de 4 bytes por vez (o
- * ARMv7 da TV), linha a linha do bitmap ja compacto. Nunca 0. */
+/* assperf (texcache): chave do CONTEUDO de uma imagem.  Duas chains de 8
+ * bytes por volta (16 bytes por iteracao), avalanche final de 64 bits.  Nunca 0. */
 static unsigned long long ass_chave_bitmap(const unsigned char *b, int w, int h, unsigned extra) {
-  unsigned long long hsh = 0x9E3779B97F4A7C15ULL ^ ((unsigned long long)(unsigned)w << 32) ^ (unsigned)h ^
-                           ((unsigned long long)extra << 17);
+  uint64_t a, c;
   size_t n = (size_t)w * (size_t)h, i = 0;
-  for (; i + 4 <= n; i += 4) {
-    uint32_t v; memcpy(&v, b + i, 4);
-    hsh = (hsh ^ v) * 0x100000001B3ULL;
-    hsh ^= hsh >> 29;
+  a = UINT64_C(0x9E3779B97F4A7C15) ^ ((uint64_t)(unsigned)w << 32) ^ (uint64_t)(unsigned)h ^
+      ((uint64_t)extra << 17) ^ ((uint64_t)n * UINT64_C(0xC2B2AE3D27D4EB4F));
+  c = a ^ UINT64_C(0x9E3779B97F4A7C15);
+  for (; i + 64 <= n; i += 64) {
+    uint64_t v0, v1, v2, v3, v4, v5, v6, v7;
+    memcpy(&v0, b + i, 8);      memcpy(&v1, b + i + 8, 8);
+    memcpy(&v2, b + i + 16, 8); memcpy(&v3, b + i + 24, 8);
+    memcpy(&v4, b + i + 32, 8); memcpy(&v5, b + i + 40, 8);
+    memcpy(&v6, b + i + 48, 8); memcpy(&v7, b + i + 56, 8);
+    a = (a ^ v0 ^ v2 ^ v4 ^ v6) * UINT64_C(0x100000001B3); a ^= a >> 29;
+    c = (c ^ v1 ^ v3 ^ v5 ^ v7) * UINT64_C(0x100000001B3); c ^= c >> 29;
   }
-  for (; i < n; i++) hsh = (hsh ^ b[i]) * 0x100000001B3ULL;
-  return hsh ? hsh : 1;
+  for (; i + 32 <= n; i += 32) {
+    uint64_t v0, v1, v2, v3;
+    memcpy(&v0, b + i, 8); memcpy(&v1, b + i + 8, 8);
+    memcpy(&v2, b + i + 16, 8); memcpy(&v3, b + i + 24, 8);
+    a = (a ^ v0 ^ v2) * UINT64_C(0x100000001B3); a ^= a >> 29;
+    c = (c ^ v1 ^ v3) * UINT64_C(0x100000001B3); c ^= c >> 29;
+  }
+  for (; i + 16 <= n; i += 16) {
+    uint64_t v0, v1;
+    memcpy(&v0, b + i, 8);
+    memcpy(&v1, b + i + 8, 8);
+    a = (a ^ v0) * UINT64_C(0x100000001B3); a ^= a >> 29;
+    c = (c ^ v1) * UINT64_C(0x100000001B3); c ^= c >> 29;
+  }
+  if (i + 8 <= n) {
+    uint64_t v; memcpy(&v, b + i, 8);
+    a = (a ^ v) * UINT64_C(0x100000001B3); a ^= a >> 29;
+    i += 8;
+  }
+  for (; i < n; i++) a = (a ^ (uint64_t)b[i]) * UINT64_C(0x100000001B3);
+  a ^= c;
+  a ^= a >> 33; a *= UINT64_C(0xFF51AFD7ED558CCD);
+  a ^= a >> 29; a *= UINT64_C(0xC4CEB9FE1A85EC53);
+  a ^= a >> 32;
+  return a ? a : 1;
 }
 
 
@@ -1344,7 +1372,7 @@ static void ass_aplicar_assperf_locked(void) {
  * (> ASS_IDX_CURTO ms: songs, whole-scene signs) sit in their own short list
  * so the backward reach for active events stays the longest SHORT event.
  * Worker thread, under assTrava. */
-#define ASS_IDX_CURTO 2000LL
+#define ASS_IDX_CURTO 100LL
 static int *idxOrd, idxN = -1, idxCap;       // event indices sorted by (Start, index)
 static long long *idxIni, *idxPre;           // Start of idxOrd[i]; prefix sums of text length (N+1)
 static int *idxLongo, idxLongoN, idxLongoCap;
@@ -1358,16 +1386,26 @@ static long idxReconstrucoes;
 static int assIdxAtivosUlt;   // active events of the last snapshot (under assTrava)
 static int assPlayResYVisto = 1080;   // worker only: the script's PlayResY seen last (clean blur grid)
 typedef struct { const char *txt; long long ini; int ro, len; } AssLenEnt;
-static AssLenEnt *idxMapa; static int idxMapaCap;   // previous lengths by (Text, Start, ReadOrder)
+static AssLenEnt *idxMapa; static int idxMapaCap;   // previous lengths, indexed by event index
+static long long *idxDur; static int idxDurCap;     // previous Duration, indexed by event index
+/* assperf: per-sorted-position data.  The per-frame candidate scan then walks
+ * three small sequential arrays instead of striding over the big ASS_Event
+ * array, and the "long" events (Duration > ASS_IDX_CURTO, which must be looked
+ * at for every frame) get a block-max index so whole stretches of them are
+ * skipped with one compare. */
+static long long *idxFim; static int idxFimCap;                   // End of idxOrd[i]
+static unsigned char *idxMarca; static int idxMarcaCap;           // 1 = Duration > ASS_IDX_CURTO
+static long long *idxLongoIni, *idxLongoFim;
+static int idxLongoIniCap, idxLongoFimCap;
+static long long *idxLongoBlk; static int idxLongoBlkCap;         // max End per block of longs
+#define ASS_IDX_BLK 16
+#define ASS_IDX_BLK2 16
+static long long *idxLongoBlk2; static int idxLongoBlk2Cap;    // max of 16 block maxima
 static const ASS_Event *idxCmpEv;
 static int ass_idx_cmp(const void *a, const void *b) {
   int ia = *(const int *)a, ib = *(const int *)b;
   long long sa = idxCmpEv[ia].Start, sb = idxCmpEv[ib].Start;
   return sa < sb ? -1 : sa > sb ? 1 : ia - ib;
-}
-static unsigned ass_idx_h(const char *txt, long long ini, int ro) {
-  uint64_t h = (uint64_t)(uintptr_t)txt * UINT64_C(0x9E3779B97F4A7C15) ^ (uint64_t)ini * UINT64_C(0xC2B2AE3D27D4EB4F) ^ (uint64_t)(unsigned)ro;
-  return (unsigned)(h ^ (h >> 31));
 }
 static int ass_idx_cresce(int **p, int *cap, int n) {
   if (n <= *cap) return 1;
@@ -1378,27 +1416,50 @@ static int ass_idx_cresce(int **p, int *cap, int n) {
     *p = nv; *cap = nc; }
   return 1;
 }
-/* idxOrd[0..n) = 0..n-1 sorted by (Start, index): natural merge sort. 0 = no
- * memory (the caller uses qsort). */
+static int ass_idx_cresce64(long long **p, int *cap, int n) {
+  if (n <= *cap) return 1;
+  { int nc = *cap ? *cap : 256; long long *nv;
+    while (nc < n) nc *= 2;
+    nv = (long long *)realloc(*p, (size_t)nc * sizeof *nv);
+    if (!nv) return 0;
+    *p = nv; *cap = nc; }
+  return 1;
+}
+static int ass_idx_cresce8(unsigned char **p, int *cap, int n) {
+  if (n <= *cap) return 1;
+  { int nc = *cap ? *cap : 1024; unsigned char *nv;
+    while (nc < n) nc *= 2;
+    nv = (unsigned char *)realloc(*p, (size_t)nc);
+    if (!nv) return 0;
+    *p = nv; *cap = nc; }
+  return 1;
+}
+/* idxOrd[0..n) = 0..n-1 sorted by (Start, index).  A track is normally a few
+ * runs already in Start order (each mkvass batch is), so the common case is a
+ * single O(n) scan with no compares and no writes at all; only a genuinely
+ * shuffled track pays for a merge, and a highly shuffled one falls back to
+ * qsort.  The merge is stable and breaks ties by event index, so the result is
+ * exactly the old comparator's. */
 static int *idxTmp, idxTmpCap;
 static int ass_idx_ordenar_runs(int n) {
   const ASS_Event *ev = idxCmpEv;
-  int *a, *b, *t, larg, i;
-  int *ini, nRuns = 0;
+  int *a, *b, *t, larg, i, nRuns = 0;
+  int *ini;
   if (n < 2) return 1;
   if (!ass_idx_cresce(&idxTmp, &idxTmpCap, 2 * n + 2)) return 0;
-  /* Run starts in idxTmp[n+1..]: a new run wherever Start goes down. */
-  ini = idxTmp + n + 1;
+  ini = idxTmp + n + 1;              /* run starts live above the merge scratch */
   ini[nRuns++] = 0;
   for (i = 1; i < n; i++) if (ev[i].Start < ev[i - 1].Start) ini[nRuns++] = i;
-  if (nRuns == 1) return 1;                 // already in order (idxOrd is 0..n-1)
-  if (nRuns > 64) return 0;                 // shuffled: qsort is as good
+  if (nRuns == 1) return 1;          /* already ordered: idxOrd is 0..n-1 */
+  if (nRuns > 64) return 0;          /* shuffled: qsort is as good */
   ini[nRuns] = n;
   a = idxOrd; b = idxTmp;
   for (larg = 1; larg < nRuns; larg *= 2) {
     int r;
     for (r = 0; r < nRuns; r += 2 * larg) {
-      int lo = ini[r], mid = ini[r + larg < nRuns ? r + larg : nRuns], hi = ini[r + 2 * larg < nRuns ? r + 2 * larg : nRuns];
+      int lo = ini[r];
+      int mid = ini[r + larg < nRuns ? r + larg : nRuns];
+      int hi = ini[r + 2 * larg < nRuns ? r + 2 * larg : nRuns];
       int x = lo, y = mid, k = lo;
       while (x < mid && y < hi) {
         const ASS_Event *ex = &ev[a[x]], *ey = &ev[a[y]];
@@ -1413,69 +1474,132 @@ static int ass_idx_ordenar_runs(int n) {
   if (a != idxOrd) memcpy(idxOrd, a, (size_t)n * sizeof *idxOrd);
   return 1;
 }
+static int idxIniCap, idxPreCap;
 /* 1 = the index matches assTrack. 0 = no memory: callers fall back to a walk. */
 static int ass_idx_garantir(void) {
-  int n, i, mc;
-  AssLenEnt *novo;
+  int n, i, b;
+  unsigned mutAtual;
   if (!assTrack) return 0;
   n = assTrack->n_events;
+  mutAtual = __atomic_load_n(&assTrackMut, __ATOMIC_ACQUIRE);
   if (idxTrack == assTrack && idxEvs == assTrack->events && idxN == n &&
-      idxMut == __atomic_load_n(&assTrackMut, __ATOMIC_ACQUIRE)) return 1;
+      idxMut == mutAtual) return 1;
+  /* A generation bump that did not touch the fields the index reads is common
+   * (style/margin edits, serial-only refreshes).  Verify in place and keep the
+   * already-built order/prefix arrays instead of rebuilding them. */
+  if (idxTrack == assTrack && idxEvs == assTrack->events && idxN == n &&
+      idxMapaCap >= n && idxDurCap >= n) {
+    int same = 1;
+    for (i = 0; i < n; i++) {
+      const ASS_Event *e = &assTrack->events[i];
+      if (idxMapa[i].txt != e->Text || idxMapa[i].ini != e->Start ||
+          idxMapa[i].ro != e->ReadOrder || idxDur[i] != e->Duration) { same = 0; break; }
+    }
+    if (same) { idxMut = mutAtual; return 1; }
+  }
   idxN = -1;
   if (!ass_idx_cresce(&idxOrd, &idxCap, n + 1) || !ass_idx_cresce(&idxLen, &idxLenCap, n + 1) ||
       !ass_idx_cresce(&idxLongo, &idxLongoCap, n + 1)) return 0;
-  { long long *a = (long long *)realloc(idxIni, (size_t)(n + 1) * sizeof *a);
+  if (!ass_idx_cresce64(&idxFim, &idxFimCap, n + 1) ||
+      !ass_idx_cresce64(&idxLongoIni, &idxLongoIniCap, n + 1) ||
+      !ass_idx_cresce64(&idxLongoFim, &idxLongoFimCap, n + 1) ||
+      !ass_idx_cresce64(&idxLongoBlk, &idxLongoBlkCap, n / ASS_IDX_BLK + 2) ||
+      !ass_idx_cresce64(&idxLongoBlk2, &idxLongoBlk2Cap, n / (ASS_IDX_BLK * ASS_IDX_BLK2) + 2) ||
+      !ass_idx_cresce8(&idxMarca, &idxMarcaCap, n + 1)) return 0;
+  if (n + 1 > idxMapaCap) {
+    int old = idxMapaCap, nc = old ? old : 1024;
+    AssLenEnt *nv;
+    while (nc < n + 1) nc <<= 1;
+    nv = (AssLenEnt *)realloc(idxMapa, (size_t)nc * sizeof *nv);
+    if (!nv) return 0;
+    memset(nv + old, 0, (size_t)(nc - old) * sizeof *nv);
+    idxMapa = nv; idxMapaCap = nc;
+  }
+  if (n + 1 > idxDurCap) {
+    long long *d = (long long *)realloc(idxDur, (size_t)(n + 1) * sizeof *d);
+    if (!d) return 0;
+    idxDur = d; idxDurCap = n + 1;
+  }
+  if (n + 1 > idxIniCap) {
+    long long *a = (long long *)realloc(idxIni, (size_t)(n + 1) * sizeof *a);
     if (!a) return 0;
-    idxIni = a;
-    a = (long long *)realloc(idxPre, (size_t)(n + 2) * sizeof *a);
+    idxIni = a; idxIniCap = n + 1;
+  }
+  if (n + 2 > idxPreCap) {
+    long long *a = (long long *)realloc(idxPre, (size_t)(n + 2) * sizeof *a);
     if (!a) return 0;
-    idxPre = a; }
-  /* Lengths: reuse the previous rebuild's (same Text pointer, Start and
-   * ReadOrder), strlen only what is new. */
-  for (mc = 1024; mc < 2 * n + 2; mc *= 2) {}
-  novo = (AssLenEnt *)calloc((size_t)mc, sizeof *novo);
-  if (!novo) return 0;
+    idxPre = a; idxPreCap = n + 2;
+  }
+  /* Lengths: reuse the last rebuild's length when the same event is still at
+   * the same index.  No per-rebuild calloc/hash table, no repeated strlen for
+   * unchanged signs across a seek. */
   for (i = 0; i < n; i++) {
     const ASS_Event *e = &assTrack->events[i];
-    int len = -1;
-    unsigned h;
-    if (!e->Text) { idxLen[i] = 0; continue; }
-    if (idxMapa) {
-      for (h = ass_idx_h(e->Text, e->Start, e->ReadOrder) & (unsigned)(idxMapaCap - 1); idxMapa[h].txt;
-           h = (h + 1) & (unsigned)(idxMapaCap - 1))
-        if (idxMapa[h].txt == e->Text && idxMapa[h].ini == e->Start && idxMapa[h].ro == e->ReadOrder) { len = idxMapa[h].len; break; }
+    AssLenEnt *m = &idxMapa[i];
+    idxDur[i] = e->Duration;
+    if (!e->Text) {
+      m->txt = NULL; m->ini = e->Start; m->ro = e->ReadOrder; m->len = 0;
+      idxLen[i] = 0;
+      continue;
     }
-    if (len < 0) len = (int)strlen(e->Text);
-    idxLen[i] = len;
-    for (h = ass_idx_h(e->Text, e->Start, e->ReadOrder) & (unsigned)(mc - 1); novo[h].txt; h = (h + 1) & (unsigned)(mc - 1)) {}
-    novo[h].txt = e->Text; novo[h].ini = e->Start; novo[h].ro = e->ReadOrder; novo[h].len = len;
+    if (m->txt == e->Text && m->ini == e->Start && m->ro == e->ReadOrder) {
+      idxLen[i] = m->len;
+    } else {
+      int len = (int)strlen(e->Text);
+      m->txt = e->Text; m->ini = e->Start; m->ro = e->ReadOrder; m->len = len;
+      idxLen[i] = len;
+    }
   }
-  free(idxMapa); idxMapa = novo; idxMapaCap = mc;
   idxLongoN = 0; idxCurtoMax = 0;
   for (i = 0; i < n; i++) {
-    const ASS_Event *e = &assTrack->events[i];
+    long long d = assTrack->events[i].Duration;
     idxOrd[i] = i;
-    if (e->Duration > ASS_IDX_CURTO) idxLongo[idxLongoN++] = i;
-    else if (e->Duration > idxCurtoMax) idxCurtoMax = e->Duration;
+    if (d <= ASS_IDX_CURTO && d > idxCurtoMax) idxCurtoMax = d;
   }
   idxCmpEv = assTrack->events;
-  /* Owner 22/11/2026 (log 1): rebuilds after a seek cost 12-18 ms per frame.
-   * The track is a few runs already in Start order (each mkvass batch is), so
-   * a natural merge sort (runs merged pairwise) replaces qsort. */
   if (!ass_idx_ordenar_runs(n)) qsort(idxOrd, (size_t)n, sizeof *idxOrd, ass_idx_cmp);
   idxPre[0] = 0;
   for (i = 0; i < n; i++) {
-    idxIni[i] = assTrack->events[idxOrd[i]].Start;
+    const ASS_Event *ev = &assTrack->events[idxOrd[i]];
+    long long fim = ev->Start + ev->Duration;
+    idxIni[i] = ev->Start;
+    idxFim[i] = fim;
     idxPre[i + 1] = idxPre[i] + idxLen[idxOrd[i]];
+    if (ev->Duration > ASS_IDX_CURTO) {
+      idxMarca[i] = 1;
+      idxLongo[idxLongoN] = idxOrd[i];
+      idxLongoIni[idxLongoN] = ev->Start;
+      idxLongoFim[idxLongoN] = fim;
+      idxLongoN++;
+    } else {
+      idxMarca[i] = 0;
+    }
+  }
+  /* block maxima of the long list: a whole block whose newest End is already
+   * over at time t is skipped with a single compare. */
+  for (i = 0, b = 0; i < idxLongoN; i += ASS_IDX_BLK, b++) {
+    int hi = i + ASS_IDX_BLK > idxLongoN ? idxLongoN : i + ASS_IDX_BLK, j;
+    long long m = idxLongoFim[i];
+    for (j = i + 1; j < hi; j++) if (idxLongoFim[j] > m) m = idxLongoFim[j];
+    idxLongoBlk[b] = m;
+  }
+  { int nb2 = (b + ASS_IDX_BLK2 - 1) / ASS_IDX_BLK2, g;
+    for (g = 0; g < nb2; g++) {
+      int lo = g * ASS_IDX_BLK2, hi = lo + ASS_IDX_BLK2, j;
+      long long m = idxLongoBlk[lo];
+      if (hi > b) hi = b;
+      for (j = lo + 1; j < hi; j++) if (idxLongoBlk[j] > m) m = idxLongoBlk[j];
+      idxLongoBlk2[g] = m;
+    }
   }
   idxTrack = assTrack; idxEvs = assTrack->events; idxN = n;
-  idxMut = __atomic_load_n(&assTrackMut, __ATOMIC_ACQUIRE);
+  idxMut = mutAtual;
   idxReconstrucoes++;
   return 1;
 }
 static int ass_idx_lb(long long v) {   // first i with idxIni[i] >= v
   int lo = 0, hi = idxN;
-  while (lo < hi) { int m = (lo + hi) / 2; if (idxIni[m] < v) lo = m + 1; else hi = m; }
+  while (lo < hi) { int m = lo + ((hi - lo) >> 1); if (idxIni[m] < v) lo = m + 1; else hi = m; }
   return lo;
 }
 /* Events starting in [de, ate): count and text length. */
@@ -1490,23 +1614,77 @@ static long long ass_idx_prox(long long t) {
   return i < idxN ? idxIni[i] : LLONG_MAX;
 }
 static int ass_int_cmp(const void *a, const void *b) { int x = *(const int *)a, y = *(const int *)b; return x - y; }
-/* Events with Start <= ate and End > t, in track order (as the old walk). */
+/* Candidate indices are small non-negative event numbers.  A stable 8-bit
+ * radix pass over 1-2 bytes is much cheaper than qsort's comparisons for the
+ * larger per-frame candidate sets, while producing the same ascending order. */
+static int *idxCandTmp, idxCandTmpCap;
+static void ass_idx_radix(int *a, int n) {
+  unsigned cnt[256];
+  int *src = a, *dst, pass, i, passes;
+  if (n <= 1) return;
+  if (!ass_idx_cresce(&idxCandTmp, &idxCandTmpCap, n)) {
+    qsort(a, (size_t)n, sizeof *a, ass_int_cmp);
+    return;
+  }
+  dst = idxCandTmp;
+  passes = idxN > 0xFFFF ? 4 : 2;   /* event indices are 0..idxN-1 */
+  for (pass = 0; pass < passes; pass++) {
+    unsigned sum = 0, j;
+    unsigned shift = (unsigned)pass * 8u;
+    memset(cnt, 0, sizeof cnt);
+    for (i = 0; i < n; i++) cnt[(((unsigned)src[i]) >> shift) & 255u]++;
+    for (j = 0; j < 256; j++) { unsigned c = cnt[j]; cnt[j] = sum; sum += c; }
+    for (i = 0; i < n; i++) dst[cnt[(((unsigned)src[i]) >> shift) & 255u]++] = src[i];
+    { int *t = src; src = dst; dst = t; }
+  }
+}
+static int ass_idx_longo_ub(long long v) {   // number of longs with Start < v
+  int lo = 0, hi = idxLongoN;
+  while (lo < hi) { int m = lo + ((hi - lo) >> 1); if (idxLongoIni[m] < v) lo = m + 1; else hi = m; }
+  return lo;
+}
+/* Events with Start <= ate and End > t, in track order (as the old walk).  The
+ * short ones live in the (Start-sorted) window and are filtered on the
+ * precomputed End; the long ones only need the Start-bounded prefix of the
+ * long list, and every block of 64 of those whose latest End is already past t
+ * is skipped whole.  The collected indices are unique, so re-ordering them
+ * afterwards gives exactly the old track order. */
 static int ass_idx_candidatos(long long t, long long ate, const int **out) {
-  int i, n = 0, a, b;
-  const ASS_Event *ev = assTrack->events;
+  int i, n = 0, a, b, nL, nb, blk;
   a = ass_idx_lb(t - idxCurtoMax);
   b = ass_idx_lb(ate + 1);
-  if (!ass_idx_cresce(&idxCand, &idxCandCap, (b > a ? b - a : 0) + idxLongoN + 1)) { *out = NULL; return -1; }
+  nL = ass_idx_longo_ub(ate + 1);
+  if (!ass_idx_cresce(&idxCand, &idxCandCap, (b > a ? b - a : 0) + nL + 1)) { *out = NULL; return -1; }
   for (i = a; i < b; i++) {
-    const ASS_Event *e = &ev[idxOrd[i]];
-    if (e->Duration > ASS_IDX_CURTO) continue;   // in idxLongo
-    if (e->Start + e->Duration > t) idxCand[n++] = idxOrd[i];
+    if (idxMarca[i]) continue;                   // in the long list
+    if (idxFim[i] > t) idxCand[n++] = idxOrd[i];
   }
-  for (i = 0; i < idxLongoN; i++) {
-    const ASS_Event *e = &ev[idxLongo[i]];
-    if (e->Start <= ate && e->Start + e->Duration > t) idxCand[n++] = idxLongo[i];
+  nb = (nL + ASS_IDX_BLK - 1) / ASS_IDX_BLK;
+  { int nb2 = (nb + ASS_IDX_BLK2 - 1) / ASS_IDX_BLK2, g;
+    for (g = 0; g < nb2; g++) {
+      int bl = g * ASS_IDX_BLK2, bh = bl + ASS_IDX_BLK2, blk;
+      if (bh > nb) bh = nb;
+      if (idxLongoBlk2[g] <= t) continue;
+      for (blk = bl; blk < bh; blk++) {
+        int lo = blk * ASS_IDX_BLK, hi = lo + ASS_IDX_BLK, j;
+        if (hi > nL) hi = nL;
+        if (idxLongoBlk[blk] <= t) continue;
+        for (j = lo; j < hi; j++) if (idxLongoFim[j] > t) idxCand[n++] = idxLongo[j];
+      }
+    }
   }
-  qsort(idxCand, (size_t)n, sizeof *idxCand, ass_int_cmp);
+  if (n > 1) {
+    if (n <= 64) {
+      int j;
+      for (j = 1; j < n; j++) {
+        int v = idxCand[j], k = j - 1;
+        while (k >= 0 && idxCand[k] > v) { idxCand[k + 1] = idxCand[k]; k--; }
+        idxCand[k + 1] = v;
+      }
+    } else {
+      ass_idx_radix(idxCand, n);
+    }
+  }
   *out = idxCand;
   return n;
 }
@@ -1682,105 +1860,214 @@ static int ass_evento_anima_nao_move(const ASS_Event *e) {
 #define ASS_EV_DIALOGO_CONHECIDO(ev) 0
 #endif
 typedef struct { double x1, y1, x2, y2, t1, t2; } AssMove;
+/* The signature is only a cache key (equal signature = same drawn bitmap), so any 64-bit hash that keeps
+ * equal inputs equal and distinct inputs apart will do: one multiply per field, one per 8 text bytes. */
+static inline uint64_t ass_sig_i64(uint64_t h, long long v) {
+  h = (h ^ (uint64_t)v) * UINT64_C(0x9E3779B97F4A7C15);
+  return h ^ (h >> 32);
+}
+static uint64_t ass_sig_bytes(uint64_t h, const char *p, size_t n) {
+  size_t i = 0;
+  h = ass_sig_i64(h, (long long)n);
+  for (; i + 64 <= n; i += 64) {
+    uint64_t v0, v1, v2, v3, v4, v5, v6, v7;
+    memcpy(&v0, p + i, 8);      memcpy(&v1, p + i + 8, 8);
+    memcpy(&v2, p + i + 16, 8); memcpy(&v3, p + i + 24, 8);
+    memcpy(&v4, p + i + 32, 8); memcpy(&v5, p + i + 40, 8);
+    memcpy(&v6, p + i + 48, 8); memcpy(&v7, p + i + 56, 8);
+    h = (h ^ v0) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v1) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v2) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v3) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v4) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v5) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v6) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v7) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+  }
+  for (; i + 32 <= n; i += 32) {
+    uint64_t v0, v1, v2, v3;
+    memcpy(&v0, p + i, 8);      memcpy(&v1, p + i + 8, 8);
+    memcpy(&v2, p + i + 16, 8); memcpy(&v3, p + i + 24, 8);
+    h = (h ^ v0) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v1) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v2) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+    h = (h ^ v3) * UINT64_C(0xC2B2AE3D27D4EB4F); h ^= h >> 29;
+  }
+  for (; i + 8 <= n; i += 8) {
+    uint64_t v; memcpy(&v, p + i, 8);
+    h = (h ^ v) * UINT64_C(0xC2B2AE3D27D4EB4F);
+    h ^= h >> 29;
+  }
+  if (i < n) {
+    uint64_t v = 0; memcpy(&v, p + i, n - i);
+    h = (h ^ v) * UINT64_C(0xC2B2AE3D27D4EB4F);
+    h ^= h >> 29;
+  }
+  return h;
+}
+/* strtod for the plain decimals of \pos/\move/\org: digits, one optional '.', optional sign, at most 15
+ * digits.  Then the value is m / 10^k with m < 2^53 and k <= 15: one correctly rounded division, the same
+ * double strtod returns, and the same end pointer.  Anything else (whitespace, exponent, hex, inf/nan,
+ * long numbers, no digits at all) is left to strtod. */
+static double ass_sig_num(const char *s, char **end) {
+  static const double P10[16] = { 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15 };
+  const char *q = s;
+  uint64_t m = 0;
+  int neg = 0, nd = 0, nf = 0;
+  double v;
+  if (*q == '-') { neg = 1; q++; } else if (*q == '+') q++;
+  while (*q >= '0' && *q <= '9') { m = m * 10u + (uint64_t)(*q - '0'); nd++; q++; if (nd > 15) return strtod(s, end); }
+  if (*q == '.') {
+    q++;
+    while (*q >= '0' && *q <= '9') { m = m * 10u + (uint64_t)(*q - '0'); nd++; nf++; q++; if (nd > 15) return strtod(s, end); }
+  }
+  if (nd == 0 || *q == 'e' || *q == 'E' || *q == 'x' || *q == 'X') return strtod(s, end);
+  v = (double)m;
+  if (nf) v /= P10[nf];
+  *end = (char *)q;
+  return neg ? -v : v;
+}
+/* One pass over the override tags: the ones that decide an event's fate (animation kills the cache; a
+ * clip kills the short/move path; \move( and \pos( steer the long path). Same tests, same text, as the
+ * old anima/strstr/clip checks, minus the repeated scans. */
+typedef struct { int anima, clip, move, pos; } AssSigScan;
+static void ass_sig_scan(const char *txt, AssSigScan *s) {
+  const char *p;
+  s->anima = s->clip = s->move = s->pos = 0;
+  for (p = strchr(txt, '\\'); p; p = strchr(p + 1, '\\')) {
+    switch (p[1]) {
+    case 't': if (p[2] == '(') { s->anima = 1; return; } break;
+    case 'f': if (p[2] == 'a' && p[3] == 'd') { s->anima = 1; return; } break;
+    case 'k': case 'K': s->anima = 1; return;
+    case 'c': if (!strncmp(p + 2, "lip", 3)) s->clip = 1; break;
+    case 'i': if (!strncmp(p + 2, "clip", 4)) s->clip = 1; break;
+    case 'm': if (!strncmp(p + 2, "ove(", 4)) s->move = 1; break;
+    case 'p': if (!strncmp(p + 2, "os(", 3)) s->pos = 1; break;
+    default: break;
+    }
+  }
+}
 static int ass_rigid_parse_cru(const ASS_Event *e, int playResX, int playResY,
                                uint64_t *outSig, double *outPx, double *outPy, int *outMode, AssMove *mv) {
   const char *txt = e->Text, *p, *posEnd = NULL, *orgEnd = NULL, *moveEnd = NULL;
   double px = 0.0, py = 0.0, ox = 0.0, oy = 0.0;
-  int hasPos = 0, hasOrg = 0, hasMove = 0, hasRot = 0, has3d = 0, hasClip = 0;
+  int hasPos = 0, hasOrg = 0, hasMove = 0, hasRot = 0, has3d = 0;
+  AssSigScan sc;
   uint64_t h = UINT64_C(1469598103934665603);
   if (!txt || !txt[0] || e->Duration <= 0 || playResX <= 0 || playResY <= 0) return 0;
-  if (ass_evento_anima_nao_move(e)) return 0;
+  if (e->Effect && (!strncasecmp(e->Effect, "Banner", 6) || !strncasecmp(e->Effect, "Scroll", 6))) return 0;
+  ass_sig_scan(txt, &sc);
+  if (sc.anima) return 0;
 
-  h = ass_fnv_i64(h, e->Style);
-  h = ass_fnv_i64(h, e->Layer);
-  h = ass_fnv_i64(h, e->MarginL);
-  h = ass_fnv_i64(h, e->MarginR);
-  h = ass_fnv_i64(h, e->MarginV);
+  h = ass_sig_i64(h, e->Style);
+  h = ass_sig_i64(h, e->Layer);
+  h = ass_sig_i64(h, e->MarginL);
+  h = ass_sig_i64(h, e->MarginR);
+  h = ass_sig_i64(h, e->MarginV);
 #ifdef ASS_NV_API
   /* Authored tracks only, so this is the .tpk's libass: a stock header (webOS,
    * the .wgt, the host tests) has no nv_sign. */
-  h = ass_fnv_i64(h, e->nv_sign > 0 ? 1 : 0);
+  h = ass_sig_i64(h, e->nv_sign > 0 ? 1 : 0);
 #endif
 
-  if (e->Duration > 150 && !strstr(txt, "\\move(")) {
-    if (!strstr(txt, "\\pos(")) return 0;
-    h = ass_fnv_i64(h, 0x55);
-    h = ass_fnv_bytes(h, txt, strlen(txt));
+  if (e->Duration > 150 && !sc.move) {
+    if (!sc.pos) return 0;
+    h = ass_sig_i64(h, 0x55);
+    h = ass_sig_bytes(h, txt, strlen(txt));
     *outSig = h ? h : 1;
     *outPx = 0.0; *outPy = 0.0;
     *outMode = 1;
     return 1;
   }
 
+  if (sc.clip) return 0;
   for (p = strchr(txt, '\\'); p; p = strchr(p + 1, '\\')) {
-    if (!strncmp(p, "\\clip", 5) || !strncmp(p, "\\iclip", 6)) { hasClip = 1; break; }
-    if (!strncmp(p, "\\frx", 4) || !strncmp(p, "\\fry", 4)) has3d = 1;
-    if (!strncmp(p, "\\fr", 3) || !strncmp(p, "\\fa", 3)) hasRot = 1;
-    if (!hasPos && !strncmp(p, "\\pos(", 5)) {
-      char *end1 = NULL, *end2 = NULL;
-      px = strtod(p + 5, &end1);
-      if (end1 && *end1 == ',') py = strtod(end1 + 1, &end2);
-      if (end2 && *end2 == ')') { hasPos = 1; posEnd = end2 + 1; }
-    } else if (!hasMove && !strncmp(p, "\\move(", 6)) {
-      char *e1 = NULL, *e2 = NULL, *e3 = NULL, *e4 = NULL, *e5 = NULL, *e6 = NULL;
-      double x1 = strtod(p + 6, &e1), y1 = 0, x2 = 0, y2 = 0;
-      if (e1 && *e1 == ',') y1 = strtod(e1 + 1, &e2);
-      if (e2 && *e2 == ',') x2 = strtod(e2 + 1, &e3);
-      if (e3 && *e3 == ',') y2 = strtod(e3 + 1, &e4);
-      if (e4 && (*e4 == ')' || *e4 == ',')) {
-        double t1 = 0.0, t2 = (double)e->Duration;
-        const char *endP = NULL;
-        if (*e4 == ')') endP = e4;
-        else {
-          t1 = strtod(e4 + 1, &e5);
-          if (e5 && *e5 == ',') t2 = strtod(e5 + 1, &e6);
-          if (e6 && *e6 == ')') endP = e6;
-        }
-        if (endP) {
-          /* The position along the move is worked out per frame by the
-           * caller (the parse itself is cached, 22/11/2026). */
-          mv->x1 = x1; mv->y1 = y1; mv->x2 = x2; mv->y2 = y2; mv->t1 = t1; mv->t2 = t2;
-          hasMove = 1; moveEnd = endP + 1;
+    switch (p[1]) {
+    case 'f':
+      if (p[2] == 'r') { hasRot = 1; if (p[3] == 'x' || p[3] == 'y') has3d = 1; }
+      else if (p[2] == 'a') hasRot = 1;
+      break;
+    case 'p':
+      if (!hasPos && !strncmp(p + 2, "os(", 3)) {
+        char *end1 = NULL, *end2 = NULL;
+        px = ass_sig_num(p + 5, &end1);
+        if (end1 && *end1 == ',') py = ass_sig_num(end1 + 1, &end2);
+        if (end2 && *end2 == ')') { hasPos = 1; posEnd = end2 + 1; }
+      }
+      break;
+    case 'm':
+      if (!hasMove && !strncmp(p + 2, "ove(", 4)) {
+        char *e1 = NULL, *e2 = NULL, *e3 = NULL, *e4 = NULL, *e5 = NULL, *e6 = NULL;
+        double x1 = ass_sig_num(p + 6, &e1), y1 = 0, x2 = 0, y2 = 0;
+        if (e1 && *e1 == ',') y1 = ass_sig_num(e1 + 1, &e2);
+        if (e2 && *e2 == ',') x2 = ass_sig_num(e2 + 1, &e3);
+        if (e3 && *e3 == ',') y2 = ass_sig_num(e3 + 1, &e4);
+        if (e4 && (*e4 == ')' || *e4 == ',')) {
+          double t1 = 0.0, t2 = (double)e->Duration;
+          const char *endP = NULL;
+          if (*e4 == ')') endP = e4;
+          else {
+            t1 = ass_sig_num(e4 + 1, &e5);
+            if (e5 && *e5 == ',') t2 = ass_sig_num(e5 + 1, &e6);
+            if (e6 && *e6 == ')') endP = e6;
+          }
+          if (endP) {
+            /* The position along the move is worked out per frame by the
+             * caller (the parse itself is cached, 22/11/2026). */
+            mv->x1 = x1; mv->y1 = y1; mv->x2 = x2; mv->y2 = y2; mv->t1 = t1; mv->t2 = t2;
+            hasMove = 1; moveEnd = endP + 1;
+          }
         }
       }
-    } else if (!hasOrg && !strncmp(p, "\\org(", 5)) {
-      char *end1 = NULL, *end2 = NULL;
-      ox = strtod(p + 5, &end1);
-      if (end1 && *end1 == ',') oy = strtod(end1 + 1, &end2);
-      if (end2 && *end2 == ')') { hasOrg = 1; orgEnd = end2 + 1; }
+      break;
+    case 'o':
+      if (!hasOrg && !strncmp(p + 2, "rg(", 3)) {
+        char *end1 = NULL, *end2 = NULL;
+        ox = ass_sig_num(p + 5, &end1);
+        if (end1 && *end1 == ',') oy = ass_sig_num(end1 + 1, &end2);
+        if (end2 && *end2 == ')') { hasOrg = 1; orgEnd = end2 + 1; }
+      }
+      break;
+    default:
+      break;
     }
   }
-  if (hasClip) return 0;
   if (hasMove) {
     if (hasPos || hasOrg || has3d) return 0;
-    h = ass_fnv_i64(h, 0x77);
+    h = ass_sig_i64(h, 0x77);
   } else {
     if (!hasPos || e->Duration > 150) return 0;
     if (hasRot && !hasOrg) { ox = px; oy = py; }
     if (hasOrg) {
-      h = ass_fnv_i64(h, llround(ox - px));
-      h = ass_fnv_i64(h, llround(oy - py));
+      h = ass_sig_i64(h, llround(ox - px));
+      h = ass_sig_i64(h, llround(oy - py));
     }
   }
   p = txt;
   while (*p) {
-    if (hasPos && !strncmp(p, "\\pos(", 5) && posEnd) {
+    const char *q = strchr(p, '\\');
+    if (!q) {
+      while (*p) { h = (h ^ (unsigned char)*p) * UINT64_C(1099511628211); p++; }
+      break;
+    }
+    if (q > p) h = ass_fnv_bytes(h, p, (size_t)(q - p));
+    if (hasPos && !strncmp(q, "\\pos(", 5) && posEnd) {
       h = ass_fnv_bytes(h, "\\pos()", 6);
       p = posEnd;
       continue;
     }
-    if (hasMove && !strncmp(p, "\\move(", 6) && moveEnd) {
+    if (hasMove && !strncmp(q, "\\move(", 6) && moveEnd) {
       h = ass_fnv_bytes(h, "\\move()", 7);
       p = moveEnd;
       continue;
     }
-    if (hasOrg && !strncmp(p, "\\org(", 5) && orgEnd) {
+    if (hasOrg && !strncmp(q, "\\org(", 5) && orgEnd) {
       h = ass_fnv_bytes(h, "\\org()", 6);
       p = orgEnd;
       continue;
     }
-    h = (h ^ (unsigned char)*p) * UINT64_C(1099511628211);
-    p++;
+    h = (h ^ (unsigned char)*q) * UINT64_C(1099511628211);
+    p = q + 1;
   }
   *outSig = h ? h : 1;
   *outPx = px; *outPy = py;
@@ -1796,11 +2083,22 @@ static int ass_rigid_parse_cru(const ASS_Event *e, int playResX, int playResY,
  * event never matches. Worker, under assTrava. */
 typedef struct {
   const char *txt; long long ini, dur; int ro, layer, style, ml, mr, mvv, sinal;
-  int ok, mode; uint64_t sig; double px, py; AssMove mv;
+  int ok, mode; uint64_t sig; double px, py;
 } AssSigEnt;
-#define ASS_SIG_CAP 16384
+#define ASS_SIG_CAP 8192
 static AssSigEnt *assSig; static int assSigN;
+static AssMove *assSigMv;   /* mode-2 move parameters, cold: kept out of the hot cache line */
 static long assSigAcertos, assSigCalculos;
+/* Spread all fields that are actually compared by the cache.  This leaves the
+ * cached parse results unchanged, but avoids long linear probe chains when
+ * many events share the same Text/Start/ReadOrder/Layer subset. */
+static inline unsigned ass_sig_hash(const ASS_Event *e, int sinal) {
+  uint64_t k = (uint64_t)(uintptr_t)e->Text * UINT64_C(0x9E3779B97F4A7C15) ^
+               (uint64_t)e->Start * UINT64_C(0xC2B2AE3D27D4EB4F) ^
+               (uint64_t)(unsigned)e->ReadOrder * UINT64_C(0xBF58476D1CE4E5B9) ^
+               ((uint64_t)(unsigned)e->Layer << 32);
+  return (unsigned)k & (ASS_SIG_CAP - 1);
+}
 static int ass_rigid_parse(const ASS_Event *e, long long t, int playResX, int playResY,
                            uint64_t *outSig, double *outPx, double *outPy, int *outMode) {
   AssSigEnt *s;
@@ -1810,11 +2108,14 @@ static int ass_rigid_parse(const ASS_Event *e, long long t, int playResX, int pl
   sinal = e->nv_sign > 0 ? 1 : 0;
 #endif
   if (!e->Text) return 0;
-  if (!assSig) { assSig = (AssSigEnt *)calloc(ASS_SIG_CAP, sizeof *assSig); assSigN = 0; }
+  if (!assSig) {
+    assSig = (AssSigEnt *)calloc(ASS_SIG_CAP, sizeof *assSig);
+    assSigMv = (AssMove *)calloc(ASS_SIG_CAP, sizeof *assSigMv);
+    if (!assSigMv) { free(assSig); assSig = NULL; }
+    assSigN = 0;
+  }
   if (!assSig) return 0;   /* no memory: no rigid caching (rendered normally) */
-  { uint64_t k = (uint64_t)(uintptr_t)e->Text * UINT64_C(0x9E3779B97F4A7C15) ^ (uint64_t)e->Start * UINT64_C(0xC2B2AE3D27D4EB4F) ^
-                 (uint64_t)(unsigned)e->ReadOrder ^ ((uint64_t)(unsigned)e->Layer << 32) ^ (uint64_t)sinal << 63;
-    h = (unsigned)(k ^ (k >> 29)) & (ASS_SIG_CAP - 1); }
+  h = ass_sig_hash(e, sinal);
   for (;; h = (h + 1) & (ASS_SIG_CAP - 1)) {
     s = &assSig[h];
     if (!s->txt) break;
@@ -1826,23 +2127,21 @@ static int ass_rigid_parse(const ASS_Event *e, long long t, int playResX, int pl
     }
   }
   /* Full: start over (the busy ED keeps a few thousand live events). */
-  if (assSigN >= ASS_SIG_CAP * 3 / 4) {
+  if (assSigN >= ASS_SIG_CAP / 4) {
     memset(assSig, 0, ASS_SIG_CAP * sizeof *assSig); assSigN = 0;
-    { uint64_t k = (uint64_t)(uintptr_t)e->Text * UINT64_C(0x9E3779B97F4A7C15) ^ (uint64_t)e->Start * UINT64_C(0xC2B2AE3D27D4EB4F) ^
-                   (uint64_t)(unsigned)e->ReadOrder ^ ((uint64_t)(unsigned)e->Layer << 32) ^ (uint64_t)sinal << 63;
-      h = (unsigned)(k ^ (k >> 29)) & (ASS_SIG_CAP - 1); }
+    h = ass_sig_hash(e, sinal);
     s = &assSig[h];
   }
-  memset(s, 0, sizeof *s);
   s->txt = e->Text; s->ini = e->Start; s->dur = e->Duration; s->ro = e->ReadOrder; s->layer = e->Layer;
   s->style = e->Style; s->ml = e->MarginL; s->mr = e->MarginR; s->mvv = e->MarginV; s->sinal = sinal;
-  s->ok = ass_rigid_parse_cru(e, playResX, playResY, &s->sig, &s->px, &s->py, &s->mode, &s->mv);
+  { AssMove parsed; s->ok = ass_rigid_parse_cru(e, playResX, playResY, &s->sig, &s->px, &s->py, &s->mode, &parsed);
+    if (s->ok) assSigMv[h] = parsed; }
   assSigN++; assSigCalculos++;
 achou:
   if (!s->ok) return 0;
   *outSig = s->sig; *outMode = s->mode; *outPx = s->px; *outPy = s->py;
   if (s->mode != 2) return 1;
-  { const AssMove *m = &s->mv;
+  { const AssMove *m = &assSigMv[h];
     double rel = (double)(t - e->Start), px, py;
     if (rel <= m->t1 || m->t2 <= m->t1) { px = m->x1; py = m->y1; }
     else if (rel >= m->t2) { px = m->x2; py = m->y2; }
@@ -2208,6 +2507,22 @@ static void ass_cor_final(const AssCpuImage *im, int corAtiva, int cr, int cg, i
  * GL_LINEAR quads (owner 23/11/2026: Exact, not whole pixel). Returns 1 when
  * the frame was flattened. */
 static long assFlatQuadros, assFlatFeitos;   // [ass] cost (under assFilaTrava when read)
+static int *flatLo, *flatHi; static int flatCap;   // horizontal span actually drawn, per row
+static int ass_flat_linhas(int n) {
+  if (n > flatCap) {
+    int nc = flatCap ? flatCap : 256, *a;
+    while (nc < n) nc <<= 1;
+    a = (int *)realloc(flatLo, (size_t)nc * sizeof *a);
+    if (!a) return 0;
+    flatLo = a;
+    a = (int *)realloc(flatHi, (size_t)nc * sizeof *a);
+    if (!a) return 0;
+    flatHi = a;
+    flatCap = nc;
+  }
+  { int i; for (i = 0; i < n; i++) { flatLo[i] = 0x7FFFFFFF; flatHi[i] = -1; } }
+  return 1;
+}
 static int ass_flat_reamostra(const AssCpuImage *im, float escF, float *r, float *ox, float *oy) {
   float e = im->esc > 0.01f ? im->esc : escF;
   *r = escF / e;
@@ -2226,6 +2541,122 @@ static inline void ass_flat_px(unsigned char *dst, unsigned lr, unsigned lg, uns
   dst[2] = (unsigned char)((b + (b >> 8)) >> 8);
   dst[3] = (unsigned char)(sa + ((a + (a >> 8)) >> 8));
 }
+
+/* One source row's horizontal bilinear lerp: buf[u] = p0*(256-wx) + p1*wx for the two source pixels
+ * around output column u (0 outside the bitmap), the left factor of the old inline sum.  buf is zero
+ * outside [lo,hi), the only columns the row's non-zero bytes can reach. */
+typedef struct { int row, lo, hi; unsigned *buf; } AssFlatRow;
+static int ass_flat_cxlb(const int *cx, int w, int t) {   /* first u with cx[u] >= t (cx never decreases) */
+  int a = 0, b = w;
+  while (a < b) { int m = (a + b) >> 1; if (cx[m] >= t) b = m; else a = m + 1; }
+  return a;
+}
+static void ass_flat_hrow(AssFlatRow *s, const unsigned char *row, int imW, const int *cx,
+                          const unsigned short *cw, int w) {
+  int nz0 = 0, nz1 = imW - 1, u, ulo, uhi;
+  if (s->hi > s->lo) memset(s->buf + s->lo, 0, (size_t)(s->hi - s->lo) * sizeof *s->buf);
+  s->lo = s->hi = 0;
+  while (nz0 + 8 <= imW) { uint64_t z; memcpy(&z, row + nz0, 8); if (z) break; nz0 += 8; }
+  while (nz0 < imW && !row[nz0]) nz0++;
+  if (nz0 >= imW) return;
+  while (nz1 - 7 > nz0) { uint64_t z; memcpy(&z, row + nz1 - 7, 8); if (z) break; nz1 -= 8; }
+  while (!row[nz1]) nz1--;
+  ulo = ass_flat_cxlb(cx, w, nz0 - 1);
+  uhi = ass_flat_cxlb(cx, w, nz1 + 1);
+  { int in0 = ass_flat_cxlb(cx, w, 0), in1 = ass_flat_cxlb(cx, w, imW - 1);
+    for (u = ulo; u < uhi; u++) {
+      int ix = cx[u];
+      unsigned wx = cw[u], p0 = 0, p1 = 0;
+      if (u >= in0 && u < in1) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        uint16_t pair; memcpy(&pair, row + ix, 2);   /* ix in [0,imW-2]: both samples inside the row */
+        p0 = (unsigned char)pair; p1 = pair >> 8;
+#else
+        p0 = row[ix]; p1 = row[ix + 1];
+#endif
+      } else {
+        if (ix >= 0 && ix < imW) p0 = row[ix];
+        if (ix + 1 >= 0 && ix + 1 < imW) p1 = row[ix + 1];
+      }
+      s->buf[u] = p0 * (256u - wx) + p1 * wx;
+    }
+  }
+  if (uhi > ulo) { s->lo = ulo; s->hi = uhi; }
+}
+/* Per-image tables.  ass_flat_px() computes:
+ *   round((lr*sa + dst*inv) / 255) with a fixed +128 rounding bias.
+ * Since lr/lg/lb/lop are constant for one image, the color*sa+128 term and
+ * the source-alpha -> effective-alpha conversion can be precomputed once. */
+static unsigned assFlatA[256];
+/* For each source alpha, the 16-bit lane bias that makes (t + (t>>8))>>8 produce sa + round(dstA*(255-sa)/256)
+ * directly, so px_tab needs no separate alpha add.  Verified against the scalar formula for all 256*256
+ * (sa, dstA) pairs. */
+static const uint16_t assFlatAlphaBase[256] = {
+  120, 383, 638, 892, 1148, 1401, 1657, 1913, 2168, 2422, 2676, 2933,
+  3187, 3443, 3698, 3946, 4208, 4455, 4717, 4973, 5226, 5482, 5738, 5993,
+  6247, 6501, 6758, 7012, 7268, 7523, 7771, 8033, 8288, 8542, 8790, 9051,
+  9307, 9563, 9818, 10072, 10326, 10583, 10837, 11093, 11348, 11596, 11858, 12113,
+  12367, 12623, 12876, 13125, 13388, 13643, 13897, 14151, 14408, 14662, 14918, 15173,
+  15421, 15683, 15938, 16192, 16448, 16701, 16957, 17213, 17460, 17722, 17976, 18233,
+  18487, 18743, 18998, 19246, 19508, 19763, 20017, 20273, 20526, 20782, 21038, 21293,
+  21547, 21795, 22058, 22312, 22568, 22823, 23071, 23333, 23588, 23842, 24098, 24351,
+  24607, 24863, 25118, 25372, 25626, 25883, 26130, 26393, 26648, 26896, 27158, 27413,
+  27667, 27923, 28176, 28432, 28688, 28943, 29197, 29451, 29708, 29962, 30218, 30465,
+  30721, 30983, 31238, 31492, 31748, 32001, 32257, 32513, 32768, 33022, 33276, 33533,
+  33787, 34043, 34298, 34546, 34800, 35063, 35317, 35573, 35826, 36082, 36338, 36593,
+  36847, 37101, 37358, 37612, 37868, 38123, 38371, 38633, 38888, 39135, 39398, 39651,
+  39907, 40163, 40418, 40672, 40926, 41183, 41437, 41693, 41948, 42196, 42458, 42713,
+  42967, 43223, 43470, 43732, 43988, 44243, 44497, 44751, 45008, 45262, 45518, 45773,
+  46021, 46283, 46538, 46792, 47048, 47301, 47557, 47805, 48068, 48322, 48576, 48833,
+  49087, 49343, 49598, 49846, 50108, 50363, 50617, 50873, 51126, 51382, 51638, 51893,
+  52140, 52401, 52658, 52912, 53168, 53423, 53671, 53933, 54188, 54442, 54698, 54951,
+  55207, 55463, 55718, 55972, 56226, 56475, 56737, 56993, 57248, 57496, 57758, 58013,
+  58267, 58523, 58776, 59032, 59288, 59543, 59797, 60051, 60308, 60562, 60810, 61073,
+  61321, 61583, 61838, 62092, 62348, 62601, 62857, 63113, 63368, 63622, 63876, 64133,
+  64387, 64643, 64898, 65145,
+};
+static uint64_t assFlatBase4[256];   /* 16-bit lanes R,G,B,A: {lr,lg,lb}*sa+128 for RGB, folded alpha bias for A */
+static unsigned assFlatLastR = ~0u, assFlatLastG = ~0u, assFlatLastB = ~0u, assFlatLastA = ~0u;
+/* ass_flat_px_tab(): the four channels blended at once in 16-bit lanes of a uint64_t.  A lane holds at
+ * most 255*(sa+inv)+128 = 65153, so no lane carries into its neighbour and every step is the scalar
+ *   t = base + dst*inv;  out = (t + (t >> 8)) >> 8;  RGB uses base=color*sa+128, A uses assFlatAlphaBase
+ * of the one-channel-at-a-time version, bit for bit. */
+static inline void ass_flat_px_tab(unsigned char *dst, unsigned sa) {
+  const uint64_t M = 0x00FF00FF00FF00FFull;
+  uint64_t x;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  uint32_t v;
+  memcpy(&v, dst, 4);
+  x = v;
+  x = (x | (x << 16)) & 0x0000FFFF0000FFFFull;
+  x = (x | (x << 8)) & M;
+#else
+  x = (uint64_t)dst[0] | ((uint64_t)dst[1] << 16) | ((uint64_t)dst[2] << 32) | ((uint64_t)dst[3] << 48);
+#endif
+  x = x * (255u - sa) + assFlatBase4[sa];
+  x += (x >> 8) & M;
+  x = (x >> 8) & M;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  x = (x | (x >> 8)) & 0x0000FFFF0000FFFFull;
+  x = (x | (x >> 16)) & 0xFFFFFFFFull;
+  v = (uint32_t)x;
+  memcpy(dst, &v, 4);
+#else
+  dst[0] = (unsigned char)x; dst[1] = (unsigned char)(x >> 16);
+  dst[2] = (unsigned char)(x >> 32); dst[3] = (unsigned char)(x >> 48);
+#endif
+}
+/* Store four identical full-coverage RGBA pixels.  Endian-safe because the
+ * uint32_t is built from, and copied back to, the exact byte order used by
+ * the canvas. */
+static inline void ass_flat_full4(unsigned char *dst, unsigned lr, unsigned lg, unsigned lb) {
+  unsigned char p[4]; uint32_t v; uint64_t v2;
+  p[0] = (unsigned char)lr; p[1] = (unsigned char)lg;
+  p[2] = (unsigned char)lb; p[3] = 255u;
+  memcpy(&v, p, 4);
+  v2 = (uint64_t)v | ((uint64_t)v << 32);
+  memcpy(dst, &v2, 8); memcpy(dst + 8, &v2, 8);
+}
 /* Composites the images idx[0..n-1] of `f` (in that order) into one
  * straight-RGBA canvas on the pixel grid of scale `escG` (gW x gH). Images of
  * another scale, or with a sub-pixel offset, are resampled bilinearly (like
@@ -2235,7 +2666,7 @@ static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int 
                                       double gama, double contraste, int *oX, int *oY, int *oW, int *oH) {
   static uint32_t invAlpha[256];
   static int invInit;
-  int k, minX = gW, minY = gH, maxX = 0, maxY = 0, outW, outH;
+  int k, minX = gW, minY = gH, maxX = 0, maxY = 0, outW, outH, rowTrack;
   size_t outBytes;
   unsigned char *rgba;
   for (k = 0; k < n; k++) {
@@ -2266,12 +2697,13 @@ static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int 
       invAlpha[a] = (255u * 65536u + (unsigned)a / 2u) / (unsigned)a;
     invInit = 1;
   }
+  rowTrack = ass_flat_linhas(outH);
   rgba = (unsigned char *)calloc(outBytes, 1);
   if (!rgba) return NULL;
   for (k = 0; k < n; k++) {
     const AssCpuImage *im = &f->images[idx[k]];
     float rf, gf, bf, opf, r, fx, fy;
-    unsigned lr, lg, lb, lop;
+    unsigned lr, lg, lb, lop, v;
     int y;
     ass_cor_final(im, 0, 0, 0, 0, gama, contraste, &rf, &gf, &bf, &opf);
     lr = (unsigned)lroundf(rf * 255.0f);
@@ -2279,22 +2711,38 @@ static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int 
     lb = (unsigned)lroundf(bf * 255.0f);
     lop = (unsigned)lroundf(opf * 255.0f);
     if (lop == 0) continue;
+    if (lr != assFlatLastR || lg != assFlatLastG || lb != assFlatLastB || lop != assFlatLastA) {
+      for (v = 0; v < 256u; v++) {
+        assFlatBase4[v] = (uint64_t)(lr * v + 128u) | ((uint64_t)(lg * v + 128u) << 16) |
+                          ((uint64_t)(lb * v + 128u) << 32) | ((uint64_t)assFlatAlphaBase[v] << 48);
+        if (lop == 255u) assFlatA[v] = v;
+        else { unsigned st = v * lop + 128u; assFlatA[v] = (st + (st >> 8)) >> 8; }
+      }
+      assFlatLastR = lr; assFlatLastG = lg; assFlatLastB = lb; assFlatLastA = lop;
+    }
     if (ass_flat_reamostra(im, escG, &r, &fx, &fy)) {
       /* Bilinear, like the GL_LINEAR quad: destination pixel centre (u+0.5)
        * maps to source (u+0.5-fx)/r - 0.5. Outside the bitmap = 0. */
       int x0 = (int)floorf(fx) - 1, y0 = (int)floorf(fy) - 1;
       int x1 = (int)ceilf(fx + (float)im->w * r) + 1, y1 = (int)ceilf(fy + (float)im->h * r) + 1;
       int w, u;
+      AssFlatRow sl[2];
+      unsigned char *blk; unsigned *hz;
       int *cx; unsigned short *cw;
       if (x0 < minX) x0 = minX;
       if (y0 < minY) y0 = minY;
       if (x1 > maxX) x1 = maxX;
       if (y1 > maxY) y1 = maxY;
       if (x0 >= x1 || y0 >= y1) continue;
+      if (rowTrack) { int yy; for (yy = y0; yy < y1; yy++) { int j = yy - minY; if (x0 < flatLo[j]) flatLo[j] = x0; if (x1 > flatHi[j]) flatHi[j] = x1; } }
       w = x1 - x0;
-      cx = (int *)malloc((size_t)w * sizeof *cx);
-      cw = (unsigned short *)malloc((size_t)w * sizeof *cw);
-      if (!cx || !cw) { free(cx); free(cw); continue; }
+      blk = (unsigned char *)malloc((size_t)w * (3u * sizeof(unsigned) + sizeof(int) + sizeof(unsigned short)));
+      if (!blk) continue;
+      hz = (unsigned *)blk;
+      sl[0].buf = hz + w; sl[1].buf = hz + 2 * (size_t)w;
+      cx = (int *)(hz + 3 * (size_t)w); cw = (unsigned short *)(cx + w);
+      memset(hz, 0, 3u * (size_t)w * sizeof *hz);
+      sl[0].row = sl[1].row = INT_MIN; sl[0].lo = sl[0].hi = sl[1].lo = sl[1].hi = 0;
       for (u = 0; u < w; u++) {
         float sx = ((float)(x0 + u) + 0.5f - fx) / r - 0.5f;
         int ix = (int)floorf(sx);
@@ -2302,28 +2750,45 @@ static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int 
       }
       for (y = y0; y < y1; y++) {
         float sy = ((float)y + 0.5f - fy) / r - 0.5f;
-        int iy = (int)floorf(sy);
+        int iy = (int)floorf(sy), need[2], s, lo, hi;
         unsigned wy = (unsigned)lroundf((sy - (float)iy) * 256.0f);
-        const unsigned char *l0 = iy >= 0 && iy < im->h ? im->bitmap + (size_t)iy * (size_t)im->stride : NULL;
-        const unsigned char *l1 = iy + 1 >= 0 && iy + 1 < im->h ? im->bitmap + (size_t)(iy + 1) * (size_t)im->stride : NULL;
-        unsigned char *dst = rgba + ((size_t)(y - minY) * (size_t)outW + (size_t)(x0 - minX)) * 4u;
-        if (!l0 && !l1) continue;
-        for (u = 0; u < w; u++, dst += 4) {
-          int ix = cx[u];
-          unsigned wx = cw[u], p00 = 0, p01 = 0, p10 = 0, p11 = 0, v, sa;
-          if (ix + 1 < 0 || ix >= im->w) continue;
-          if (ix >= 0) { if (l0) p00 = l0[ix]; if (l1) p10 = l1[ix]; }
-          if (ix + 1 < im->w) { if (l0) p01 = l0[ix + 1]; if (l1) p11 = l1[ix + 1]; }
-          v = ((p00 * (256u - wx) + p01 * wx) * (256u - wy) + (p10 * (256u - wx) + p11 * wx) * wy + 32768u) >> 16;
+        AssFlatRow *hp[2];
+        unsigned char *dst;
+        const unsigned *h0, *h1;
+        need[0] = iy; need[1] = iy + 1;
+        /* The horizontal lerp of a source row does not depend on the output row: compute it once, only
+         * over the columns the row's non-zero bytes can reach, and reuse it as the lower row of one
+         * output row and the upper row of the next. Same integer arithmetic in the same order, and a
+         * zero source gives a zero sum, so the bytes are identical. */
+        for (s = 0; s < 2; s++) {
+          int rs = need[s];
+          if (rs < 0 || rs >= im->h) hp[s] = NULL;
+          else if (sl[0].row == rs) hp[s] = &sl[0];
+          else if (sl[1].row == rs) hp[s] = &sl[1];
+          else {
+            AssFlatRow *vb = sl[0].row != need[1 - s] ? &sl[0] : &sl[1];
+            ass_flat_hrow(vb, im->bitmap + (size_t)rs * (size_t)im->stride, im->w, cx, cw, w);
+            vb->row = rs; hp[s] = vb;
+          }
+        }
+        lo = w; hi = 0;
+        for (s = 0; s < 2; s++)
+          if (hp[s] && hp[s]->hi > hp[s]->lo) { if (hp[s]->lo < lo) lo = hp[s]->lo; if (hp[s]->hi > hi) hi = hp[s]->hi; }
+        if (lo >= hi) continue;
+        h0 = hp[0] ? hp[0]->buf : hz; h1 = hp[1] ? hp[1]->buf : hz;
+        dst = rgba + ((size_t)(y - minY) * (size_t)outW + (size_t)(x0 - minX + lo)) * 4u;
+        for (u = lo; u < hi; u++, dst += 4) {
+          unsigned a0 = h0[u], a1 = h1[u], sa;
+          if (!(a0 | a1)) continue;
+          v = (a0 * (256u - wy) + a1 * wy + 32768u) >> 16;
           if (v == 0u) continue;
-          if (lop == 255u) sa = v;
-          else { unsigned st = v * lop + 128u; sa = (st + (st >> 8)) >> 8; }
+          sa = assFlatA[v];
           if (sa == 0u) continue;
           if (sa == 255u) { dst[0] = (unsigned char)lr; dst[1] = (unsigned char)lg; dst[2] = (unsigned char)lb; dst[3] = 255u; }
-          else ass_flat_px(dst, lr, lg, lb, sa);
+          else ass_flat_px_tab(dst, sa);
         }
       }
-      free(cx); free(cw);
+      free(blk);
       continue;
     }
     { int x0 = im->x < minX ? minX : im->x;
@@ -2331,23 +2796,93 @@ static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int 
       int x1 = im->x + im->w > maxX ? maxX : im->x + im->w;
       int y1 = im->y + im->h > maxY ? maxY : im->y + im->h;
       if (x0 >= x1 || y0 >= y1) continue;
-      for (y = y0; y < y1; y++) {
-        const unsigned char *src = im->bitmap + (size_t)(y - im->y) * (size_t)im->stride + (size_t)(x0 - im->x);
-        unsigned char *dst = rgba + ((size_t)(y - minY) * (size_t)outW + (size_t)(x0 - minX)) * 4u;
-        int w = x1 - x0, x;
-        for (x = 0; x < w; x++, dst += 4) {
-          unsigned sv = src[x], sa;
-          if (sv == 0u) continue;
-          if (lop == 255u) sa = sv;
-          else { unsigned st = sv * lop + 128u; sa = (st + (st >> 8)) >> 8; }
-          if (sa == 0u) continue;
-          if (sa == 255u) { dst[0] = (unsigned char)lr; dst[1] = (unsigned char)lg; dst[2] = (unsigned char)lb; dst[3] = 255u; }
-          else ass_flat_px(dst, lr, lg, lb, sa);
+      if (rowTrack) { int yy; for (yy = y0; yy < y1; yy++) { int j = yy - minY; if (x0 < flatLo[j]) flatLo[j] = x0; if (x1 > flatHi[j]) flatHi[j] = x1; } }
+      if (lop == 255u) {
+        /* Opaque layer: hoist the constant, skip transparent runs four source
+         * bytes at a time, and use the byte-store path for full coverage. */
+        for (y = y0; y < y1; y++) {
+          const unsigned char *src = im->bitmap + (size_t)(y - im->y) * (size_t)im->stride + (size_t)(x0 - im->x);
+          unsigned char *dst = rgba + ((size_t)(y - minY) * (size_t)outW + (size_t)(x0 - minX)) * 4u;
+          int w = x1 - x0, x = 0;
+          while (x + 8 <= w) {
+            uint64_t z8; memcpy(&z8, src + x, 8);
+            if (z8 != 0u) break;
+            x += 8; dst += 32;
+          }
+          while (x + 4 <= w) {
+            uint32_t z; memcpy(&z, src + x, 4);
+            if (z == 0u) { x += 4; dst += 16; continue; }
+            if (z == 0xFFFFFFFFu) { ass_flat_full4(dst, lr, lg, lb); x += 4; dst += 16; continue; }
+            { int j;   /* px_tab() is the identity for sa = 0 and stores (lr,lg,lb,255) for sa = 255, so no per-pixel branch */
+              for (j = 0; j < 4; j++) ass_flat_px_tab(dst + (size_t)j * 4u, src[x + j]);
+            }
+            x += 4; dst += 16;
+          }
+          for (; x < w; x++, dst += 4) {
+            unsigned sv = src[x];
+            if (sv == 255u) { dst[0] = (unsigned char)lr; dst[1] = (unsigned char)lg; dst[2] = (unsigned char)lb; dst[3] = 255u; }
+            else if (sv) ass_flat_px_tab(dst, sv);
+          }
+        }
+      } else {
+        unsigned saFull = assFlatA[255u];
+        for (y = y0; y < y1; y++) {
+          const unsigned char *src = im->bitmap + (size_t)(y - im->y) * (size_t)im->stride + (size_t)(x0 - im->x);
+          unsigned char *dst = rgba + ((size_t)(y - minY) * (size_t)outW + (size_t)(x0 - minX)) * 4u;
+          int w = x1 - x0, x = 0;
+          while (x + 8 <= w) {
+            uint64_t z8; memcpy(&z8, src + x, 8);
+            if (z8 != 0u) break;
+            x += 8; dst += 32;
+          }
+          while (x + 4 <= w) {
+            uint32_t z; memcpy(&z, src + x, 4);
+            if (z == 0u) { x += 4; dst += 16; continue; }
+            if (z == 0xFFFFFFFFu && saFull == 255u) { ass_flat_full4(dst, lr, lg, lb); x += 4; dst += 16; continue; }
+            { int j;
+              for (j = 0; j < 4; j++) ass_flat_px_tab(dst + (size_t)j * 4u, assFlatA[src[x + j]]);
+            }
+            x += 4; dst += 16;
+          }
+          for (; x < w; x++, dst += 4) {
+            unsigned sv = src[x], sa;
+            if (!sv) continue;
+            sa = assFlatA[sv];
+            if (!sa) continue;
+            if (sa == 255u) { dst[0] = (unsigned char)lr; dst[1] = (unsigned char)lg; dst[2] = (unsigned char)lb; dst[3] = 255u; }
+            else ass_flat_px_tab(dst, sa);
+          }
         }
       } }
   }
-  /* Unpremultiply for straight-RGBA GFX_TEXTO blending via reciprocal table. */
-  { size_t p, nPx = (size_t)outW * (size_t)outH;
+  /* Unpremultiply for straight-RGBA GFX_TEXTO blending via reciprocal table.
+   * Only rows (and the span inside them) that actually received a layer can
+   * hold a partial alpha, so untouched canvas is never read back. */
+  if (rowTrack) {
+    int yy;
+    for (yy = 0; yy < outH; yy++) {
+      int xa = flatLo[yy] - minX, xb = flatHi[yy] - minX;
+      unsigned char *px;
+      size_t p;
+      if (xa >= xb) continue;
+      if (xa < 0) xa = 0;
+      if (xb > outW) xb = outW;
+      px = rgba + ((size_t)yy * (size_t)outW + (size_t)xa) * 4u;
+      for (p = (size_t)xa; p < (size_t)xb; p++, px += 4) {
+        unsigned a = px[3];
+        if (a > 0u && a < 255u) {
+          uint32_t inv = invAlpha[a];
+          unsigned r = ((uint32_t)px[0] * inv + 32768u) >> 16;
+          unsigned g = ((uint32_t)px[1] * inv + 32768u) >> 16;
+          unsigned b = ((uint32_t)px[2] * inv + 32768u) >> 16;
+          px[0] = (unsigned char)(r > 255u ? 255u : r);
+          px[1] = (unsigned char)(g > 255u ? 255u : g);
+          px[2] = (unsigned char)(b > 255u ? 255u : b);
+        }
+      }
+    }
+  } else {
+    size_t p, nPx = (size_t)outW * (size_t)outH;
     unsigned char *px = rgba;
     for (p = 0; p < nPx; p++, px += 4) {
       unsigned a = px[3];
@@ -2360,7 +2895,8 @@ static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int 
         px[1] = (unsigned char)(g > 255u ? 255u : g);
         px[2] = (unsigned char)(b > 255u ? 255u : b);
       }
-    } }
+    }
+  }
   *oX = minX; *oY = minY; *oW = outW; *oH = outH;
   return rgba;
 }
@@ -3576,11 +4112,37 @@ static AssMapa incAdd, incDoc;
 static int assLeituraSeq;   // ReadOrder das falas da carga incremental (sob assTrava)
 
 static unsigned long long ass_hash_bytes(const char *p, size_t n) {
-  unsigned long long h = 0xCBF29CE484222325ULL ^ (unsigned long long)n;
+  uint64_t a, c;
   size_t i = 0;
-  for (; i + 4 <= n; i += 4) { uint32_t v; memcpy(&v, p + i, 4); h = (h ^ v) * 0x100000001B3ULL; h ^= h >> 31; }
-  for (; i < n; i++) h = (h ^ (unsigned char)p[i]) * 0x100000001B3ULL;
-  return h ? h : 1;
+  a = UINT64_C(0xCBF29CE484222325) ^ ((uint64_t)n * UINT64_C(0xC2B2AE3D27D4EB4F));
+  c = a ^ UINT64_C(0x9E3779B97F4A7C15);
+  for (; i + 64 <= n; i += 64) {
+    uint64_t v0, v1, v2, v3, v4, v5, v6, v7;
+    memcpy(&v0, p + i, 8);      memcpy(&v1, p + i + 8, 8);
+    memcpy(&v2, p + i + 16, 8); memcpy(&v3, p + i + 24, 8);
+    memcpy(&v4, p + i + 32, 8); memcpy(&v5, p + i + 40, 8);
+    memcpy(&v6, p + i + 48, 8); memcpy(&v7, p + i + 56, 8);
+    a = (a ^ v0 ^ v2 ^ v4 ^ v6) * UINT64_C(0x100000001B3); a ^= a >> 29;
+    c = (c ^ v1 ^ v3 ^ v5 ^ v7) * UINT64_C(0x100000001B3); c ^= c >> 29;
+  }
+  for (; i + 16 <= n; i += 16) {
+    uint64_t v0, v1;
+    memcpy(&v0, p + i, 8);
+    memcpy(&v1, p + i + 8, 8);
+    a = (a ^ v0) * UINT64_C(0x100000001B3);
+    c = (c ^ v1) * UINT64_C(0x100000001B3);
+  }
+  if (i + 8 <= n) {
+    uint64_t v; memcpy(&v, p + i, 8);
+    a = (a ^ v) * UINT64_C(0x100000001B3);
+    i += 8;
+  }
+  for (; i < n; i++) a = (a ^ (uint64_t)(unsigned char)p[i]) * UINT64_C(0x100000001B3);
+  a ^= c;
+  a ^= a >> 33; a *= UINT64_C(0xFF51AFD7ED558CCD);
+  a ^= a >> 29; a *= UINT64_C(0xC4CEB9FE1A85EC53);
+  a ^= a >> 32;
+  return a ? a : 1;
 }
 
 static void mapa_limpar(AssMapa *m) { m->gen++; m->n = 0; if (!m->gen) { m->gen = 1; if (m->g) memset(m->g, 0, (size_t)m->cap * sizeof *m->g); } }
