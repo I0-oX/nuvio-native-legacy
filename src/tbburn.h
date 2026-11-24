@@ -70,6 +70,14 @@ void tbburn_pedir(const char *url, int sub, int audio);
  * 22/11/2026): re-add it by its hash, then ask for the stream again. Results
  * as tbburn_pedir (TBB_ESPERANDO while TorBox registers it). */
 void tbburn_readicionar(const char *url, int sub, int audio);
+/* The TorBox item of `url` when the lookup found it in the account (> 0), else
+ * 0. Log 15 (owner 23/11/2026): no re-add then, it would give the same item. */
+int  tbburn_item_na_conta(const char *url);
+/* The original plays while a re-added file registers: the last two asks
+ * (2 s and 8 s into playback) count from this call (owner 23/11/2026). */
+void tbburn_registro_tocando(void);
+// A JSON true/false: 1 / 0, -1 = absent (createstream's needs_transcoding).
+int  tbburn_json_bool(const char *corpo, const char *chave);
 int  tbburn_resultado(char *m3u8, unsigned n, char *motivo, unsigned mn);
 void tbburn_cancelar(void);
 // TorBox refused the plan on the last request (not Pro there). Owner
@@ -84,7 +92,14 @@ int  tbburn_recusado(void);
 // 1 = burn-in gave up on this source (toast), 2 = Burn in turned Off; either
 // way the ASS tracks are back in Main's list (the caller re-picks Main).
 int  video_tpk_queimada(void);
+// Burn-in wanted for this title but not on (not in TorBox, failed, registering):
+// the track it would burn (menu index), else -1. faixas.c draws it when Main is "none".
+int  video_tpk_queimar_desejada(void);
 int  video_tpk_queimar_voltou(void);
+// 1 = the burned stream is opening (TorBox first hold, request in flight, or a
+// burned stream not playing yet): its own deadline falls back to the original,
+// so app.c's manual-pick watchdog waits (log 21, owner 24/11/2026).
+int  video_tpk_queimar_abrindo(void);
 // Re-added file ready mid-episode (owner 19/11/2026). _aviso, once: 1 = show
 // the "Burn-in ready" notice (OK switches), 2 = switched (Main leaves the
 // burned ASS track). _tardio_ok: OK with the controls hidden while the notice

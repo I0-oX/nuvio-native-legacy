@@ -2308,6 +2308,14 @@ falhou:
   // nada mudava de dono aqui; o que devolvia a faixa a TV era a contagem de
   // falhas, que agora nao inclui as fontes).
   f->fontesFalharam = 1;
+  /* Log 19 (owner 24/11/2026, Kaguya): a track switch stops this thread and
+   * its font download with it (HTTP 0, curl 0). That is not "unavailable":
+   * the next track's thread asks for them again. */
+  if (!minhaVez(f)) {
+    printf("[mkvass] attached fonts: download stopped (track switch or this reader ended; the next reader asks again), not unavailable\n");
+    fflush(stdout);
+    return 0;
+  }
   printf("[mkvass] fontes anexadas indisponiveis: usando as do app (HTTP %d, curl %d, %s)\n",
          f->ultSt, f->ultErro, momentoVideo(f));
   fflush(stdout);

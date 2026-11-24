@@ -196,6 +196,23 @@ typedef struct {
 
 static pthread_mutex_t assTrava = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t assFilaTrava = PTHREAD_MUTEX_INITIALIZER;
+/* GL thread locks (log 14, 23/11/2026): the GL thread must never wait for a
+ * render. Every lock it takes per frame goes through here; a wait is counted
+ * for "[ass] 10s draw: ... lock waits N (max X ms)", so a regression shows. */
+static long glTravaEsperas;          // __atomic
+static long long glTravaMaxUs;       // __atomic
+static void ass_gl_trava(pthread_mutex_t *m) {
+  struct timespec t0, t1;
+  long long us, mx;
+  if (pthread_mutex_trylock(m) == 0) return;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  pthread_mutex_lock(m);
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  us = (long long)(t1.tv_sec - t0.tv_sec) * 1000000LL + (t1.tv_nsec - t0.tv_nsec) / 1000;
+  __atomic_add_fetch(&glTravaEsperas, 1, __ATOMIC_RELAXED);
+  mx = __atomic_load_n(&glTravaMaxUs, __ATOMIC_RELAXED);
+  while (us > mx && !__atomic_compare_exchange_n(&glTravaMaxUs, &mx, us, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
 #ifdef NV_TPK
 static long long assProxInicio = LLONG_MAX;   // worker: proxima fala depois do ultimo render (ms)
 static Uint32 assBordaQuerTick;                // fio GL: ultimo quadro em que o libass desenhou / ia desenhar
@@ -270,7 +287,24 @@ static ASS_Renderer *assRendererB;
 static int layBW, layBH;
 /* Split stats for the "[ass] 10s tv" line (worker only): frames split, the
  * two passes' time, images each pass gave. */
-static struct { long quadros; double msA, msB, maxA, maxB; long imgsA, imgsB; } assDiv;
+static struct { long quadros; double msA, msB, maxA, maxB; long imgsA, imgsB; long umaPassada; } assDiv;
+/* A frame of more images than this is overloaded: flattened even when split
+ * (ass_frame_flatten), and the next one renders in one pass (below). */
+#define ASS_FLAT_SOBRECARGA 300
+/* Overload frames in one pass (log 14, 23/11/2026). Fate/strange Fake's OP
+ * (~1000-1200 active events, 600-1800 images a frame) costs ~240 ms split
+ * (text pass 68-76 + blur pass 97-108 ms) and ~170 ms in one pass at the blur
+ * resolution (what Low auto does). After a frame over ASS_FLAT_SOBRECARGA
+ * images, the next one renders in one pass at the blur resolution; decided
+ * per frame like the flatten, so a frame under the limit puts the next one
+ * back on the normal split. Normal busy scenes (Kaguya: 12-57 images) never
+ * get here. The image count is only known after rendering, hence the last
+ * frame's. */
+static int assUltimoImgs;   // worker writes, __atomic: images of the last published frame (before the flatten)
+static inline void ass_ultimo_imgs_guardar(int n) { __atomic_store_n(&assUltimoImgs, n, __ATOMIC_RELAXED); }
+static inline int ass_uma_passada_sobrecarga(int dividir, double resolB) {
+  return dividir && resolB > 0.0 && __atomic_load_n(&assUltimoImgs, __ATOMIC_RELAXED) > ASS_FLAT_SOBRECARGA;
+}
 static ASS_Track *assTrack;
 static unsigned assTrackMut;   // bumped wherever assTrack's events change (the time index rebuilds)
 static unsigned assTrackGeracao;
@@ -331,7 +365,7 @@ static void ass_diag(const char *s) {
  * MKV's fonts arrived stays on the fallback (Arial) even after they are added.
  * Fallbacks since the last ass_set_fonts + an attached font added since then
  * -> the next load rebuilds the selector (ass_aplicar_fontes_locked), once. */
-static int assFallbacks;      // "Using default font family" since the last ass_set_fonts (atomic)
+static int assFallbacks;      // "Using default font" since the last ass_set_fonts (atomic)
 static int assFonteNovaTarde; // an attached font was added since the last ass_set_fonts (assTrava)
 
 static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) {
@@ -339,7 +373,11 @@ static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) 
   (void)dados;
   vsnprintf(linha, sizeof linha, fmt, args);
   if (strstr(linha, "fontselect:")) assResolucaoFonte++;
-  if (strstr(linha, "Using default font family")) __atomic_add_fetch(&assFallbacks, 1, __ATOMIC_RELAXED);
+  /* libass 0.17.5 (the .tpk's) says "fontselect: Using default font: (...)";
+   * older ones "Using default font family". Log 19 (owner 24/11/2026, Kaguya):
+   * only the old wording was matched, so the late-font rebuild never ran and
+   * fallen-back families stayed on the app's font until the app restarted. */
+  if (strstr(linha, "Using default font")) __atomic_add_fetch(&assFallbacks, 1, __ATOMIC_RELAXED);
   /* So ate MSGL_INFO (4), o mesmo corte do callback padrao do libass (que
    * para em 5). Os niveis 6-7 sao depuracao por quadro e por glifo. */
   if (nivel > 4) return;
@@ -401,6 +439,19 @@ static void ass_fonte_local_publicar_locked(void) {
   pthread_mutex_unlock(&assFonteLocalTrava);
 }
 #endif
+/* Copy of assFonteLocal / assFonteRegistrada for the GL thread (log 14,
+ * 23/11/2026): assrender_fonte_local_ativa took assTrava every UI frame and
+ * waited for the whole libass render (150-430 ms on Fate). Written under
+ * assTrava after every change; its own lock is never held during a render. */
+static pthread_mutex_t assFonteEspelhoTrava = PTHREAD_MUTEX_INITIALIZER;
+static char assFonteEspelho[768];
+static int assFonteEspelhoOk;
+static void ass_fonte_espelho_locked(void) {
+  pthread_mutex_lock(&assFonteEspelhoTrava);
+  snprintf(assFonteEspelho, sizeof assFonteEspelho, "%s", assFonteLocal);
+  assFonteEspelhoOk = assFonteRegistrada;
+  pthread_mutex_unlock(&assFonteEspelhoTrava);
+}
 /* O lote e a entrega atual, e a entrega cabe no bloco de anexos aceito: o
  * mesmo teto de bytes (ASSPERF_FONTES_TETO) e o mesmo numero de fontes
  * (MKVASS_FONTES_MAX). Assim um lote nunca fica parcial por tamanho. */
@@ -535,6 +586,7 @@ static void ass_fontes_reconstruir_locked(const unsigned char *selecionada, size
 #ifdef NV_WEBOS
   ass_fonte_local_publicar_locked();
 #endif
+  ass_fonte_espelho_locked();
   ass_carregar_pasta_locked();
   assNFontesVistas = 0; assBytesFontesVistas = 0;
   for (int i = 0; i < assNFontesAtuais; i++) {
@@ -649,6 +701,7 @@ static void ass_iniciar_locked(int sistema) {
     if (b) { ass_add_font(assLib, assFonteLocal, (const char *)b, (int)n); assFonteRegistrada = 1; }
     else assFonteRegistrada = 0;
     free(b);
+    ass_fonte_espelho_locked();
   }
 #ifdef NV_WEBOS
   ass_fonte_local_publicar_locked();
@@ -2319,7 +2372,6 @@ static unsigned char *ass_flat_compor(const AssCpuFrame *f, const int *idx, int 
  * pass's grid (ass_flat_compor already does that, exact positions). Normal
  * busy scenes (Kaguya ED: 12-57 images) never reach it, so their per-image
  * path is unchanged. */
-#define ASS_FLAT_SOBRECARGA 300
 static long assSobreQuadros, assSobreImgsSoma, assSobreImgsMax;   // [ass] cost (under assFilaTrava when read)
 static long assTcFora;   // images left out: every texture slot was drawn in the last frames (GL thread, __atomic)
 static int ass_frame_flatten(AssCpuFrame *f, int frameW, int frameH, int corAtiva) {
@@ -2531,7 +2583,7 @@ static void *ass_worker_loop(void *unused) {
     int dividir = 0, lwB = 0, lhB = 0;
     ASS_Image *imagesB = NULL;
     double msPassA = 0.0, msPassB = 0.0;
-    int divOk = 0;
+    int divOk = 0, umaPassada = 0;
     long divImgsA = 0, divImgsB = 0;
     float ox, oy;
     int lw, lh, vw, vh, plainValid, k;
@@ -2666,6 +2718,16 @@ static void *ass_worker_loop(void *unused) {
         }
       }
       cu[CU_SCAN] += ass_ms_desde(&cuT);
+#if ASS_DIVIDIR && ASS_NOVO
+      /* The last frame was overloaded: this one in one pass, at the blur
+       * resolution (see assUltimoImgs). */
+      if (ass_uma_passada_sobrecarga(dividir, resolB) && ass_estilo_autor_locked()) {
+        resol = resolB; dividir = 0; resolB = 0.0; umaPassada = 1;
+        lw = (int)lround((double)baseW * k * resol); lh = (int)lround((double)baseH * k * resol);
+        if (lw < 16) lw = 16;
+        if (lh < 16) lh = 16;
+      }
+#endif
       ass_aplicar_assperf_locked();
       if (lw != layAplW || lh != layAplH) {
         ass_set_frame_size(assRenderer, lw, lh);
@@ -2876,6 +2938,7 @@ static void *ass_worker_loop(void *unused) {
       clock_gettime(CLOCK_MONOTONIC, &cuT);
       frame.esc = frame.esc > 0.01f ? frame.esc : (float)((double)k * resol);
       imgsAntes = frame.count;
+      ass_ultimo_imgs_guardar(imgsAntes);
       flatR = ass_frame_flatten(&frame, lw, lh, __atomic_load_n(&assCorAtiva, __ATOMIC_ACQUIRE));
       cu[CU_FLAT] = ass_ms_desde(&cuT);
       clock_gettime(CLOCK_MONOTONIC, &cuT);
@@ -2900,6 +2963,7 @@ static void *ass_worker_loop(void *unused) {
         if (msPassB > assDiv.maxB) assDiv.maxB = msPassB;
         assDiv.imgsA += divImgsA; assDiv.imgsB += divImgsB;
       }
+      if (umaPassada && pronto) assDiv.umaPassada++;
       if (us > assMed.renderMaxUs) assMed.renderMaxUs = us;
       if (igual) assMed.iguais++;
 #if ASS_NOVO
@@ -4013,6 +4077,7 @@ int assrender_fonte_local_transacao(const char *caminho, int (*confirmar)(void *
     snprintf(assFonteLocal, sizeof assFonteLocal, "%s", caminho);
     if (assLib) ass_fontes_reconstruir_locked(b, n);
     else assFonteRegistrada = 0;
+    ass_fonte_espelho_locked();
   }
 #ifdef NV_WEBOS
   ass_fonte_local_publicar_locked();
@@ -4028,15 +4093,18 @@ int assrender_fonte_local_transacao(const char *caminho, int (*confirmar)(void *
   }
   return 1;
 }
+/* Every UI frame (player.c): the copy, never assTrava (see assFonteEspelho). */
 int assrender_fonte_local_ativa(const char *caminho) {
+  int ativa;
 #ifdef NV_WEBOS
   pthread_mutex_lock(&assFonteLocalTrava);
-  int ativa = caminho && caminho[0] && assFonteLocalPubAtiva && !strcmp(assFonteLocalPub, caminho);
+  ativa = caminho && caminho[0] && assFonteLocalPubAtiva && !strcmp(assFonteLocalPub, caminho);
   pthread_mutex_unlock(&assFonteLocalTrava);
 #else
-  pthread_mutex_lock(&assTrava);
-  int ativa = caminho && caminho[0] && assFonteRegistrada && !strcmp(assFonteLocal, caminho);
-  pthread_mutex_unlock(&assTrava);
+  if (!caminho || !caminho[0]) return 0;
+  ass_gl_trava(&assFonteEspelhoTrava);
+  ativa = assFonteEspelhoOk && !strcmp(assFonteEspelho, caminho);
+  pthread_mutex_unlock(&assFonteEspelhoTrava);
 #endif
   return ativa;
 }
@@ -4054,7 +4122,7 @@ int assrender_texto_simples(void) {
 
 void assrender_definir_texto_estilo(const PlainAssStyle *style) {
   if (!style) return;
-  pthread_mutex_lock(&assFilaTrava);
+  ass_gl_trava(&assFilaTrava);
   if (!plainPedValido || memcmp(style, &plainPed, sizeof *style)) {
     plainPed = *style; plainPedValido = 1;
     if (!ASS_NOVO || __atomic_load_n(&assTextoSimples, __ATOMIC_ACQUIRE)) {
@@ -4079,6 +4147,7 @@ int assrender_atualizar(const char *corpo, size_t tamanho, unsigned geracao) {
 void assrender_limpar(void) {
   ass_inc_esquecer();
   assperf_escala_reset();   // Render resolution Auto: a new track starts at 100 %
+  ass_ultimo_imgs_guardar(0);   // a new track starts on the normal split
   pthread_mutex_lock(&assTrava);
   ass_authored_styles_free();
   ass_rigid_free_ctx_locked();
@@ -4179,8 +4248,10 @@ int assrender_adicionar_fonte(const char *nome, const void *dados, size_t tamanh
 #ifdef NV_WEBOS
         ass_fonte_local_publicar_locked();
 #endif
-        assNFontesVistas = 0; assBytesFontesVistas = 0;
+        ass_fonte_espelho_locked();
         ass_carregar_pasta_locked();
+        ass_aplicar_fontes_locked();
+        assNFontesVistas = 0; assBytesFontesVistas = 0;
         /* Repoe o lote da entrega atual (como ass_fontes_reconstruir_locked):
          * senao as fontes ja somadas nela sumem e o estilo cai na fonte do app. */
         for (int i = 0; i < assNFontesAtuais; i++) {
@@ -4223,7 +4294,7 @@ void assrender_definir_layout(float x, float y, float w, float h,
   if (videoW < 2 || videoH < 2) { videoW = lw; videoH = lh; }
   if (!(escalaFonte > 0.1 && escalaFonte < 4.0)) escalaFonte = 1.0;
   k = layPxUnid;
-  pthread_mutex_lock(&assFilaTrava);
+  ass_gl_trava(&assFilaTrava);
   if (lw != layPedW || lh != layPedH || videoW != layPedVW || videoH != layPedVH ||
       k != layPedK || escalaFonte != layPedEscala || fabsf(x - layPedX) > 0.5f || fabsf(y - layPedY) > 0.5f) {
     layPedX = x; layPedY = y; layPedW = lw; layPedH = lh;
@@ -4238,7 +4309,7 @@ void assrender_definir_layout(float x, float y, float w, float h,
 }
 
 void assrender_definir_cor(int enabled, int r, int g, int b) {
-  pthread_mutex_lock(&assFilaTrava);
+  ass_gl_trava(&assFilaTrava);
   assCorAtiva = !!enabled;
   assCorR = r < 0 ? 0 : r > 255 ? 255 : r;
   assCorG = g < 0 ? 0 : g > 255 ? 255 : g;
@@ -4247,7 +4318,7 @@ void assrender_definir_cor(int enabled, int r, int g, int b) {
 }
 
 void assrender_aplicar_invalidacao(void) {
-  pthread_mutex_lock(&assFilaTrava);
+  ass_gl_trava(&assFilaTrava);
   if (assTexResetar) {
     assTexResetar = 0;
     ass_apagar_texturas_locked();
@@ -4437,11 +4508,13 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
         double bl = assperf_escala_blur();
         assperf_modo_texto(modo, (int)sizeof modo);
         printf("[ass] 10s res: mode=%s | now text %d%% blur %s%d%% | "
-               "split frames=%ld sharp avg=%.1fms max=%.1fms (%ld imgs) soft avg=%.1fms max=%.1fms (%ld imgs)\n",
+               "split frames=%ld sharp avg=%.1fms max=%.1fms (%ld imgs) soft avg=%.1fms max=%.1fms (%ld imgs) | "
+               "split skipped (overload) %ld of %ld frames\n",
                modo, (int)(assperf_escala() * 100.0 + 0.5),
                bl > 0.0 ? "" : "=", (int)((bl > 0.0 ? bl : assperf_escala()) * 100.0 + 0.5),
                assDiv.quadros, assDiv.quadros ? assDiv.msA / assDiv.quadros : 0.0, assDiv.maxA, assDiv.imgsA,
-               assDiv.quadros ? assDiv.msB / assDiv.quadros : 0.0, assDiv.maxB, assDiv.imgsB);
+               assDiv.quadros ? assDiv.msB / assDiv.quadros : 0.0, assDiv.maxB, assDiv.imgsB,
+               assDiv.umaPassada, assDiv.quadros + assDiv.umaPassada);
         memset(&assDiv, 0, sizeof assDiv); }
       /* Signs & Songs matching (asssinais.h): how the lines were decided, and
        * the dialogue settings they protect the signs from. */
@@ -4462,8 +4535,10 @@ static void ass_medir_locked(long long agora, int temTexto, long long inicioMax)
         MkvfixMedidas md;
         mkvfix_medidas(&md);
         if (dt > 0.0) {
-          printf("[ass] 10s draw: GL frames with subtitles=%ld (new %ld) avg=%.2fms max=%.1fms\n",
-                 gn, gnov, gn ? us / 1000.0 / gn : 0.0, mx / 1000.0);
+          long esp = __atomic_exchange_n(&glTravaEsperas, 0, __ATOMIC_RELAXED);
+          long long espMx = __atomic_exchange_n(&glTravaMaxUs, 0, __ATOMIC_RELAXED);
+          printf("[ass] 10s draw: GL frames with subtitles=%ld (new %ld) avg=%.2fms max=%.1fms | lock waits %ld (max %.1f ms)\n",
+                 gn, gnov, gn ? us / 1000.0 / gn : 0.0, mx / 1000.0, esp, espMx / 1000.0);
           printf("[mkvfix] 10s: mode=%s | to the TV %.2f MB/s (%.1f Mbit/s), blocked sending %lldms, waiting on the CDN %lldms, "
                  "connections=%d | Void: %ld block(s) %.1fKB, resync %ld, lost %ld, undecided %ld\n",
                  mkvfix_modo_ass_atual() == MKVFIX_ASS_ANULAR ? "Void" : "Hidden",
@@ -4581,7 +4656,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
         if (pico > 40.0 && q < 3) q = 3; }
       pedido = ass_na_grade(agora + llround((double)q * 1000.0 / fps));
     } else pedido = ass_na_grade(agora + adiante); }
-  pthread_mutex_lock(&assFilaTrava);
+  ass_gl_trava(&assFilaTrava);
   if (!assWorkerCriado) { pthread_mutex_unlock(&assFilaTrava); return 0; }
   { /* An option changed (Subtitles > Style): the frame on
      * screen may be valid for seconds (render only on changes); ask again. */
@@ -4752,7 +4827,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
     if (assMainValido) n = ass_main_desenhar(x, y, alpha, corAtiva, cr, cg, cb, quadroNovo);
     temTexto = assMainValido && n > 0;
     inicioMax = assMainValido ? assMain.inicioMax : -1;
-    pthread_mutex_lock(&assFilaTrava);
+    ass_gl_trava(&assFilaTrava);
     ass_medir_locked(agora, temTexto, inicioMax);
     pthread_mutex_unlock(&assFilaTrava);
   }
@@ -4764,7 +4839,7 @@ int assrender_desenhar(double posSeg, int atrasoMs, float alpha,
    * 200 ms. tpkborda_quadro decide (com 1 s de folga para desligar). */
   { int fila = 0, k;
     long long prox = __atomic_load_n(&assProxInicio, __ATOMIC_RELAXED);
-    pthread_mutex_lock(&assFilaTrava);
+    ass_gl_trava(&assFilaTrava);
     for (k = 0; k < assFilaN && !fila; k++) fila = assFila[k].count > 0;
     pthread_mutex_unlock(&assFilaTrava);
     if (n > 0 || fila || (prox != LLONG_MAX && prox >= agora && prox - agora <= 200)) {

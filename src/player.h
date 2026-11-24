@@ -10,6 +10,7 @@ int player_modo_canal_usado(void);
 // preferencias do player, mas quem o define e o modulo de video.
 #include "video.h"
 #include "catalogo.h"
+#include "farolerro.h"
 #ifdef NV_ANDROID
 #include "streams.h"
 #endif
@@ -69,6 +70,17 @@ int  player_pediu_ajustes_fonte(void);
 // Ha quantos ms o player abriu (o Play); 0 fechado. Para o log do inicio (#202).
 Uint32 player_aberto_ha_ms(void);
 int player_pediu_proximo(int *temporada, int *episodio);
+// Filme em partes: -1 = Parte anterior, +1 = Proxima parte (botoes do OSD); 0 = nada.
+int player_pediu_parte(void);
+// 1 enquanto a posicao devolvida pelo pipeline nao reflete um pedido de busca
+// pendente (arrasto na barra ou seek sem confirmacao). app.c (parteNoFim).
+int player_buscando(void);
+// Barra do filme inteiro: o avanco caiu em outra parte (o indice na lista e o ponto nela).
+int player_pediu_salto_parte(int *k, double *pos);
+// Busca pedida pelo app (o ponto escolhido numa parte recem-aberta).
+void player_buscar_para(double s);
+// O fim do arquivo que toca e do app (a fileira de arquivos da fonte): sem pos-reproducao.
+void player_fim_proprio(int sim);
 int player_transporte_pedido_pendente(void);
 // Libera somente uma troca ja consumida que o roteador cancelou; preserva a fila.
 void player_episodio_pedido_liberar(void);
@@ -122,6 +134,25 @@ void player_toast(const char *texto, unsigned ms);
 // pilula da ilha abre com ele (plrilha.h). player_toast e o informativo.
 void player_toast_ex(const char *texto, unsigned ms, const char *icone, int ambar);
 void player_limpar_erro_fonte(void);   // fonte "morta" que voltou a entregar
+// FAROL (6B): o erro nativo ja normalizado do ultimo player_erro_fonte
+// (mesma idade da falha de resolverregra_falha_recente). `*foiDebrid` diz se a
+// fonte que falhou era de um servico de cache. 0 = nenhum registrado.
+int  player_ultimo_erro_farol(FarolErro *out, int *foiDebrid);
+// FAROL (6D): identidade da tentativa em que player_ultimo_erro_farol foi gravado (0 = nenhuma).
+uint64_t player_ultimo_erro_tentativa(void);
+// FAROL (6C): identidade do add-on da fonte que falhou (0 se desconhecida) e o
+// ultimo titulo VOD aberto nesta sessao de perfil (para reabrir no ponto apos
+// reconectar o debrid pelo Resolver com o player fechado).
+uint64_t player_ultimo_addon_farol(void);
+int  player_ultimo_titulo(CatItem *out, int *temporada, int *episodio);
+// FAROL (6B/6C/6D): "Player externo" do cartao do Resolver — a fonte que acabou
+// de falhar sai para o player externo instalado (Android; nas outras 0),
+// inclusive com o player fechado (Resolver aberto por Ajustes), desde que a
+// fonte e o titulo guardados ainda pertencam a tentativa diagnosticada.
+int  player_externo_disponivel(void);
+int  player_externo_disponivel_tentativa(uint64_t tentativa);
+int  player_abrir_externo(void);
+int  player_abrir_externo_tentativa(uint64_t tentativa);
 // A tentativa do automatico de fontes ("Fonte 2 de 3" na ilha ao abrir):
 // `n` = qual (1 = a primeira), `max` = o teto. 0, 0 = nenhuma.
 void player_definir_tentativa(int n, int max);

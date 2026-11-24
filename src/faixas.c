@@ -716,6 +716,7 @@ static int extEscolher(int linha) {
   return 1;
 }
 
+static int nEst(void);
 static int nLinhas(int col) {
   if (col == FX_COL_ESTILO) return nEst();
   if (col == 0) return video_n_audio() + nExt() + nTba();
@@ -1539,6 +1540,23 @@ static void legendaAutomatica(Uint32 agora) {
     // A PESSOA DESLIGOU A MAO (neste titulo, ou por ultimo): nenhuma, mesmo
     // que o arquivo marque uma faixa como padrao.
     if (!strcasecmp(pref, "none") && (origem == LEGMEM_DE_TITULO || origem == LEGMEM_DE_ULTIMA)) {
+#ifdef NV_TPK
+      /* Log 13 (23/11/2026): "none" was saved because burn-in carries the
+       * signs. Burn-in is wanted but not on (the file is not in TorBox, it
+       * failed): Nuvio draws the track it would burn (Signs & Songs / forced).
+       * The saved "none" stays; if burn-in comes on later, the burned-picture
+       * rule takes Main off this embedded ASS track. */
+      { int q = video_tpk_queimar_desejada();
+        if (q >= 0 && q < nEmb) {
+          printf("[legenda] automatica: burn-in wanted but not on: drawing the track it would burn (faixa %d)\n", q);
+          fflush(stdout);
+          if (q == legendaAtiva() &&
+              !(legOverlay != q && vaiOverlay(video_legenda(q)) && video_legenda_ordinal_mkv(q) >= 0))
+            return;
+          escolherLegenda(q);
+          return;
+        } }
+#endif
       printf("[legenda] automatica: ultima escolha 'none' -> nenhuma\n");
       fflush(stdout);
       if (legendaAtiva() >= 0) escolherLegenda(-1);

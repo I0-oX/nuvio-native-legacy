@@ -227,6 +227,14 @@ int      video_tpk_reabrindo(void);
 // every new one. Same transform as video_pos. 2.1 owns the name
 // video_pos_amostra(Uint64*); this stamped reading is a separate API.
 int      video_pos_amostra_carimbo(double *pos, double *carimbo, double *incerteza, unsigned *seq);
+// 2.1's name for the same stamped host reading on the .tpk, kept for its
+// seek/ack callers: video_tpk.c implements it and the function above forwards.
+int      video_pos_carimbada(double *pos, double *carimbo, double *incerteza, unsigned *seq);
+// The player's own clock. Equals video_pos except on TorBox's burned stream,
+// where video_pos is the burned picture's time (owner 24/11/2026, log 19) and
+// this stays on TorBox's playlist like video_pos_amostra; the subtitle clock
+// is fed with these and adds tbr_correcao itself (player.c posLegenda).
+double   video_pos_bruta(void);
 // 1 from a seek until the first real reading of where the TV landed (the TV
 // seeks to a keyframe, seconds before the target). Subtitles hide meanwhile.
 int      video_pos_incerta(void);
@@ -268,6 +276,9 @@ const char *video_tv_modelo(void);
 #ifdef NV_ANDROID
 // Codigo do erro atual apenas se o renderer e de VIDEO; 0 para audio/desconhecido.
 int video_erro_decoder_codigo(void);
+// 1 quando a falha atual foi identificada por geracao da abertura (nativeErro
+// ou erro interno sincrono da sessao); 0 para evento legado sem geracao.
+int video_erro_identificado(void);
 #endif
 // 1 depois que o decoder se anunciou (videoInfo do uMS) na fonte atual. Existe
 // para o watchdog de canal separar "abre devagar" de "chega dado e o decoder
@@ -343,6 +354,11 @@ int    video_terminou(void); // 1 depois do fim de fluxo (endOfStream) da fonte 
 int    video_conflito_recurso(void);
 #ifdef NV_TPK
 void   video_tpk_log_host(const char *linha);   // tpk.c repassa cada linha do host
+// A reconexao em curso e do arquivo sendo preparado pelo mkvfix (seek durante
+// a sonda, reabertura pelo servidor local), nao queda de rede: outro aviso.
+int    video_tpk_reconexao_preparo(void);
+// Ha quanto tempo (ms) um seek espera a sonda do mkvfix; 0 = nenhum segurado.
+unsigned video_tpk_seek_segurado_ms(void);
 int    video_tpk_codec_recusado(const char *codecId);  // #313: DTS/TrueHD/MLP, que a Samsung nao toca
 // Zoom/recorte do plano de video (ROI), experimental (#241): liga/desliga em
 // execucao; o padrao e NV_TPK_ZOOM_ROI (0). Loga "[trailer] tpk zoom ROI: ...".

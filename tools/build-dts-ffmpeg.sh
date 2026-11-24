@@ -2,16 +2,19 @@
 export TMPDIR="${TMPDIR:-/tmp}"
 TMPDIR="${TMPDIR%/}"
 # Minimal static LGPL FFmpeg: DTS decode, stereo AAC and AC3 5.1 encode (no GPL/nonfree). No FFmpeg
-# network/TLS protocols or software video decoders enter the TV executable.
+# network/TLS protocols enter the TV executable. Software video decoders only for the seek-bar
+# thumbnails made on the TV (src/miniatura*.c): h264/hevc decoders (keyframes only, one at a
+# time), the mjpeg encoder (320x180 tiles) and the mpegts demuxer (.m2ts / .ts remuxes) — the
+# .tpk and webOS targets below.
 #
 # NUVIO_DTS_TARGET picks the build:
 #   webos (default) cross build with the LG SDK (tools/Dockerfile).
 #                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c, webOS):
 #                   the TrueHD/MLP decoders (converted to AC3/AAC), the mpegts/adts
 #                   muxers and the mp4 muxer (FLAC and Opus go as is in fMP4, as on
-#                   the .tpk), the opus parser (laced Opus, see tpk below). Still no
-#                   mpegts demuxer: TorBox's segments are stripped by hand
-#                   (tba_ts_sem_audio), never demuxed.
+#                   the .tpk), the opus parser (laced Opus, see tpk below). The mpegts
+#                   demuxer reads donor audio and .m2ts/.ts thumbnails; TorBox's own
+#                   segments are still stripped by hand (tba_ts_sem_audio), never demuxed.
 #   tpk             Samsung .tpk (tools/tpk.sh). ARM32 build inside the selected SDK
 #                   container, from the source tree tpk.sh already downloaded and checked on the
 #                   host (NUVIO_DTS_SRC; the container has no curl). Adds what the Samsung loopback
@@ -23,8 +26,9 @@ TMPDIR="${TMPDIR%/}"
 #                   the rest (without it 15 of 100 packets per 2 s: no sound).
 #                   Original audio with TorBox burn-in (src/dts/tbaudio_tpk.c): the adts
 #                   muxer (the MPEG-TS muxer wraps copied AAC with it). FLAC and Opus go
-#                   as is in fMP4, so no FLAC/Opus decoder. No mpegts demuxer: TorBox's
-#                   segments are stripped by hand (tba_ts_sem_audio), never demuxed.
+#                   as is in fMP4, so no FLAC/Opus decoder. TorBox's segments are
+#                   stripped by hand (tba_ts_sem_audio), never demuxed; the mpegts
+#                   demuxer here is only for seek-bar thumbnail remuxes.
 set -eu
 VERSION=7.1.5
 SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
@@ -32,6 +36,7 @@ PREFIX=${NUVIO_DTS_ROOT:-/opt/nuvio-dts}
 BUILD=${NUVIO_DTS_BUILD:-${TMPDIR:-/tmp}/nuvio-dts-build}
 TARGET=${NUVIO_DTS_TARGET:-webos}
 DECODERS=dca,dvdsub,pgssub,ass,ssa,subrip,movtext,webvtt
+ENCODERS=aac,ac3
 MUXERS=
 PARSERS=dca,h264,hevc,aac
 DEMUXERS=matroska,mov
@@ -40,6 +45,10 @@ if [ "$TARGET" = webos ]; then
   DECODERS=$DECODERS,aac,ac3,eac3,truehd,mlp,opus,flac,vorbis,mp3
   PARSERS=$PARSERS,ac3,mlp,opus,flac,vorbis,mpegaudio
   DEMUXERS=$DEMUXERS,avi,mpegts
+  # Seek-bar thumbnails made on the TV (src/miniatura*.c): h264/hevc decoders
+  # and the mjpeg encoder; the mpegts demuxer is already there for donor audio.
+  DECODERS=$DECODERS,h264,hevc
+  ENCODERS=$ENCODERS,mjpeg
 fi
 BSFS=h264_mp4toannexb,hevc_mp4toannexb,dca_core
 # Donor AAC from MPEG-TS arrives ADTS-framed; the TV is told raw AAC.
@@ -53,8 +62,11 @@ mkdir -p "$BUILD" "$PREFIX"
 if [ "$TARGET" = tpk ]; then
   SRC=${NUVIO_DTS_SRC:?tools/tpk.sh passes the extracted ffmpeg-$VERSION source}
   CC=${CC:-gcc}
-  DECODERS=$DECODERS,truehd,mlp
+  DECODERS=$DECODERS,truehd,mlp,h264,hevc
+  ENCODERS=$ENCODERS,mjpeg
   MUXERS=mpegts,matroska,mp4,adts
+  # mpegts demuxer: thumbnails for Blu-ray remuxes kept as .m2ts / .ts.
+  DEMUXERS=$DEMUXERS,mpegts
   PARSERS=$PARSERS,mlp,ac3,opus
   BSFS=$BSFS,truehd_core
   # Out of tree: the source stays clean in the host cache.
@@ -100,7 +112,7 @@ fi
   --disable-programs --disable-doc --disable-debug --disable-network \
   --disable-avdevice --disable-avfilter --disable-swscale --disable-postproc \
   --enable-avcodec --enable-avformat --enable-avutil --enable-swresample \
-  --enable-decoder="$DECODERS" --enable-encoder=aac,ac3 \
+  --enable-decoder="$DECODERS" --enable-encoder="$ENCODERS" \
   --enable-demuxer="$DEMUXERS" --enable-parser="$PARSERS" \
   --enable-bsf="$BSFS" \
   --extra-cflags="${CFLAGS:--O2}"

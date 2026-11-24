@@ -27,6 +27,7 @@
 #include "mapa.h"
 #include "posterprov.h"
 #include "catalogo.h"
+#include "idbase.h"
 #include "descoberta.h"
 #include "tex_cache.h"
 #include "gfx.h"
@@ -86,6 +87,8 @@ typedef struct {
   MapaObra obra;
   long pessoa;            // o fio pelo qual ela chegou aqui (mapa_vizinhos_pedir)
   char tema[48];
+  int  temaEhGenero;      // o fio em tema[] e genero local, nao palavra-chave
+  long generoId;          // id TMDB do genero quando veio do selo/grupo
   char via[64];           // o "porque" do passo, para a trilha
   int linha, coluna;      // onde estava o foco QUANDO desceu daqui
 #ifdef NV_TOUCH_UI
@@ -99,6 +102,8 @@ static float tempo, entrada, focoT;
 
 static MapaClimas climas;
 static unsigned climasRev;
+static unsigned climasCat;            // cat_revisao() da copia: os catIndice
+                                      // guardados so valem nela (CATREV)
 static int clFoco;                    // posicao na grade
 static int clAberto = -1;             // posicao do clima aberto (climas.c[])
 static int caLinha, caCol[2];         // clima aberto: 0 = descobrir, 1 = vistos
@@ -256,14 +261,51 @@ static void metaObra(const MapaObra *o, char *dst, size_t n) {
   else snprintf(dst, n, "%s%s", tipo, nota);
 }
 
-static int indicePorImdb(const char *imdb) {
-  int i, n = cat_n();
-  if (!imdb || !imdb[0]) return -1;
-  for (i = 0; i < n; i++) {
-    const CatItem *ci = cat_item(i);
-    if (ci && !strcmp(ci->imdb, imdb)) return i;
+// O item `ci` e a obra `o`? A identidade e tipo + IMDb pelo id base — a serie
+// do card de Continuar e "tt123:2:1" no catalogo e "tt123" aqui (CATREVB);
+// sem IMDb, TMDB — campo proprio ou o id "tmdb:N"; sem nenhum dos dois, o id
+// cru do item (kitsu:, servidor pessoal). Sem id nenhum resta titulo + tipo,
+// o mesmo criterio de antes (aceita o homonimo como ultimo recurso).
+static int obraConfere(const CatItem *ci, const MapaObra *o) {
+  if (!ci || strcmp(ci->tipo, o->tipo)) return 0;
+  if (o->imdb[0]) return idbase_mesmo(ci->imdb, o->imdb);
+  if (o->tmdb) {
+    if (ci->tmdb == o->tmdb) return 1;
+    if (!strncmp(ci->imdb, "tmdb:", 5) && atol(ci->imdb + 5) == o->tmdb) return 1;
+    return 0;
   }
+  if (o->catId[0]) return idbase_mesmo(ci->imdb, o->catId);
+  return !strcmp(ci->titulo, o->titulo);
+}
+
+// Posicao da obra no catalogo ATUAL, pela identidade; -1 quando ela nao esta.
+static int indiceDaObra(const MapaObra *o) {
+  int i, n;
+  if (!o->imdb[0] && !o->tmdb && !o->catId[0]) return -1;
+  n = cat_n();
+  for (i = 0; i < n; i++) if (obraConfere(cat_item(i), o)) return i;
   return -1;
+}
+
+// catIndice ainda aponta para esta obra? Leitura so com limites + identidade:
+// cat_item() aplica modulo no indice fora da faixa, e depois de uma troca de
+// catalogo o mesmo numero pode ser outra obra.
+static int catIndiceConfere(const MapaObra *o) {
+  return o->catIndice >= 0 && o->catIndice < cat_n() &&
+         obraConfere(cat_item(o->catIndice), o);
+}
+
+// Catalogo trocado entre quadros: refaz cada catIndice copiado pela
+// identidade da obra antes de usar (CATREV). Barato por quadro — so a
+// comparacao da revisao; o passe inteiro so roda uma vez por troca.
+static void climasRevisar(void) {
+  unsigned rev = cat_revisao();
+  int m, i;
+  if (rev == climasCat) return;
+  for (m = 0; m < climas.n; m++)
+    for (i = 0; i < climas.c[m].n; i++)
+      climas.c[m].itens[i].catIndice = indiceDaObra(&climas.c[m].itens[i]);
+  climasCat = rev;
 }
 
 // A pagina do titulo: do catalogo quando ele esta la; senao a descoberta busca
@@ -271,11 +313,8 @@ static int indicePorImdb(const char *imdb) {
 static void abrirPagina(const MapaObra *o) {
   int idx;
   if (!o || !o->titulo[0]) return;
-  idx = indicePorImdb(o->imdb);
-  if (idx < 0 && o->catIndice >= 0) {
-    const CatItem *ci = cat_item(o->catIndice);
-    if (ci && !strcmp(ci->titulo, o->titulo)) idx = o->catIndice;
-  }
+  idx = indiceDaObra(o);
+  if (idx < 0 && catIndiceConfere(o)) idx = o->catIndice;
   if (idx >= 0) { pediuIndice = idx; pediuAbrir = 1; return; }
   if (desc_titulo_buscando()) return;
   if (o->tmdb > 0) desc_pedir_titulo_tmdb(o->tmdb, !strcmp(o->tipo, "series") ? "tv" : "movie");
@@ -343,7 +382,7 @@ static void pedirPasso(const ExPasso *p) {
   }
   toqueVzAtiva = toqueVzUltima = -1;
 #endif
-  mapa_vizinhos_pedir(&p->obra, p->pessoa, p->tema);
+  mapa_vizinhos_pedir_genero(&p->obra, p->pessoa, p->tema, p->temaEhGenero, p->generoId);
 }
 
 // Os grupos que existem neste retrato, na ordem da tela.
@@ -389,12 +428,21 @@ static float vizRolarFileira(int grupo, int linha, float largura) {
 }
 #endif
 
-static void comecarToca(const MapaObra *o, int org) {
+static void comecarToca(const MapaObra *o, int org, const char *temaFio,
+                        int temaEhGenero, long generoId) {
 #ifdef NV_TOUCH_UI
   if (modo == MODO_CLIMA) caPagina = exPagina;
 #endif
   memset(trilha, 0, sizeof trilha);
   trilha[0].obra = *o;
+  // Fio do selo do Farol: kw de tema ou nome local de genero — a toca ja
+  // desce filtrada, igual a um salto por grupo da vizinhanca (FAROL46B). O
+  // tipo viaja junto: o Mapa nao troca genero por palavra-chave (FAROL46C).
+  if ((temaFio && temaFio[0]) || (temaEhGenero && generoId > 0)) {
+    if (temaFio && temaFio[0]) snprintf(trilha[0].tema, sizeof trilha[0].tema, "%s", temaFio);
+    trilha[0].temaEhGenero = temaEhGenero;
+    trilha[0].generoId = temaEhGenero ? generoId : 0;
+  }
   nTrilha = 1;
   origem = org;
   vizRev = 0;           // copia mesmo quando o titulo ja era o publicado
@@ -455,7 +503,11 @@ static void descer(const MapaVizGrupo *g, const MapaVizItem *it) {
   p->obra = it->obra;
   if (g->tipo == MAPA_GR_PESSOA) p->pessoa = g->ref;
   else if (g->tipo == MAPA_GR_TEMA) snprintf(p->tema, sizeof p->tema, "%s", g->kw);
-  else if (g->tipo == MAPA_GR_GENERO) snprintf(p->tema, sizeof p->tema, "%s", g->sub);
+  else if (g->tipo == MAPA_GR_GENERO) {
+    snprintf(p->tema, sizeof p->tema, "%s", g->sub);
+    p->temaEhGenero = 1;
+    p->generoId = g->ref;
+  }
   switch (g->tipo) {
     case MAPA_GR_PESSOA: case MAPA_GR_AMIGOS: snprintf(p->via, sizeof p->via, "%s", it->motivo); break;
     case MAPA_GR_EPOCA:  snprintf(p->via, sizeof p->via, i18n("anos %s"), g->sub); break;
@@ -488,9 +540,12 @@ static void subir(void) {
   // O primeiro degrau: de volta a origem.
   nTrilha = 0;
   if (origem == ORIGEM_CLIMA && clAberto >= 0) { trocarModo(MODO_CLIMA); return; }
-  if (origem == ORIGEM_DETALHE && trilha[0].obra.catIndice >= 0) {
-    pediuIndice = trilha[0].obra.catIndice;
-    pediuAbrir = 1;
+  if (origem == ORIGEM_DETALHE) {
+    // O catIndice da trilha pode ser de outra revisao do catalogo: identidade
+    // primeiro, o numero guardado so entra conferido (CATREV).
+    int idx = indiceDaObra(&trilha[0].obra);
+    if (idx < 0 && catIndiceConfere(&trilha[0].obra)) idx = trilha[0].obra.catIndice;
+    if (idx >= 0) { pediuIndice = idx; pediuAbrir = 1; }
   }
   trocarModo(MODO_CLIMAS);
 }
@@ -526,7 +581,7 @@ static void eventoClima(SDL_Keycode k) {
   else if (k == SDLK_DOWN)  { if (caLinha == 0 && caN[1] > 0) caLinha = 1; }
   else if (ehOk(k)) {
     const MapaObra *o = climaObraFocada();
-    if (o) comecarToca(o, ORIGEM_CLIMA);
+    if (o) comecarToca(o, ORIGEM_CLIMA, NULL, 0, 0);
     return;
   }
   else return;
@@ -1429,21 +1484,45 @@ void explorar_iniciar(void) {
   tempo = 0.0f;
   memset(&climas, 0, sizeof climas);
   climasRev = 0;
+  climasCat = 0;
   clFoco = 0;
   clAberto = -1;
   nTrilha = 0;
   origem = ORIGEM_NADA;
   trocarModo(MODO_CLIMAS);
   mapa_climas_pedir();
-  mapa_climas_copiar(&climas, &climasRev);
+  if (mapa_climas_copiar(&climas, &climasRev)) climasCat = cat_revisao();
 }
 
 void explorar_abrir_titulo(const MapaObra *o) {
   pediuRelogio = 0;
   if (!o || !o->titulo[0]) return;
+  if (climas.n == 0) {
+    mapa_climas_pedir();
+    if (mapa_climas_copiar(&climas, &climasRev)) climasCat = cat_revisao();
+  }
+  clAberto = -1;
+  comecarToca(o, ORIGEM_DETALHE, NULL, 0, 0);
+}
+
+// Variante do selo do Farol: a toca comeca no titulo ja descendo pelo fio
+// (tema ou genero) que o selo carrega — `temaEhGenero` separa os dois e vai
+// ate a publicacao remota do Mapa. Fio vazio sem id cai no caminho generico.
+void explorar_abrir_titulo_selo(const MapaObra *o, const char *temaFio, int temaEhGenero,
+                                long generoId) {
+  if ((!temaFio || !temaFio[0]) && (!temaEhGenero || generoId <= 0)) {
+    explorar_abrir_titulo(o);
+    return;
+  }
+  pediuRelogio = 0;
+  if (!o || !o->titulo[0]) return;
   if (climas.n == 0) { mapa_climas_pedir(); mapa_climas_copiar(&climas, &climasRev); }
   clAberto = -1;
-  comecarToca(o, ORIGEM_DETALHE);
+  comecarToca(o, ORIGEM_DETALHE, temaFio, temaEhGenero, generoId);
+}
+
+void explorar_abrir_titulo_fio(const MapaObra *o, const char *temaFio, int temaEhGenero) {
+  explorar_abrir_titulo_selo(o, temaFio, temaEhGenero, 0);
 }
 
 void explorar_encerrar(void) {
@@ -1455,7 +1534,12 @@ void explorar_encerrar(void) {
 void explorar_atualizar(float dt, Uint32 agora) {
   int reduzida = ajustes_animacoes_reduzidas();
   (void)agora;
+  // A copia PRIMEIRO: catalogo trocado dispara climaFundir dentro dela, que ja
+  // re-resolve e republica os indices — a copia chega conferida. climasRevisar
+  // depois so varre de novo se a revisao andou na fresta (CATREVB: antes eram
+  // duas varreduras itens x catalogo no quadro seguinte a cada troca).
   if (mapa_climas_copiar(&climas, &climasRev)) {
+    climasCat = cat_revisao();
 #ifdef NV_TOUCH_UI
     if(telefoneui_ativo() && modo!=MODO_VIZ)
       ponteiro_cancelar_alvo(modo==MODO_CLIMAS ? ponteiroClimas : ponteiroClima);
@@ -1464,6 +1548,7 @@ void explorar_atualizar(float dt, Uint32 agora) {
     // O /discover do clima aberto chegou: as fileiras crescem, o foco fica.
     climaSeparar();
   }
+  climasRevisar();
   if (mapa_vizinhos_copiar(&viz, &vizRev)) {
 #ifdef NV_TOUCH_UI
     if(telefoneui_ativo() && modo==MODO_VIZ)ponteiro_cancelar_alvo(ponteiroViz);

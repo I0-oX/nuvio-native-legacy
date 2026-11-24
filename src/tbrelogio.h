@@ -55,6 +55,17 @@ int    tbr_falta(unsigned *ger, int *seg);
  * it (Landing). 0 when burn-in is off or the PTS it needs is not known yet. */
 double tbr_correcao(void);
 
+/* THE BURNED PICTURE'S TIME FOR THE WHOLE APP (owner 24/11/2026, log 19,
+ * Horimiya: "use the real segment length instead of relying on TorBox; it's OK
+ * if it's known only during playback"). TorBox's segments are not 5.000 s
+ * (120 frames = 5.005 s at 23.976, or cut at keyframes 0-1.9 s past the 5 s
+ * mark, and the cut changes when TorBox's encoder restarts at a seek), so the
+ * real lengths are only known from the segments the player fetched. The app
+ * works in picture time (video_pos = player's clock + tbr_correcao); a seek to
+ * picture time `t` goes to this playlist time: inside a segment whose own and
+ * next first PTS are known, exact; else `t` minus the current correction. */
+double tbr_para_playlist(double t);
+
 /* ---- pure ------------------------------------------------------------------ */
 /* Segment of `t` in `n` segments of lengths `dur` (-1 when n == 0; the last
  * one past the end, 0 before the start). */

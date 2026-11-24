@@ -89,6 +89,13 @@ typedef struct {
    * Requires https://. Combine with tls_pessoal for a self-signed server: the
    * pin is still enforced with peer verification off. Never log it. */
   const char *pino_publico;
+  /* 1 = pedido de sonda ativa (farolsonda.h): o corpo conta, nao fica
+   * guardado — max_bytes vale de teto, nao de buffer. Num redirect seguido o
+   * corpo do 3xx e descartado ate 16 KiB sem gastar o teto e o Content-Length
+   * do salto nao e conferido; pedidos comuns seguem guardando o corpo do salto
+   * ate o teto, como antes. No WGT so este marcador habilita o transporte
+   * fetch; sem ele vale o REDE_INDISPONIVEL de sempre. */
+  int sonda;
 } RedePedido;
 #define REDE_CURL_PINO_DIFERENTE 90 /* CURLE_SSL_PINNEDPUBKEYNOTMATCH */
 /* 1 = the string is a well-formed pin list for pino_publico. */
@@ -334,6 +341,10 @@ int rede_url_final_cab(const char *url, int segundos, const char *const *cabecal
 int rede_url_final_tipo(const char *url, int segundos, const char *const *cabecalhos,
                         char *dst, unsigned tam, int *status,
                         char *mime, unsigned mimeTam, long *corpo);
+// The libcurl code of THIS thread's last rede_url_final_tipo (28 = timed out,
+// the watchdog included; 0 = transport ok). Browser builds: always 0. Lets the
+// source check tell "no answer in time" from a real failure (log 13).
+int rede_url_final_curl(void);
 
 #ifdef NV_VIDAA
 // VARIANTE PARA A VIDAA. rede_url_final so devolve 0/1, e na VIDAA um 0 pode

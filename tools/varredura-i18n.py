@@ -280,6 +280,7 @@ def contexto(txt, i):
 # "nao sei o que e": sem esta lista a ferramenta nao pode virar teste, e sem
 # virar teste ela nao impede a proxima regressao.
 IGNORAR = {
+    "real-debrid.com", "alldebrid.com",
     # mkv.c: chapter language code aliases used for matching, not labels.
     "pt,por,pob", "de,ger,deu", "da,dan",
     # Guide v5 internal screen routes, never rendered as labels.
@@ -298,6 +299,9 @@ IGNORAR = {
     # farolficha.c: rotulos de tipo que encabecam `genero` do CatItem —
     # vocabulario de casamento (hash do nome), nunca texto desenhado.
     "Película", "Seriál", "Émission de TV",
+    # farolperfil.c: chaves do protocolo "[tv] k=v" do log TPK e enum JSON
+    # (cliente.addons.tipos) — vocabulario de parser/schema, nunca tela.
+    " tela=", "tela=", "catalogo",
     # Remote schema enum, persistence names and trailer diagnostic gate.
     '"POSTER"', "conta-pend-%s.txt", "perfil-infantil.txt", "escolha-perfil",
     # Room protocol values and notice IDs; UI resolves these to translated text.

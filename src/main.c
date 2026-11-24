@@ -528,7 +528,7 @@ static void teclasInjetadas(void (*entregar)(const SDL_Event *)) {
       continue;
     }
     if (dp && !strncmp(linha,"input:",6)) {
-      SDL_Event text={0};text.type=SDL_TEXTINPUT;snprintf(text.text.text,sizeof text.text.text,"%s",dp+1);SDL_PushEvent(&text);continue;
+      SDL_Event text={0};text.type=SDL_TEXTINPUT;text.text.windowID=SDL_GetWindowID(SDL_GL_GetCurrentWindow());snprintf(text.text.text,sizeof text.text.text,"%s",dp+1);SDL_PushEvent(&text);continue;
     }
 #endif
     if (dp && !strncmp(linha, "janela:", 7)) {
@@ -2435,7 +2435,6 @@ int main(int argc, char **argv) {
 #ifdef NV_TPK
     queda_vigiar();             // .tpk: our SIGSEGV handler stays on top (one syscall; queda.h)
 #endif
-    NV_PASSO("tex_bombear");
     tex_bombear(3);
     fBomb = NV_DT(t0);
     fUplN = tex_upl_n; fUplB = tex_upl_bytes;

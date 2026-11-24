@@ -53,6 +53,9 @@ int debrid_tb_adicionar(const char *h) {
   adicoes++; snprintf(adicionouHash, sizeof adicionouHash, "%s", h ? h : "");
   return adicionarDa;
 }
+/* Owner 24/11/2026 (logs 19-20): a stuck item is removed before the re-add. */
+static int apagou, apagouItem, apagarDa = 1;
+int debrid_tb_apagar(int item) { apagou++; apagouItem = item; return apagarDa; }
 /* The cached-first lookup with the item's hash: item 500, hash "ab..". */
 static int hashAchaItem = 500;
 int partes_achar_exato_hash(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, int *un, char *c, unsigned n, char hi[41]) {
@@ -139,6 +142,11 @@ int main(void) {
   CHECA(tbburn_achar_m3u8("ok https://h.tb-cdn.io/s/1/playlist.m3u8\n", out, sizeof out) &&
         !strcmp(out, "https://h.tb-cdn.io/s/1/playlist.m3u8"));
   CHECA(!tbburn_achar_m3u8(NULL, out, sizeof out));
+  // Log 15 (owner 23/11/2026): createstream's flags in the "stream ready" line.
+  { const char *j = "{\"success\":true,\"data\":{\"is_transcoding\":false, \"needs_transcoding\" : true,\"region\":\"wnam\"}}";
+    CHECA(tbburn_json_bool(j, "needs_transcoding") == 1 && tbburn_json_bool(j, "is_transcoding") == 0);
+    CHECA(tbburn_json_bool(j, "region") == -1 && tbburn_json_bool(j, "nope") == -1 && tbburn_json_bool(NULL, "x") == -1);
+    CHECA(tbburn_json_bool("{\"needs_transcoding\":\"true\"}", "needs_transcoding") == -1); }
   CHECA(!tbburn_achar_m3u8("{\"data\":null}", out, sizeof out));
   // Unterminated string: no crash, nothing found.
   CHECA(!tbburn_achar_m3u8("{\"u\":\"https://a.io/p.m3u8", out, sizeof out));
@@ -399,7 +407,9 @@ int main(void) {
       frescoItem = 900; frescoAPartir = 4; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 1;
       tbburn_fonte("https://s/12s", "", "B.S01E12.mkv", 2012);
       tbburn_pedir("https://s/12s", 1, 1);
-      CHECA(fimPedido() == TBB_PRONTO && viuEsperando && adicoes == 1 && frescoN == 1 &&
+      // Owner 23/11/2026: the first ask is right after the add; TorBox
+      // answering there means no wait at all (no TBB_ESPERANDO).
+      CHECA(fimPedido() == TBB_PRONTO && !viuEsperando && adicoes == 1 && frescoN == 1 &&
             strstr(ultRota, "createstream?id=900&file_id=7") != NULL);
       CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
       // The next request for that file uses item 900 at once.
@@ -412,7 +422,30 @@ int main(void) {
     frescoItem = 0; frescoAPartir = 0; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 0; sumido900 = 1;
     tbburn_fonte("https://s/12t", "", "B.S01E13.mkv", 2013);
     tbburn_pedir("https://s/12t", 1, 1);
-    CHECA(fimPedido() == TBB_FALHOU && viuEsperando && adicoes == 1 && frescoN == 1 && criacoes >= 3);
+    // Owner 23/11/2026: four asks at most (now, 2 s, then 2 s and 8 s into
+    // playback): createstream for item 500 once + 4 for torrent 900.
+    CHECA(fimPedido() == TBB_FALHOU && viuEsperando && adicoes == 1 && frescoN == 1 && criacoes == 5);
+    // s2) The original opens only after the 2nd ask: TBB_ESPERANDO comes with
+    //     item 500's createstream + 2 asks done; TorBox ready later -> PRONTO.
+    { int c0;
+      frescoN = criacoes = adicoes = 0; sumido900 = 1; pronto900 = 0;
+      tbburn_fonte("https://s/12t2", "", "B.S01E13.mkv", 2013);
+      tbburn_pedir("https://s/12t2", 1, 1);
+      for (int k = 0; k < 400 && tbburn_resultado(NULL, 0, NULL, 0) != TBB_ESPERANDO; k++) dormir(1);
+      c0 = criacoes;
+      CHECA(tbburn_resultado(NULL, 0, NULL, 0) == TBB_ESPERANDO && c0 == 3);
+      pronto900 = 1;
+      tbburn_registro_tocando();
+      CHECA(fimPedido() == TBB_PRONTO && criacoes == 4 && adicoes == 1); }
+    // s3) Log 17 (E03, owner 23/11/2026): ITEM_NOT_FOUND with the item's hash
+    //     known from the lookup: re-added at once, no list download.
+    { partesAchar = 1; snprintf(partesHashItem, sizeof partesHashItem, "%s", "3434343434343434343434343434343434343434");
+      frescoN = criacoes = adicoes = 0; sumido900 = 0; pronto900 = 1;
+      tbburn_fonte("https://s/12t3", "", "B.S01E21.mkv", 2021);
+      tbburn_pedir("https://s/12t3", 1, 1);
+      CHECA(fimPedido() == TBB_PRONTO && frescoN == 0 && adicoes == 1 &&
+            !strcmp(adicionouHash, "3434343434343434343434343434343434343434") && strstr(ultRota, "createstream?id=900&") != NULL);
+      partesHashItem[0] = 0; }
     sumido900 = 0; pronto900 = 1;
     // t) Cancelled while waiting (another pick / the player left): stops asking.
     { int n0;
@@ -458,12 +491,38 @@ int main(void) {
       tbburn_fonte("https://s/12z", "", "B.S01E19.mkv", 2019);
       tbburn_pedir("https://s/12z", 1, 1);
       CHECA(fimPedido() == TBB_FALHOU);   // found (item 500), no playlist in these stubs
+      // Log 15: the item is in the account: video_tpk.c doesn't re-add then.
+      CHECA(tbburn_item_na_conta("https://s/12z") == 500 && !tbburn_item_na_conta("https://s/other") && !tbburn_item_na_conta(""));
       frescoItem = 900; frescoAPartir = 1; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 1;
+      apagou = apagouItem = 0;
       tbburn_readicionar("https://s/12z", 1, 1);
-      CHECA(fimPedido() == TBB_PRONTO && viuEsperando && adicoes == 1 &&
+      CHECA(fimPedido() == TBB_PRONTO && apagou == 1 && apagouItem == 500 &&   // removed first, then re-added
+            !viuEsperando && adicoes == 1 &&
             !strcmp(adicionouHash, "1212121212121212121212121212121212121212") && strstr(ultRota, "createstream?id=900&") != NULL);
       CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
-      pronto900 = 0; frescoItem = 0; frescoAPartir = 0; partesHashItem[0] = 0; } }
+      CHECA(tbburn_item_na_conta("https://s/12z") == 900);   // the re-added torrent is the one known now
+      pronto900 = 0; frescoItem = 0; frescoAPartir = 0; partesHashItem[0] = 0; }
+    // x2) Log 15 (owner 23/11/2026): no video, and adding the hash gives the
+    //     same item back (153924165 there): no minutes of asking, at once.
+    { char mt[96];
+      partesAchar = 1; snprintf(partesHashItem, sizeof partesHashItem, "%s", "3434343434343434343434343434343434343434");
+      tbburn_fonte("https://s/12w", "", "B.S01E20.mkv", 2020);
+      tbburn_pedir("https://s/12w", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU && tbburn_item_na_conta("https://s/12w") == 500);
+      frescoN = criacoes = adicoes = 0; adicionarDa = 500; apagou = 0; apagarDa = 0;
+      tbburn_readicionar("https://s/12w", 1, 1);
+      // The delete was refused: the add gives the same item back -> stops at once.
+      CHECA(fimPedido() == TBB_FALHOU && apagou == 1 && adicoes == 1 && criacoes == 0 && frescoN == 0);
+      CHECA(tbburn_resultado(NULL, 0, mt, sizeof mt) == TBB_FALHOU && strstr(mt, "still in your TorBox") != NULL);
+      // Once per file per playback: a second no-video for the same file doesn't remove again.
+      tbburn_pedir("https://s/12w", 1, 1); (void)fimPedido();
+      apagou = 0; tbburn_readicionar("https://s/12w", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU && apagou == 0);
+      // A new playback may remove it again.
+      tbburn_sessao_nova(); tbburn_pedir("https://s/12w", 1, 1); (void)fimPedido();
+      apagou = 0; tbburn_readicionar("https://s/12w", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU && apagou == 1);
+      apagarDa = 1; partesHashItem[0] = 0; } }
 
   // y) Log 12 (Married Couple CRUCiBLE): a Burn in press while the re-added
   //    file is registering joins the wait: no second add, no list lookup, no

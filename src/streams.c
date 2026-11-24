@@ -1981,10 +1981,12 @@ static void soltarConf(void *u) {
 __attribute__((unused))
 #endif
 static int resolverUrl(const char *url, const char *cabecalhos, int segundos,
-                        char *fim, unsigned tam, char *mime, unsigned mimeTam, long *corpo) {
+                        char *fim, unsigned tam, char *mime, unsigned mimeTam, long *corpo,
+                        int *httpFim) {
   const char *vetor[8];
   char copia[512];
   int nc = 0, http = 0;
+  if (httpFim) *httpFim = 0;
 #ifdef __EMSCRIPTEN__
   int restrito = 0;
 #endif
@@ -2003,6 +2005,7 @@ static int resolverUrl(const char *url, const char *cabecalhos, int segundos,
   // O tipo e o tamanho do corpo vem da MESMA sonda: nenhum pedido a mais.
   if (rede_url_final_tipo(url, segundos, nc ? vetor : NULL, fim, tam, &http,
                           mime, mimeTam, corpo)) return 1;
+  if (httpFim) *httpFim = http;
 #if defined(__EMSCRIPTEN__) && !defined(NV_VIDAA)
   // Fetch status 0 is inconclusive: CORS/TLS in the browser does not prove
   // that the native AVPlay transport cannot open the original URL.
@@ -2026,6 +2029,7 @@ static int resolverUrl(const char *url, const char *cabecalhos, int segundos,
 }
 
 void (*stream_cdn_lembrar)(const char *orig, const char *final, const char *cabecalhos, uint64_t sessao);
+int (*stream_cdn_resolvido)(const char *orig, char *host, unsigned hostTam);
 void (*stream_foco_demorado)(const Stream *s);
 
 static int verificarUma(int i, Conferencia *c) {
@@ -2095,12 +2099,29 @@ static int verificarUma(int i, Conferencia *c) {
 #ifdef NV_VIDAA
     int r = rede_url_final_vidaa(url, 10, fim, sizeof fim);
 #else
-    int r = resolverUrl(url, cab, 10, fim, sizeof fim, mime, sizeof mime, &corpo);
+    int httpFim = 0;
+    int r = resolverUrl(url, cab, 10, fim, sizeof fim, mime, sizeof mime, &corpo, &httpFim);
+    int curlFim = r ? 0 : rede_url_final_curl();
 #endif
     if (r < 0) {
       printf("[fonte] %d sem confirmacao (bloqueio de rede na vidaa); presumindo viva\n", i);
       ok = 1;
     } else if (!r) {
+#ifndef NV_VIDAA
+      /* Log 13 (23/11/2026): the check's own request got no answer in time,
+       * but this source already works: the player has it open (tocar enquanto
+       * confere) or its link resolved to a CDN in this session. Keep it. */
+      char cdnHost[256] = "";
+      int resolvido = stream_cdn_resolvido && stream_cdn_resolvido(url, cdnHost, sizeof cdnHost);
+      if (fa_manter_sem_resposta(curlFim, httpFim, i == c->antecipada, resolvido)) {
+        if (resolvido)
+          printf("[fonte] %d check timed out but the link already resolved (CDN %s): kept\n", i, cdnHost);
+        else
+          printf("[fonte] %d check timed out but the player has it open: kept\n", i);
+        fflush(stdout);
+        ok = 1;
+      } else
+#endif
       printf("[fonte] %d nao resolveu\n", i);
     } else if (naovideo_mime(mime, fim, corpo)) {
       // Linha de aviso do addon (doacao, Discord, "indisponivel"): a URL leva a
@@ -2136,7 +2157,7 @@ int stream_url_serve(const char *url, const char *cabecalhos) {
   char fim[NV_MEDIA_URL_MAX], mime[96];
   long corpo = -1;
   if (!url || !*url) return 0;
-  if (!resolverUrl(url, cabecalhos, 5, fim, sizeof fim, mime, sizeof mime, &corpo)) return 0;
+  if (!resolverUrl(url, cabecalhos, 5, fim, sizeof fim, mime, sizeof mime, &corpo, NULL)) return 0;
   if (naovideo_mime(mime, fim, corpo)) return 0;
   if (enderecoDeAviso(fim)) return 0;
   if (playlistVazia(fim, cabecalhos)) return 0;
@@ -2674,7 +2695,7 @@ int stream_falha_verificar(FonteFalhaSessao *sessao, unsigned geracao, int escol
     } else if (s->infoHash[0]) {
       ok = debrid_resolver_cache(s->infoHash, s->fileIdx, resolvida, sizeof resolvida, &fora);
     } else if (s->url[0] && resolverUrl(s->url, s->cabecalhos, 10, fim, sizeof fim,
-                                      mime, sizeof mime, &corpo) &&
+                                      mime, sizeof mime, &corpo, NULL) &&
                !naovideo_mime(mime, fim, corpo) && !enderecoDeAviso(fim) &&
                !playlistVazia(fim, s->cabecalhos)) {
       snprintf(resolvida, sizeof resolvida, "%s", fim); ok = 1;
@@ -2982,7 +3003,7 @@ int stream_preparo_resolver(StreamPreparo *p, int (*cancelado)(void *), void *ct
       ok = debrid_resolver_servico_cache(r.servico, s->infoHash, s->fileIdx, url, sizeof url, &fora);
       if (!debrid_servico_disponivel(r.servico)) fontefalha_provedor_recusado(p->politica, r.servico);
     } else if (s->infoHash[0]) ok = debrid_resolver_cache(s->infoHash, s->fileIdx, url, sizeof url, &fora);
-    else if (s->url[0] && resolverUrl(s->url, s->cabecalhos, 10, fim, sizeof fim, mime, sizeof mime, &corpo) &&
+    else if (s->url[0] && resolverUrl(s->url, s->cabecalhos, 10, fim, sizeof fim, mime, sizeof mime, &corpo, NULL) &&
              !naovideo_mime(mime, fim, corpo) && !enderecoDeAviso(fim) && !playlistVazia(fim, s->cabecalhos)) {
       snprintf(url, sizeof url, "%s", fim); ok = 1;
     }
@@ -3022,7 +3043,7 @@ int stream_preparo_renovar(StreamPreparo *p, int indice, int (*cancelado)(void *
     ok = servico >= 0
        ? debrid_resolver_servico_cache(servico, s->infoHash, s->fileIdx, url, sizeof url, &fora)
        : debrid_resolver_cache(s->infoHash, s->fileIdx, url, sizeof url, &fora);
-  } else if (s->url[0] && resolverUrl(s->url, s->cabecalhos, 10, fim, sizeof fim, mime, sizeof mime, &corpo) &&
+  } else if (s->url[0] && resolverUrl(s->url, s->cabecalhos, 10, fim, sizeof fim, mime, sizeof mime, &corpo, NULL) &&
              !naovideo_mime(mime, fim, corpo) && !enderecoDeAviso(fim) && !playlistVazia(fim, s->cabecalhos)) {
     snprintf(url, sizeof url, "%s", fim); ok = 1;
   }
@@ -5069,6 +5090,22 @@ static const char *arquivoVisivel(const Stream *s, float aw) {
   int dw = txt_largura(TXT_PG_FIM, d);
   return dw > 0 && dw <= w ? "" : arq;
 }
+// Na folha desktop a descricao nunca aparece na linha, entao a deduplicacao
+// da TV nao vale: o arquivo inteiro e sempre desenhado. Controles <32 viram
+// espaco, como a TV faz na copia que desenha. Fora do desktop o nome e o
+// arquivoVisivel de sempre — #if, nao folhaDesktop(), para o objeto da TV
+// sair byte a byte igual.
+#if defined(NV_DESKTOP_UI) && defined(__APPLE__)
+static const char *arquivoFolha(const Stream *s, float aw) {
+  (void)aw;
+  static char d[2048];
+  snprintf(d, sizeof d, "%s", arquivoDa(s));
+  for (char *p = d; *p; p++) if ((unsigned char)*p < 32) *p = ' ';
+  return d;
+}
+#else
+#define arquivoFolha(s, aw) arquivoVisivel((s), (aw))
+#endif
 
 // A linha de marca e so para o que esta tocando e para a escolha anterior.
 // A fonte que o automatico tocaria ganha o selo "Melhor para esta TV" ao
@@ -5104,7 +5141,7 @@ static float alturaLinha(int i, int automatica, float abertura) {
     // agora quebra em varias linhas (UTF-8), entao a altura pergunta ao
     // layout — que reusa o cache do desenho, mesma largura tr-tx.
     float aw = FOLHA_W-FOLHA_PAD_E-FOLHA_PAD_D-2*FOLHA_TXT;
-    float extra = (abertura>0 ? arquivoAltura(arquivoVisivel(&lista[i],aw),aw) : 0) + FOLHA_FIT_H * fitLinhas(i);
+    float extra = (abertura>0 ? arquivoAltura(arquivoFolha(&lista[i],aw),aw) : 0) + FOLHA_FIT_H * fitLinhas(i);
     h += extra * abertura;
   }
   return h + linhasFaixas(&lista[i]) * FOLHA_FAIXA_H;

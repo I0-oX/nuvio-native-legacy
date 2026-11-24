@@ -149,7 +149,7 @@ jobs:
         run: |
           set -o pipefail
           ok=1
-          docker run --rm --platform linux/arm -v "$NUVIO_TPK_CACHE:/w" -v "$PWD:/work" -w /work \
+          docker run --rm --platform linux/arm/v5 -v "$NUVIO_TPK_CACHE:/w" -v "$PWD:/work" -w /work \
             nuvio-tpk-sdk sh tools/tpk/libass-nv/verify.sh 2>&1 | tee verify-libass.log || ok=0
           {
             echo '### libass NEON engine + blur threads (qemu-arm)'
@@ -164,9 +164,9 @@ jobs:
             exit 1
           fi
 
-      # Test release of the libass build (branch libass-engine-rewrite-tizen
-      # only): a prerelease tagged with the commit, shared by the .tpk and .ipk
-      # workflows (whichever finishes first creates it, the other adds files).
+      # Test release of the libass build (libass test branches): a prerelease
+      # tagged with the commit, shared by the .tpk and .ipk workflows
+      # (whichever finishes first creates it, the other adds files).
       - name: Publish libass test prerelease
         if: github.ref == 'refs/heads/libass-engine-rewrite-tizen' || github.ref == 'refs/heads/feat/libass-lg' || github.ref == 'refs/heads/libass-lg-2.1'
         env:
