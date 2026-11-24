@@ -94,6 +94,10 @@ int  video_tpk_queimada(void);
 // the track it would burn (menu index), else -1. faixas.c draws it when Main is "none".
 int  video_tpk_queimar_desejada(void);
 int  video_tpk_queimar_voltou(void);
+// 1 = the burned stream is opening (TorBox first hold, request in flight, or a
+// burned stream not playing yet): its own deadline falls back to the original,
+// so app.c's manual-pick watchdog waits (log 21, owner 24/11/2026).
+int  video_tpk_queimar_abrindo(void);
 // Re-added file ready mid-episode (owner 19/11/2026). _aviso, once: 1 = show
 // the "Burn-in ready" notice (OK switches), 2 = switched (Main leaves the
 // burned ASS track). _tardio_ok: OK with the controls hidden while the notice

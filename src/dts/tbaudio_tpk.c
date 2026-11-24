@@ -616,6 +616,7 @@ typedef struct Sessao {
   DtsEngine *eng;
   AVFormatContext *ic;
   double origV0, durArq;
+  int64_t tamArq;                      // the original file's size (10 s reader line)
   int sBusca;                          // the stream seeks go through (the one the index covers)
   Faixa fx[TBA_FAIXAS]; int nfx;
   // generator (gm); TorBox video downloads (vm)
@@ -891,6 +892,7 @@ static int prepOriginal(Sessao *s, int ordPedido) {
   }
   for (i = 0; i < (int)ic->nb_streams; i++) ic->streams[i]->discard = AVDISCARD_ALL;
   s->durArq = ic->duration > 0 ? ic->duration / (double)AV_TIME_BASE : 0;
+  { int64_t t = ic->pb ? avio_size(ic->pb) : -1; s->tamArq = t > 0 ? t : 0; }
   s->origV0 = 0;
   if (v >= 0 && ic->streams[v]->start_time != AV_NOPTS_VALUE)
     s->origV0 = ic->streams[v]->start_time * av_q2d(ic->streams[v]->time_base);
@@ -1802,6 +1804,28 @@ void tba_log(void) {
            "dropped %ld, failed %ld%s%s\n", modoNome(s->modo), s->pronto ? "ready" : s->falhou ? "failed" : "preparing",
            s->nSeg, s->bytes / 1024, s->nSeg ? s->msLer / s->nSeg : 0.0, s->nVid, s->nVid ? s->msVid / s->nVid : 0.0,
            s->nLarg, s->nErro, s->ultErro[0] ? "; last: " : "", s->ultErro);
+    /* Log 21 (owner 24/11/2026): audio segments took 2-4 s per 2 s after a
+     * seek, so the TV ran out of sound. The original file's reader: what it
+     * downloaded in these 10 s against what the file needs per second, how
+     * long the audio generator waited for the network, and how far ahead the
+     * ring is. Diagnostic only. */
+    if (s->pronto && s->eng) {
+      static DtsEngineMetrics ant; static DtsEngine *antEng; static double antT;
+      DtsEngineMetrics m; long long adiante = 0, pos = 0;
+      double t = agoraMs(), dt, mb, precisa = 0;
+      dts_engine_metrics(s->eng, &m);
+      dts_engine_ring(s->eng, &adiante, &pos);
+      if (antEng != s->eng) { memset(&ant, 0, sizeof ant); antEng = s->eng; antT = s->abertoEm; }
+      dt = (t - antT) / 1000.0;
+      mb = (double)(m.range_bytes - ant.range_bytes) / 1048576.0;
+      if (s->tamArq > 0 && s->durArq > 0) precisa = (double)s->tamArq * 8.0 / 1e6 / s->durArq;
+      printf("[tbaudio] 10s file reader: %.1f MiB in %.1f s (%.1f Mbit/s; the file averages %.1f Mbit/s), "
+             "the audio waited for the network %.0f ms, %.1f MiB ahead of the reader, connections %llu so far\n",
+             mb, dt, dt > 0 ? mb * 8.388608 / dt : 0.0, precisa,
+             (double)(m.range_blocked_ns - ant.range_blocked_ns) / 1e6, (double)adiante / 1048576.0,
+             (unsigned long long)m.range_requests);
+      ant = m; antT = t;
+    }
     fflush(stdout);
   }
   soltar(s);

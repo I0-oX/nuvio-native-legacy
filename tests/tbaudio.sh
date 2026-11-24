@@ -105,6 +105,7 @@ check "AAC copied, starts with TorBox's video segment ($(inicio "$work/out/a0_2.
 curl -s -o "$work/out/a1_6.ts" "$B/a1_6.ts"
 check "AC3 copy diagnostic: header read (bsid, 5.1 = mode 7), no gaps between consecutive segments" \
   "grep -qE 'AC3 copy audio 1 seg 5: [0-9]+ packets, 0 without the sync word, bsid [0-9]+, channel mode 7' '$work/s.log' && grep -qE 'AC3 copy audio 1 seg 6: .*gaps 0 .*overlaps 0' '$work/s.log'"
+check "original file reader: one speed line per connection" "grep -qE '\\[dts-range\\] connection from [0-9]+ MiB ended: [0-9]+ KiB in [0-9]+ ms \\([0-9.]+ Mbit/s\\)' '$work/s.log'"
 check "AC3 5.1 copied ($(codec "$work/out/a1_2.ts"))" "[ '$(codec "$work/out/a1_2.ts")' = 'ac3,6' ] && perto $(inicio "$work/out/a1_2.ts" a) $v2 0.05"
 check "Opus as is in fMP4 (init + segment: $(codec "$work/out/opus.mp4"))" "[ '$(codec "$work/out/opus.mp4")' = 'opus,2' ] && perto $(inicio "$work/out/opus.mp4" a) $v2 0.1"
 check "Opus rendition is fMP4 in its playlist" "curl -s '$B/a3.m3u8' | grep -q '^#EXT-X-MAP:URI=\"a3_init.mp4\"' && curl -s '$B/a3.m3u8' | grep -q '^a3_0.m4s'"

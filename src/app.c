@@ -3107,6 +3107,22 @@ static void vigiarAberturaManual(void) {
   if (fonteProvouTocar() || (!video_falhou() && video_pronto() && video_pos() > 0.25)) {
     fonteManualDesde = 0; return;
   }
+#ifdef NV_TPK
+  /* TorBox burn-in opening (log 21, owner 24/11/2026, Married Couple): its own
+   * deadline falls back to the original. The watchdog fired at 25 s, burn-in
+   * fell back at 30 s, the original played and "the source didn't respond"
+   * stayed on screen. The original gets its full time from the fallback. */
+  if (video_tpk_queimar_abrindo()) {
+    static Uint32 logEm;
+    if (SDL_GetTicks() - logEm > 10000u) {
+      logEm = SDL_GetTicks();
+      printf("[fonte] escolha manual: burn-in still opening (its own deadline goes back to the original): waiting\n");
+      fflush(stdout);
+    }
+    fonteManualDesde = SDL_GetTicks();
+    return;
+  }
+#endif
   desde = SDL_GetTicks() - fonteManualDesde;
   memset(&g, 0, sizeof g);
   g.falhou = video_falhou() || player_fonte_falhou();

@@ -1125,6 +1125,36 @@ static void tbDesligar(const char *porque, int desistir) {
   if (tbConvertidoDeNovo(alvo)) return;
   tbReabrir(alvo);
 }
+
+/* TorBox's stream for this file never gave a picture (owner 24/11/2026, logs
+ * 19-21: Fate PMR, Married Couple CRUCiBLE). Back to the original; an item
+ * still in the account is stuck, so tbburn.c removes it and adds its hash
+ * again (once per file per playback), then the usual asks switch by itself.
+ * Removing it on the dashboard and re-adding made TorBox's encoder work. */
+static void tbSemVideo(const char *porque) {
+  int item = tbburn_item_na_conta(urlAtual), sub = tb.sub, aud = tb.audio;
+  tb.esperaDesde = 0;
+  printf("[tbburn] %s (%u ms after the burned stream opened): back to the original now (item %d%s)\n", porque,
+         (unsigned)(SDL_GetTicks() - tb.abriuEm), item,
+         item > 0 ? " in your TorBox: removing and re-adding it" : ", not known; pick Burn in to ask again");
+  fflush(stdout);
+  tbDesligar("TorBox sent no video for this file", 1);
+  if (item > 0 && urlAtual[0] && tbburn_pode()) {
+    tb.sub = sub; tb.audio = aud;
+    tb.registrando = 0; tb.tardio = 0; tb.desistiu = 0;
+    tb.voltar = 2;   // no "unavailable" notice: it's on its way
+    tb.pend = 1; tb.pediuEm = SDL_GetTicks();
+    tbburn_readicionar(urlAtual, sub, aud);
+  }
+}
+/* The burned stream is opening (TorBox first holding the player, a request in
+ * flight, or the player handed a burned stream that hasn't played yet): its
+ * own deadline falls back to the original (log 21: the manual-pick watchdog
+ * fired at 25 s, burn-in fell back at 30 s, the original played and the
+ * "source didn't respond" message stayed on screen). */
+int video_tpk_queimar_abrindo(void) {
+  return tb.pre || tb.cabEspera || (tb.pend && !tb.registrando) || (tb.ativo && tb.esperaDesde);
+}
 // Asks TorBox to burn menu entry `i` (a burnable track).
 static void tbPedir(int i, const char *porque) {
   int sub = faixaLeg[i].ordinalMkv, aud = tbIdxAudio();
@@ -3198,32 +3228,29 @@ void video_bombear(void) {
    * 10 s): the original opens now (no 30 s wait, no retry in the same mode).
    * Owner 23/11/2026 (logs 15-18): no re-add and no background asking after
    * that ("we shouldn't spam TorBox and the TV"); Burn in asks again. */
-  if (tb.ativo && tb.tba && tb.esperaDesde && !pronto && !reconErroPend && !retomando && tba_sem_video()) {
-    int item = tbburn_item_na_conta(urlAtual), sub = tb.sub, aud = tb.audio;
-    tb.esperaDesde = 0;
-    /* Owner 24/11/2026 (logs 19-20, Fate PMR): an item still in the account
-     * that sends no video is stuck; removing it and adding its hash again
-     * made TorBox's encoder work. tbburn.c does that once per file per
-     * playback, then the usual asks (the switch is automatic). */
-    printf("[tbburn] TorBox sent no video %u ms after Nuvio's stream opened: back to the original now "
-           "(item %d%s)\n", (unsigned)(SDL_GetTicks() - tb.abriuEm), item,
-           item > 0 ? " in your TorBox: removing and re-adding it" : ", not known; pick Burn in to ask again");
-    fflush(stdout);
-    tbDesligar("TorBox sent no video for this file", 1);
-    if (item > 0 && urlAtual[0] && tbburn_pode()) {
-      tb.sub = sub; tb.audio = aud;
-      tb.registrando = 0; tb.tardio = 0; tb.desistiu = 0;
-      tb.voltar = 2;   // no "unavailable" notice: it's on its way
-      tb.pend = 1; tb.pediuEm = SDL_GetTicks();
-      tbburn_readicionar(urlAtual, sub, aud);
-    }
-  }
+  if (tb.ativo && tb.tba && tb.esperaDesde && !pronto && !reconErroPend && !retomando && tba_sem_video())
+    tbSemVideo("Nuvio's stream got no segment 0 from TorBox");
   if (tb.ativo && tb.esperaDesde && !pronto && !parado && !reconErroPend && !retomando && SDL_GetTicks() - tb.esperaDesde > 30000u) {
     printf("[tbburn] %s did not start in 30 s (no error from the TV player): treated as a player error\n",
            tb.tba ? "Nuvio's Passthrough stream" : "TorBox's burned stream");
     fflush(stdout);
-    tb.esperaDesde = 0;
-    reconErroCod = NV_RECON_TPK_CONNECTION_FAILED; reconErroPend = 1;
+    if (!tb.tba && !tb.tocouLog) tbSemVideo("TorBox's burned stream did not start in 30 s");   // log 21
+    else { tb.esperaDesde = 0; reconErroCod = NV_RECON_TPK_CONNECTION_FAILED; reconErroPend = 1; }
+  }
+  /* Log 21 (owner 24/11/2026, Married Couple): TorBox's segment 0 never came,
+   * the session failed, and the TV player's error on the master arrived in
+   * the same tick, so the retry ran instead of the stuck-item path. A player
+   * error on a burned stream that never played, whose TorBox item is still in
+   * the account, is that same case: Passthrough's session got no video, or
+   * TorBox's own stream (TorBox audio) never started. */
+  if (reconErroPend && tb.ativo && !parado && !retomando && !tb.tocouLog &&
+      ((tb.tba && tba_sem_video()) || (!tb.tba && tb.esperaDesde))) {
+    printf("[tbburn] player error 0x%x on %s before it played\n", (unsigned)reconErroCod,
+           tb.tba ? "Nuvio's Passthrough stream (TorBox sent no video)" : "TorBox's burned stream");
+    fflush(stdout);
+    reconErroPend = 0; reconLinhaRede = 0;
+    nv_recon_zerar(&recon);
+    tbSemVideo(tb.tba ? "Nuvio's stream got no segment 0 from TorBox" : "TorBox's burned stream never started");
   }
   if (reconErroPend && tb.ativo && !parado && !retomando) {   // reopening after Home: retVigiar decides
     char mt[160] = "";
