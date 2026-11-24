@@ -51,6 +51,13 @@ int main(void) {
   tbr_ancorar(150.5);   // a seek into an even segment
   PERTO(tbr_correcao(), ptsReal(30) - 150.0 - 0.021, "seek to 150.5 s: segment 30 -> +150 ms");
 
+  // Picture time -> playlist time for a seek (owner 24/11, log 19).
+  PERTO(tbr_para_playlist(ptsReal(31) - 0.021 + 1.0), 155.0 + 1.0,
+        "seek inside a segment whose own and next PTS are known: exact");
+  PERTO(tbr_para_playlist(400.0), 400.0 - (ptsReal(30) - 150.0 - 0.021),
+        "seek where nothing is known: minus the current correction");
+  PERTO(tbr_para_playlist(-3.0), 0, "never before 0");
+
   tbr_pts(g, 5000, 1.0);  tbr_pts(g, -1, 1.0);   // out of range: ignored
   g2 = tbr_comecar();     // a new burned stream (audio change, retry)
   tbr_pts(g, 0, 0.021);   // the old session's late answer

@@ -307,8 +307,12 @@ void tbburn_definir_escolha(int v) {
   fflush(stdout);
 }
 static int manterProximo;
+// The file whose stuck TorBox item was removed and re-added in this playback
+// (readicionar, owner 24/11/2026): once per file per playback. Under trava.
+static char apagadoUrl[TBB_URL_MAX];
 void tbburn_manter_proximo(void) { manterProximo = 1; }
 void tbburn_sessao_nova(void) {
+  pthread_mutex_lock(&trava); apagadoUrl[0] = 0; pthread_mutex_unlock(&trava);
   if (manterProximo) { manterProximo = 0; return; }
   escolha = -1;
 }
@@ -840,6 +844,30 @@ static int readicionar(Pedido *p, int itemVelho, int arqVelho, const char *hashV
     fflush(stdout);
     snprintf(motivo, mn, "file not in your TorBox");
     return 0;
+  }
+  /* Owner 24/11/2026 (logs 19-20, Fate PMR): an item TorBox keeps listing but
+   * whose stream never sends segment 0 is stuck; adding its hash again only
+   * gives the same item back. Removing it on the dashboard and re-adding it
+   * made TorBox's encoder work. So Nuvio deletes it first: torrents only, once
+   * per file per playback. */
+  if (p->readd && itemVelho > 0 && !*usenet) {
+    int ja;
+    pthread_mutex_lock(&trava); ja = !strcmp(apagadoUrl, p->url); pthread_mutex_unlock(&trava);
+    if (ja) {
+      printf("[tbburn] re-add: item %d is stuck, but this file was already removed and re-added in this playback: "
+             "not removing again\n", itemVelho);
+      fflush(stdout);
+    } else {
+      int ok;
+      printf("[tbburn] re-add: TorBox sent no video for item %d (still in your TorBox): removing it from your TorBox "
+             "first, then adding it again by its hash\n", itemVelho);
+      fflush(stdout);
+      ok = debrid_tb_apagar(itemVelho);
+      if (!pedidoVivo(p)) return -1;
+      pthread_mutex_lock(&trava); snprintf(apagadoUrl, sizeof apagadoUrl, "%s", p->url); pthread_mutex_unlock(&trava);
+      printf("[tbburn] re-add: item %d %s\n", itemVelho, ok ? "removed" : "NOT removed (see the controltorrent line): adding anyway");
+      fflush(stdout);
+    }
   }
   printf("[tbburn] re-add: adding the file to your TorBox by its hash %.8s... (only if TorBox has it cached; "
          "it stays on your dashboard)\n", h);

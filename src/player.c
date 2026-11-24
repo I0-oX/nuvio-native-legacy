@@ -473,17 +473,15 @@ static int skipDisponivel(void), skipLiberado;
 static int trechoPulavel(double *fim) { int tipo; return skipDisponivel() && intro_botao_visivel(fim, &tipo); }
 static float duracaoSeg = PLR_DUR_PADRAO;
 /* The position saved for resume (Continue watching, the account, Trakt):
- * where the PICTURE is. Differs from posSeg only on TorBox's burned stream. */
-static double posGravar(void) {
-  double p = posSeg;
+ * where the PICTURE is. On TorBox's burned stream video_pos (so posSeg) is
+ * already the picture's time (owner 24/11/2026, log 19). */
+static double posGravar(void) { return posSeg; }
+static int tbBurnLog(void) {
 #ifdef NV_TPK
-  if (comVideo) {
-    p += tbr_correcao();
-    if (p > duracaoSeg) p = duracaoSeg;
-    if (p < 0) p = 0;
-  }
+  return comVideo && tbr_ativo();
+#else
+  return 0;
 #endif
-  return p;
 }
 // O fim ZERO do TheIntroDB quer dizer "ate o fim da midia" (intro.c): mirar
 // fim+0.25 ai seria um salto para o COMECO do arquivo — o alvo resolve o nulo.
@@ -3079,7 +3077,7 @@ static void gravarProgressoParcial(int conta, const char *porque) {
   }
   parcialPos = posSeg;
   printf("[visto] ponto gravado (%s) pos=%.1f dur=%.1f (%.0f%%)%s\n", porque, posGravar(),
-         (double)duracaoSeg, 100.0 * posGravar() / duracaoSeg, posGravar() != posSeg ? " (burned picture's time)" : "");
+         (double)duracaoSeg, 100.0 * posGravar() / duracaoSeg, tbBurnLog() ? " (burned picture's time)" : "");
   fflush(stdout);
 }
 
@@ -5114,7 +5112,11 @@ void player_atualizar(float dt, Uint32 agora) {
         relogio_amostra_carimbo(&relLeg, ap, ac, ai, tocando && !scrubbing);
       } }
 #endif
+#ifdef NV_TPK
+    relogio_amostra(&relLeg, video_pos_bruta(), monoSeg(), tocando && !scrubbing);
+#else
     relogio_amostra(&relLeg, video_pos(), monoSeg(), tocando && !scrubbing);
+#endif
     // A cada 10 s: o numero cru do pipeline e o do relogio da legenda, no
     // mesmo instante. A diferenca e o que a interpolacao acrescenta (0..~250).
     { static double ultRel;

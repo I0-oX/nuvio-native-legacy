@@ -204,6 +204,11 @@ int      video_tpk_reabrindo(void);
 // the duration is the uncertainty. 1 = there is a reading; *seq changes with
 // every new one. Same transform as video_pos (converted stream offset).
 int      video_pos_amostra(double *pos, double *carimbo, double *incerteza, unsigned *seq);
+// The player's own clock. Equals video_pos except on TorBox's burned stream,
+// where video_pos is the burned picture's time (owner 24/11/2026, log 19) and
+// this stays on TorBox's playlist like video_pos_amostra; the subtitle clock
+// is fed with these and adds tbr_correcao itself (player.c posLegenda).
+double   video_pos_bruta(void);
 // 1 from a seek until the first real reading of where the TV landed (the TV
 // seeks to a keyframe, seconds before the target). Subtitles hide meanwhile.
 int      video_pos_incerta(void);

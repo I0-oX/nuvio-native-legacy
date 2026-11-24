@@ -595,6 +595,9 @@ typedef struct Sessao {
   double abertoEm;                     // tba_abrir (agoraMs): log 15's "first segment through Nuvio" line
   atomic_int vidPrimeiro;              // video segments served so far (the first is logged)
   int opusLog;                         // Opus packet lines logged (first segments only)
+  int ac3Seg;                          // AC3/E-AC3 copied: segments logged since the last seek
+  double ac3Fim;                       // end (source s) of the last copied AC3 packet written; <0 = after a seek
+  int ac3Bsid, ac3Acmod, ac3Taxa;      // the stream's first header (-1 = none yet)
   int64_t proxPts;                     // the reading track's next timestamp (laced frames carry none)
   int semPts, semPtsLog;               // packets that came without a timestamp (filled in) / lines logged
   unsigned tbrGer;                     // the burned stream this session serves (tbrelogio.h)
@@ -1147,8 +1150,9 @@ static int posicionar(Sessao *s, int fi, int seg, const double *ini, double len,
   int mesmo = s->gOk && s->gFaixa == fi && s->gModo == f->modo && s->gIni == ini && s->gSeg >= 0;
   *saltou = 0; *como = "continued";
   if (mesmo && s->gSeg == seg) return 0;
-  if (mesmo && seg > s->gSeg && ini[seg] - ini[s->gSeg] <= len + 0.5) { *saltou = 1; *como = "read ahead"; return 0; }
+  if (mesmo && seg > s->gSeg && ini[seg] - ini[s->gSeg] <= len + 0.5) { *saltou = 1; *como = "read ahead"; s->ac3Fim = -1; return 0; }
   *saltou = 1; *como = "seeked";
+  s->ac3Seg = 0; s->ac3Fim = -1;   // AC3 copy diagnostic: a new run of lines
   filaLimpar(s);
   s->eof = 0;
   s->proxPts = AV_NOPTS_VALUE;   // a seek: the next timestamp comes from the file again
@@ -1259,6 +1263,37 @@ static int escreverAudio(Sessao *s, Mux *m, int idx, AVPacket *p, AVRational tb,
 
 typedef struct { unsigned char *b; size_t n; char tipo[48]; int status; } Resp;
 
+/* AC3 / E-AC3 copied as is (owner 24/11/2026, log 19, Married Couple: a copied
+ * AC3 5.1 rendition had sound for a few seconds after each seek, then none).
+ * Diagnostic only: the frame header of every packet (sync word, bsid, channel
+ * mode, rate code) and timestamp gaps/overlaps, one line per segment for the
+ * first 4 segments after each seek, then only segments with something odd. */
+typedef struct { int n, semSync, mudou, buracos, sobreposicoes, bsid, acmod, taxa; double maiorBuraco, maiorSobre; } Ac3Diag;
+static void ac3Ler(const unsigned char *d, int n, int *bsid, int *acmod, int *taxa) {
+  *bsid = *acmod = *taxa = -1;
+  if (n < 7 || d[0] != 0x0B || d[1] != 0x77) return;
+  *bsid = d[5] >> 3;
+  if (*bsid <= 10) { *taxa = d[4] & 0x3F; *acmod = d[6] >> 5; }            // AC3: frmsizecod, acmod
+  else if (*bsid == 16) { *taxa = ((d[2] & 7) << 8) | d[3]; *acmod = (d[4] >> 1) & 7; }   // E-AC3: frmsiz, acmod
+}
+static void ac3Pacote(Sessao *s, Ac3Diag *g, const AVPacket *p, double t, double dur) {
+  int b, a, r;
+  ac3Ler(p->data, p->size, &b, &a, &r);
+  g->n++;
+  if (b < 0) { g->semSync++; return; }
+  if (g->bsid < 0) { g->bsid = b; g->acmod = a; g->taxa = r; }
+  if (s->ac3Bsid < 0) { s->ac3Bsid = b; s->ac3Acmod = a; s->ac3Taxa = r; }
+  else if (b != s->ac3Bsid || a != s->ac3Acmod || (b <= 10 && r != s->ac3Taxa)) {
+    g->mudou++; s->ac3Bsid = b; s->ac3Acmod = a; s->ac3Taxa = r;
+  }
+  if (s->ac3Fim >= 0) {
+    double d = t - s->ac3Fim;
+    if (d > 0.002) { g->buracos++; if (d > g->maiorBuraco) g->maiorBuraco = d; }
+    else if (d < -0.002) { g->sobreposicoes++; if (-d > g->maiorSobre) g->maiorSobre = -d; }
+  }
+  s->ac3Fim = t + (dur > 0 ? dur : 0.032);
+}
+
 // Audio of track fi, segment `seg` (AUD_SEG_S) or -1 = the fMP4 init.
 // -2 = stopped (the player hung up or moved on), nothing to send.
 static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en, int so, long chave) {
@@ -1267,6 +1302,8 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en,
   AVRational tb, srcTb;
   Mux m;
   int mp4 = f->modo == M_MP4, saltou = 0, nPk = 0, rr = 0, ab = 0;
+  int ac3 = (f->id == AV_CODEC_ID_AC3 || f->id == AV_CODEC_ID_EAC3) && f->modo == M_TS;
+  Ac3Diag ag = { 0, 0, 0, 0, 0, -1, -1, -1, 0, 0 };
   // Opus diagnostic (owner 16/11: 13-15 packets per 2 s where 20 ms frames
   // give 100): durations, sizes and the first packet's TOC, first segments only.
   int opusDiag = 0, toc = -1, tocN = 0, opSemDur = 0;   // set once positioned (a converter may still be open before)
@@ -1312,6 +1349,7 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en,
       if (it.p->size > opTamMax) opTamMax = it.p->size;
       if (toc < 0 && it.p->size > 0) { toc = it.p->data[0]; tocN = it.p->size > 1 ? it.p->data[1] : 0; }
     }
+    if (ac3 && !s->dec) ac3Pacote(s, &ag, it.p, it.t, it.p->duration > 0 ? it.p->duration * av_q2d(srcTb) : 0);
     if (escreverAudio(s, &m, 0, it.p, srcTb, 0) < 0) { av_packet_free(&it.p); snprintf(err, en, "mux write"); rr = -1; break; }
     av_packet_free(&it.p);
     nPk++;
@@ -1334,6 +1372,13 @@ static int gerarAudio(Sessao *s, int fi, int seg, Resp *r, char *err, size_t en,
   s->nSeg++; s->bytes += (long long)r->n; s->msLer += tl - t0;
   printf("[tbaudio] audio %d seg %d (%.1f-%.1f s): %d packets, %zu KB, %.0f ms, %s; first audio at %.3f s\n",
          f->ord, seg, s->aIni[seg], s->aIni[seg + 1], nPk, r->n / 1024, tl - t0, como, pri >= 0 ? pri - s->origV0 : -1.0);
+  if (ac3 && !s->dec && ag.n &&
+      (s->ac3Seg++ < 4 || ag.semSync || ag.mudou || ag.buracos || ag.sobreposicoes)) {
+    printf("[tbaudio] AC3 copy audio %d seg %d: %d packets, %d without the sync word, bsid %d, channel mode %d, rate code %d, "
+           "header changes %d, gaps %d (largest %.0f ms), overlaps %d (largest %.0f ms)\n",
+           f->ord, seg, ag.n, ag.semSync, ag.bsid, ag.acmod, ag.taxa, ag.mudou, ag.buracos, ag.maiorBuraco * 1000.0,
+           ag.sobreposicoes, ag.maiorSobre * 1000.0);
+  }
   if (opusDiag && nPk > 0) {
     // TOC: config (frame length), code 0 = 1 frame, 1/2 = 2 frames, 3 = N frames (byte 2).
     static const double DUR[32] = { 10, 20, 40, 60, 10, 20, 40, 60, 10, 20, 40, 60, 10, 20, 10, 20,
@@ -1669,6 +1714,7 @@ int tba_abrir(const char *tbUrl, const char *orig, const char *cab, int ordinal,
   atomic_store(&s->espChave, -1L);
   s->modo = modo;
   s->audio = ordinal; s->gFaixa = -1; s->gSeg = -1; s->proxPts = AV_NOPTS_VALUE;
+  s->ac3Fim = -1; s->ac3Bsid = s->ac3Acmod = s->ac3Taxa = -1;
   s->tbrGer = tbr_geracao();
   s->abertoEm = agoraMs();
   s->tbUrl = strdup(tbUrl); s->orig = strdup(orig); s->cab = strdup(cab ? cab : "");

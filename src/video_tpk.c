@@ -53,6 +53,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+static double posBruta(void);
 
 typedef void (*FnAbrir)(const char *url, const char *cabecalhos);
 typedef void (*FnSemArg)(void);
@@ -72,6 +73,14 @@ static int ultLegX, ultLegY, ultLegW, ultLegH;
 static FnPos    hPos;
 typedef void (*FnEscolher)(int tipo, int idx);
 static FnEscolher hEscolher;
+/* What the TV player decodes on Nuvio's Passthrough stream (owner 24/11/2026,
+ * log 19, Married Couple: a copied AC3 5.1 rendition had sound for a few
+ * seconds after each seek, then none). Diagnostic only: the host logs
+ * "[audio-tv]" (Video.cs LogAudioDaTv) after prepare, 1.5 s and 6 s after
+ * every seek, and every 10 s. Main thread only (tbAudioDiagTick). */
+static atomic_int tbAudioDiagPrep;          // 1 = log "after prepare" next tick
+static atomic_uint tbAudioDiagBusca;        // SDL ticks of the last seek (0 = none)
+static int tbAudioDiagPasso;                // 0, 1 (1.5 s logged), 2 (6 s logged)
 
 // Era 32 (17/11): num remux com 62 legendas de texto o .tpk descartava as do
 // player depois da 32a, e nem as escrevia no log. O mesmo teto das outras.
@@ -352,7 +361,7 @@ static struct {
   int sondando, naoSup; // naoSup: a TV acusou NotSupportedAudioCodec
   // REABRINDO: o convertido abre outro player (seek do progressivo, reconexao,
   // troca no meio do filme) numa fonte que ja mostrou quadro. Para o app isso e
-  // um seek, nao uma fonte abrindo: video_pronto() segue 1 e video_pos() fica
+  // um seek, nao uma fonte abrindo: video_pronto() segue 1 e posBruta() fica
   // no alvo, senao o cartao "Abrindo fonte" e os prazos de abertura do app.c
   // (aberturaVencida, escolha manual) tratam a fonte como morta.
   int reabrindo; double posMantida; Uint32 reabriuEm, reabTocandoEm;
@@ -495,6 +504,7 @@ void nv_tpk_video_faixas_fim(int selAudio, int selLeg) {
   if (tb.ativo && mkvN > 0) {
     if (tb.tba) {
       tb.hostA = nNovasA;
+      atomic_store(&tbAudioDiagPrep, 1);
       printf("[tbaudio] the TV player lists %d audio track(s) for Nuvio's stream (renditions offered: %d)%s\n", nNovasA,
              tba_n_rendicoes(), nNovasA != tba_n_rendicoes() ?
              ": an audio change reopens the stream" : "");
@@ -722,6 +732,7 @@ void nv_tpk_video_evento(int tipo, int a, int b) {
       pthread_mutex_lock(&amTrava); amBusca = monoAgora(); pthread_mutex_unlock(&amTrava);
       atomic_store(&incertaTick, SDL_GetTicks() | 1u);
       atomic_store(&posIncerta, 1);
+      atomic_store(&tbAudioDiagBusca, SDL_GetTicks() | 1u);
       break;
     case EV_CONSULTA_LENTA: atomic_store(&consultaLentaEm, SDL_GetTicks() | 1u); break;
     case EV_PRONTO:  durMs = a; pronto = 1; break;
@@ -1090,7 +1101,7 @@ static int tbConvertidoDeNovo(double alvo) {
          convIniciar(f->stream_id, alvo, "burn-in off: the DTS/TrueHD track converts again");
 }
 static void tbDesligar(const char *porque, int desistir) {
-  double alvo = video_pos(), corr;
+  double alvo = posBruta(), corr;
   if (!tb.ativo) return;
   // The player's clock on the burned stream runs behind its picture
   // (tbrelogio.h): the original reopens where the picture was (owner 15/11).
@@ -1215,7 +1226,7 @@ static void tbTardioAbrir(const char *m) {
   char u[sizeof tb.urlTardio];
   snprintf(u, sizeof u, "%s", m);
   tbUrlPlayer(u);
-  tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = video_pos(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
+  tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = posBruta(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
   printf("[tbburn] opening TorBox's burned stream at %.1f s\n", tb.alvo);
   fflush(stdout);
   tb.tirarMain = 1;   // Main leaves the ASS track TorBox now burns (if it is that track)
@@ -1637,7 +1648,7 @@ static void tbBombear(void) {
     if (e == TBB_PRONTO) {
       tb.pend = 0;
       tbUrlPlayer(m);
-      tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = video_pos(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
+      tb.ativo = 1; tb.abriuEm = SDL_GetTicks(); tb.alvo = posBruta(); tb.tocouLog = 0; tb.logEm = SDL_GetTicks();
       printf("[tbburn] opening TorBox's burned stream at %.1f s (%u ms after the request)\n", tb.alvo,
              (unsigned)(SDL_GetTicks() - tb.pediuEm));
       fflush(stdout);
@@ -1654,7 +1665,7 @@ static void tbBombear(void) {
   if (tb.ativo && !tb.tocouLog && pronto && tocando && !cv.reabrindo) {
     tb.tocouLog = 1;
     printf("[tbburn] burned stream playing %u ms after opening | timeline check: asked %.1f s, player at %.1f s; "
-           "duration TorBox %.1f s vs file %.1f s\n", (unsigned)(SDL_GetTicks() - tb.abriuEm), tb.alvo, video_pos(),
+           "duration TorBox %.1f s vs file %.1f s\n", (unsigned)(SDL_GetTicks() - tb.abriuEm), tb.alvo, posBruta(),
            durMs / 1000.0, tb.durOrig);
     fflush(stdout);
   }
@@ -1667,10 +1678,22 @@ static void tbBombear(void) {
                   socks, meus, por[0], por[1], meus >= 0 ? socks - meus : -1);
     printf("[tbburn] 10s: playing %s at %.1f s | Nuvio's requests to TorBox in flight now %d, most %d | %s | "
            "subtitle reader cap %d%s\n", tb.tba ? "Nuvio's stream (TorBox picture + original audio)" : "TorBox's stream",
-           video_pos(), agora, pico, so, legref_em_rede() > 0 ? 1 : 2, legref_em_rede() > 0 ? " (sync reading)" : "");
+           posBruta(), agora, pico, so, legref_em_rede() > 0 ? 1 : 2, legref_em_rede() > 0 ? " (sync reading)" : "");
     fflush(stdout);
-    if (tb.tba) tba_log();
+    if (tb.tba) { tba_log(); if (hEscolher) hEscolher(6, 2); }
   }
+  if (tb.ativo && tb.tba && hEscolher) {
+    unsigned b = atomic_load(&tbAudioDiagBusca);
+    if (atomic_exchange(&tbAudioDiagPrep, 0)) hEscolher(6, 0);
+    { static unsigned bAnt; if (b != bAnt) { bAnt = b; tbAudioDiagPasso = 0; } }   // a newer seek starts over
+    if (b) {
+      Uint32 d = SDL_GetTicks() - b;
+      if (tbAudioDiagPasso == 0 && d >= 1500u) { tbAudioDiagPasso = 1; hEscolher(6, 1); }
+      else if (tbAudioDiagPasso == 1 && d >= 6000u) {
+        tbAudioDiagPasso = 0; atomic_store(&tbAudioDiagBusca, 0); hEscolher(6, 1);
+      }
+    }
+  } else if (!tb.ativo) { tbAudioDiagPasso = 0; atomic_store(&tbAudioDiagBusca, 0); atomic_store(&tbAudioDiagPrep, 0); }
 }
 
 static int mfEsperarAntes(const char *url, const char *cab) {
@@ -2282,7 +2305,7 @@ static int faixasDaTv(void) {
 }
 static void convSondar(int modo, const char *motivo) {
   if (parado || cv.ativo || cv.sondando || !convPossivel() || strstr(urlAtual, ".m3u8")) return;
-  if (!convAbrirSessao(-1, modo, video_pos(), cv.url, sizeof cv.url)) return;
+  if (!convAbrirSessao(-1, modo, posBruta(), cv.url, sizeof cv.url)) return;
   cv.sondando = 1; cv.modo = modo;
   printf("[dts-tpk] %s, %s: o conversor procura DTS/TrueHD na fonte (modo %s); o original segue tocando\n",
          semCabecalho() ? "MP4" : "MKV", motivo, nomeModo(modo));
@@ -2294,7 +2317,7 @@ static void convSondar(int modo, const char *motivo) {
 static void convDesistir(const char *motivo) {
   // Antes do primeiro quadro o player ainda nao tem posicao: vale onde o
   // convertido abriu (ou o seek pedido no meio).
-  double pos = cv.jaTocou ? video_pos() : cv.seekPend ? cv.seekAlvo : cv.inicio;
+  double pos = cv.jaTocou ? posBruta() : cv.seekPend ? cv.seekAlvo : cv.inicio;
   printf("[dts-tpk] desisti da conversao: %s; voltando a fonte original (sem som) em %.1f s\n", motivo, pos);
   fflush(stdout);
   dts_tpk_fechar();
@@ -2307,7 +2330,7 @@ static void convDesistir(const char *motivo) {
 // A pessoa escolheu uma faixa que a TV toca: volta ao original na posicao e,
 // quando as faixas chegarem, escolhe a de mesmo rotulo (cv.rotuloVolta).
 static void convVoltar(void) {
-  double pos = video_pos();
+  double pos = posBruta();
   printf("[dts-tpk] voltando ao audio da TV (%s) em %.1f s\n", cv.rotuloVolta, pos);
   fflush(stdout);
   dts_tpk_fechar();
@@ -2350,7 +2373,7 @@ static void avaliarAudioTv(void) {
   fflush(stdout);
   if (nRec == nArq && nTv == 0) {
     int t = convPossivel() ? trilhaParaConverter(0) : 0;
-    if (t > 0 && convIniciar(t, video_pos(), i18n("a TV nao listou audio e o arquivo so tem DTS/TrueHD"))) return;
+    if (t > 0 && convIniciar(t, posBruta(), i18n("a TV nao listou audio e o arquivo so tem DTS/TrueHD"))) return;
     if (!cv.offLogado && ajustes_dts_tpk_modo() == DTSTPK_DESLIGADO) {
       cv.offLogado = 1;
       printf("[dts-tpk] teste Desligado: tocando o original (sem som), como o master\n");
@@ -2507,7 +2530,7 @@ static void escolhasPendentes(void) {
     // The position is the frame evidence and this logs it: on a RESUMED episode
     // the seek target can read >= LEG_QUADRO_S before any frame is decoded, and
     // the log would show "first frame" at 2730.12s one tick into the session.
-    printf("[video] tpk: first frame at %.2fs\n", video_pos());
+    printf("[video] tpk: first frame at %.2fs\n", posBruta());
     if (cv.ativo && !cv.tocou)
       printf("[dts-tpk] primeiro quadro do convertido %u ms depois de abrir (modo %s, %s)\n",
              (unsigned)(agora - cv.abriuEm), nomeModo(cv.modo),
@@ -2596,7 +2619,7 @@ static void convBombear(void) {
       if (!cv.sondando) audioNaoSup = 1;
     } else {
       int t = convPossivel() ? trilhaParaConverter(0) : 0;
-      if (t > 0 && convIniciar(t, video_pos(), "a TV acusou NotSupportedAudioCodec")) return;
+      if (t > 0 && convIniciar(t, posBruta(), "a TV acusou NotSupportedAudioCodec")) return;
       if (t <= 0 && mkvN == 0 && convPossivel()) {
         // A sonda do cabecalho nao trouxe faixa nenhuma (host em pausa para
         // leitura lateral, rede): o conversor le o arquivo ele mesmo e decide.
@@ -2631,7 +2654,7 @@ static void convBombear(void) {
     } else if (e == DTSTPK_PRONTO && ((pronto && faixasLidas && (int)(agora - faixasEm) >= 2500) || (cv.naoSup && resgateAte))) {
       // 2,5 s depois da lista: a releitura do audio do host (#165) ja veio.
       char url[256];
-      double pos = video_pos();
+      double pos = posBruta();
       snprintf(url, sizeof url, "%s", cv.url);
       if (modoProg(cv.modo)) dts_tpk_url_em(pos, url, sizeof url);
       printf("[dts-tpk] convertendo o audio da fonte sem cabecalho MKV (%s) a partir de %.1f s, modo %s, saida %s; motivo: %s\n",
@@ -3112,7 +3135,7 @@ void video_bombear(void) {
   // pausa; o watchdog e a reconexao de sempre ficam de fora ate ela terminar.
   int emRet = retVigiar();
   if (retDesistiu) return;
-  double pos = video_pos();
+  double pos = posBruta();
   int preso = atomic_exchange(&playerPreso, -2);
   // Ao vivo (sem reconexao) a tecla recusada so e ignorada, como antes do #412.
   if (!emRet && preso >= -1 && ativo && reconPermitida && !recon.pendente && !falhou) recuperarPlayer(preso);
@@ -3176,13 +3199,24 @@ void video_bombear(void) {
    * Owner 23/11/2026 (logs 15-18): no re-add and no background asking after
    * that ("we shouldn't spam TorBox and the TV"); Burn in asks again. */
   if (tb.ativo && tb.tba && tb.esperaDesde && !pronto && !reconErroPend && !retomando && tba_sem_video()) {
-    int item = tbburn_item_na_conta(urlAtual);
+    int item = tbburn_item_na_conta(urlAtual), sub = tb.sub, aud = tb.audio;
     tb.esperaDesde = 0;
+    /* Owner 24/11/2026 (logs 19-20, Fate PMR): an item still in the account
+     * that sends no video is stuck; removing it and adding its hash again
+     * made TorBox's encoder work. tbburn.c does that once per file per
+     * playback, then the usual asks (the switch is automatic). */
     printf("[tbburn] TorBox sent no video %u ms after Nuvio's stream opened: back to the original now "
-           "(item %d%s); Nuvio draws the subtitles, pick Burn in to ask again\n",
-           (unsigned)(SDL_GetTicks() - tb.abriuEm), item, item > 0 ? " in your TorBox" : ", not known");
+           "(item %d%s)\n", (unsigned)(SDL_GetTicks() - tb.abriuEm), item,
+           item > 0 ? " in your TorBox: removing and re-adding it" : ", not known; pick Burn in to ask again");
     fflush(stdout);
     tbDesligar("TorBox sent no video for this file", 1);
+    if (item > 0 && urlAtual[0] && tbburn_pode()) {
+      tb.sub = sub; tb.audio = aud;
+      tb.registrando = 0; tb.tardio = 0; tb.desistiu = 0;
+      tb.voltar = 2;   // no "unavailable" notice: it's on its way
+      tb.pend = 1; tb.pediuEm = SDL_GetTicks();
+      tbburn_readicionar(urlAtual, sub, aud);
+    }
   }
   if (tb.ativo && tb.esperaDesde && !pronto && !parado && !reconErroPend && !retomando && SDL_GetTicks() - tb.esperaDesde > 30000u) {
     printf("[tbburn] %s did not start in 30 s (no error from the TV player): treated as a player error\n",
@@ -3203,7 +3237,7 @@ void video_bombear(void) {
     // the same position (at most once a minute) before burn-in turns off.
     if (tb.tba && tb.urlTb[0] && (!tb.retentouEm || SDL_GetTicks() - tb.retentouEm > 60000u)) {
       char m[sizeof tb.urlTb];
-      double pos = video_pos();
+      double pos = posBruta();
       tb.retentouEm = SDL_GetTicks();
       snprintf(m, sizeof m, "%s", tb.urlTb);
       printf("[tbaudio] retrying Nuvio's stream once at %.1f s (%s)\n", pos, TBA_NOME[ajustes_tb_audio_modo()]);
@@ -3342,7 +3376,21 @@ int video_pausa_confirmada(void) {
          !retDesistiu && !falhou && !terminou;
 }
 void video_volume(int pct) { if (hVolume) hVolume(pct); }
+static void buscarBruto(double s);
+/* A seek asked in picture time (video_pos). On TorBox's burned stream it goes
+ * to the playlist time whose landing puts the picture there (tbrelogio.h). */
 void video_buscar(double s) {
+  if (tb.ativo && !terminou) {
+    double p = tbr_para_playlist(s);
+    if (fabs(p - s) >= 0.001) {
+      printf("[tbburn] seek: picture %.3f s -> TorBox's playlist %.3f s\n", s, p);
+      fflush(stdout);
+    }
+    s = p;
+  }
+  buscarBruto(s);
+}
+static void buscarBruto(double s) {
   mf.buscaAlvo = s; mf.buscaEm = SDL_GetTicks() | 1u;
   if (suspenso || retDesistiu) { retAlvo = s; retDe = "seek while suspended"; return; }
   if (retomando) {
@@ -3364,7 +3412,7 @@ void video_buscar(double s) {
     recon.alvo = s;
     if (recon.pendente || reconErroPend || !pronto || reconBuscarMs >= 0) { reconBuscarMs = (int)(s * 1000.0); return; }
   }
-  progressoEm = SDL_GetTicks(); progressoPos = video_pos(); vigiaAtiva = 1;
+  progressoEm = SDL_GetTicks(); progressoPos = posBruta(); vigiaAtiva = 1;
   atomic_store(&pausaAck, 0);   // o host reconfirma ao pousar pausado
   buscaAlvoMs = (int)(s * 1000.0);
   legEsperaSeekEm = 0;
@@ -3654,7 +3702,7 @@ static double posReal(void) {
   return (hPos && pronto) ? hPos() / 1000.0 : 0;
 }
 // SEEK IN FLIGHT (player.c, owner 20/10): the host's position cache (posMs)
-// only moves when SetPlayPositionAsync finishes, so until then video_pos() is
+// only moves when SetPlayPositionAsync finishes, so until then posBruta() is
 // the OLD position. The player keeps its target while this says 1.
 int video_busca_em_voo(void) {
   return atomic_load(&buscaAlvoMs) >= 0 || reconBuscarMs >= 0 || cv.reabrindo ||
@@ -3703,13 +3751,28 @@ int video_pos_incerta(void) {
   if (SDL_GetTicks() - atomic_load(&incertaTick) > 1500u) { atomic_store(&posIncerta, 0); return 0; }
   return 1;
 }
-double video_pos(void) {
+static double posBruta(void) {
   if (suspenso || retDesistiu) return retAlvo;
   // Opening at the saved point: the host is still seeking in Ready (no Start yet).
   if (ini.enviado && ini.estado == 0 && !tocando) return ini.ms / 1000.0;
   if (terminou && video_duracao() > 0) return video_duracao();
   return cv.reabrindo ? cv.posMantida : posReal();
 }
+/* TorBox burn-in (owner 24/11/2026, log 19): the app works in the burned
+ * PICTURE's time. The player's clock runs on TorBox's playlist (5.000 s per
+ * segment, which TorBox's segments are not); tbrelogio.h knows the real
+ * starts of the segments the player fetched. Inside this file positions stay
+ * the player's own (posBruta): host seeks, reopens, burn-in on/off. */
+double video_pos(void) {
+  double p = posBruta(), d;
+  if (!tb.ativo || terminou) return p;
+  p += tbr_correcao();
+  d = video_duracao();
+  if (d > 0 && p > d) p = d;
+  return p < 0 ? 0 : p;
+}
+// The player's own clock (the subtitle clock adds tbr_correcao itself).
+double video_pos_bruta(void) { return posBruta(); }
 double video_duracao(void) {
   // Progressivo: o player ve um fluxo sem fim; a duracao e a da fonte.
   if (cv.ativo && cv.prog) return dts_tpk_duracao();
@@ -3717,13 +3780,14 @@ double video_duracao(void) {
   if (durMs <= 0 && (suspenso || retomando || retDesistiu) && retDurMs > 0) return retDurMs / 1000.0;
   {
     double d = durMs / 1000.0, f = mkvDurArq;
-    // TorBox's burned stream with TorBox's audio: the playlist's last segment
-    // counts a full 5 s, so the player overstates the length by up to 5 s.
-    // The file's own Duration wins when it is that much shorter.
-    if (tb.ativo && !tb.tba && f > 0 && d > f && d - f < 5.5) {
+    // TorBox's burned stream: the playlist's last segment counts a full 5 s,
+    // and TorBox's segments are 5.005 s where it counted 120 frames as 5 s
+    // (log 19, Horimiya: 1430 s for a 1425.01 s file, which Passthrough's
+    // last-segment fix could not absorb). The file's own Duration wins.
+    if (tb.ativo && f > 0 && d > f && d - f < 10.0) {
       if (!mkvDurAviso) {
         mkvDurAviso = 1;
-        printf("[tbburn] length: the player says %.2f s, the file %.2f s (TorBox's last segment is padded): using the file's\n", d, f);
+        printf("[tbburn] length: the player says %.2f s, the file %.2f s (TorBox's playlist lengths): using the file's\n", d, f);
         fflush(stdout);
       }
       return f;
@@ -3880,7 +3944,7 @@ void video_escolher_audio(int i) {
     // Why it reopens (owner 14/11: log it). Expected after a mode change:
     // the player lists only what it opened with until the stream is new.
     printf("[tbaudio] audio %d (%s): reopening at %.1f s; why: %s (player lists %d audio, Nuvio offers %d renditions, "
-           "audio started %s, in-place switch %s, mode %s)\n", ord, faixaAudio[i].rotulo, video_pos(),
+           "audio started %s, in-place switch %s, mode %s)\n", ord, faixaAudio[i].rotulo, posBruta(),
            !hEscolher ? "this host cannot pick a track in place" :
            !audioComecou ? "the audio has not started yet" :
            tb.hostA < 0 ? "the player has not listed its tracks yet" :
@@ -3888,7 +3952,7 @@ void video_escolher_audio(int i) {
            tb.hostA, tba_n_rendicoes(), audioComecou ? "yes" : "no", hEscolher ? "available" : "unavailable",
            TBA_NOME[tba_modo() >= 0 && tba_modo() < TBA_MODOS ? tba_modo() : 0]);
     fflush(stdout);
-    tbReabrir(video_pos());
+    tbReabrir(posBruta());
     return;
   }
   // TorBox burn-in: another audio = another burned stream from TorBox.
@@ -3908,7 +3972,7 @@ void video_escolher_audio(int i) {
     const MkvFaixa *m = mkvTrack(faixaAudio[i].stream_id);
     if (m && faixaRecusada(m)) {
       if (cv.ativo && cv.track == faixaAudio[i].stream_id) { audioAtual = i; return; }
-      if (convPossivel()) { audioAtual = i; convIniciar(faixaAudio[i].stream_id, video_pos(), "faixa escolhida no menu"); }
+      if (convPossivel()) { audioAtual = i; convIniciar(faixaAudio[i].stream_id, posBruta(), "faixa escolhida no menu"); }
       return;
     }
     // Convertendo, uma faixa que a TV toca: volta ao original e escolhe ela.
@@ -4039,7 +4103,7 @@ void video_tpk_tba_ok(int k) {
   printf("[tbaudio] Audio menu: original audio %s (OK; saved in Settings)\n", TBA_NOME[v]);
   fflush(stdout);
   if (tb.ativo && tb.urlTb[0]) {
-    double pos = video_pos();
+    double pos = posBruta();
     char m[sizeof tb.urlTb];
     snprintf(m, sizeof m, "%s", tb.urlTb);
     tbUrlPlayer(m);

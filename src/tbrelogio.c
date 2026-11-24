@@ -143,3 +143,26 @@ double tbr_correcao(void) {
   pthread_mutex_unlock(&M);
   return ok ? c : 0;
 }
+
+double tbr_para_playlist(double t) {
+  double r = t, c = 0;
+  int k, achou = 0;
+  pthread_mutex_lock(&M);
+  if (ativo && n && pts && !isnan(pts[0]) && isfinite(t)) {
+    // A segment whose picture span [PTS(k), PTS(k+1)) - PTS(0) holds t.
+    for (k = 0; k + 1 < n && !achou; k++) {
+      double a, b;
+      if (isnan(pts[k]) || isnan(pts[k + 1])) continue;
+      a = pts[k] - pts[0]; b = pts[k + 1] - pts[0];
+      if (t >= a && t < b && fabs(a - ini[k]) <= TBR_TETO_S) { r = ini[k] + (t - a); achou = 1; }
+    }
+    if (!achou) {
+      k = tbr_segmento_de(dur, n, alvo, NULL);
+      if (correcaoDe(k, &c) && fabs(c) <= TBR_TETO_S) r = t - c;
+    }
+    if (r < 0) r = 0;
+    { double fim = ini[n - 1] + dur[n - 1]; if (r > fim) r = fim; }
+  }
+  pthread_mutex_unlock(&M);
+  return r;
+}

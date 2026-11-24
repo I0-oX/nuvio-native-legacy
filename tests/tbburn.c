@@ -53,6 +53,9 @@ int debrid_tb_adicionar(const char *h) {
   adicoes++; snprintf(adicionouHash, sizeof adicionouHash, "%s", h ? h : "");
   return adicionarDa;
 }
+/* Owner 24/11/2026 (logs 19-20): a stuck item is removed before the re-add. */
+static int apagou, apagouItem, apagarDa = 1;
+int debrid_tb_apagar(int item) { apagou++; apagouItem = item; return apagarDa; }
 /* The cached-first lookup with the item's hash: item 500, hash "ab..". */
 static int hashAchaItem = 500;
 int partes_achar_exato_hash(const char *u, const char *h, const char *a, uint64_t b, int *i, int *f, int *un, char *c, unsigned n, char hi[41]) {
@@ -491,8 +494,10 @@ int main(void) {
       // Log 15: the item is in the account: video_tpk.c doesn't re-add then.
       CHECA(tbburn_item_na_conta("https://s/12z") == 500 && !tbburn_item_na_conta("https://s/other") && !tbburn_item_na_conta(""));
       frescoItem = 900; frescoAPartir = 1; frescoN = criacoes = adicoes = 0; adicionarDa = 900; pronto900 = 1;
+      apagou = apagouItem = 0;
       tbburn_readicionar("https://s/12z", 1, 1);
-      CHECA(fimPedido() == TBB_PRONTO && !viuEsperando && adicoes == 1 &&
+      CHECA(fimPedido() == TBB_PRONTO && apagou == 1 && apagouItem == 500 &&   // removed first, then re-added
+            !viuEsperando && adicoes == 1 &&
             !strcmp(adicionouHash, "1212121212121212121212121212121212121212") && strstr(ultRota, "createstream?id=900&") != NULL);
       CHECA(tbburn_resultado(m, sizeof m, NULL, 0) == TBB_PRONTO && strstr(m, "/s/900/playlist.m3u8") != NULL);
       CHECA(tbburn_item_na_conta("https://s/12z") == 900);   // the re-added torrent is the one known now
@@ -504,11 +509,20 @@ int main(void) {
       tbburn_fonte("https://s/12w", "", "B.S01E20.mkv", 2020);
       tbburn_pedir("https://s/12w", 1, 1);
       CHECA(fimPedido() == TBB_FALHOU && tbburn_item_na_conta("https://s/12w") == 500);
-      frescoN = criacoes = adicoes = 0; adicionarDa = 500;
+      frescoN = criacoes = adicoes = 0; adicionarDa = 500; apagou = 0; apagarDa = 0;
       tbburn_readicionar("https://s/12w", 1, 1);
-      CHECA(fimPedido() == TBB_FALHOU && adicoes == 1 && criacoes == 0 && frescoN == 0);
+      // The delete was refused: the add gives the same item back -> stops at once.
+      CHECA(fimPedido() == TBB_FALHOU && apagou == 1 && adicoes == 1 && criacoes == 0 && frescoN == 0);
       CHECA(tbburn_resultado(NULL, 0, mt, sizeof mt) == TBB_FALHOU && strstr(mt, "still in your TorBox") != NULL);
-      partesHashItem[0] = 0; } }
+      // Once per file per playback: a second no-video for the same file doesn't remove again.
+      tbburn_pedir("https://s/12w", 1, 1); (void)fimPedido();
+      apagou = 0; tbburn_readicionar("https://s/12w", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU && apagou == 0);
+      // A new playback may remove it again.
+      tbburn_sessao_nova(); tbburn_pedir("https://s/12w", 1, 1); (void)fimPedido();
+      apagou = 0; tbburn_readicionar("https://s/12w", 1, 1);
+      CHECA(fimPedido() == TBB_FALHOU && apagou == 1);
+      apagarDa = 1; partesHashItem[0] = 0; } }
 
   // y) Log 12 (Married Couple CRUCiBLE): a Burn in press while the re-added
   //    file is registering joins the wait: no second add, no list lookup, no

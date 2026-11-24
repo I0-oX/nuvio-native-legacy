@@ -363,7 +363,7 @@ static void ass_diag(const char *s) {
  * MKV's fonts arrived stays on the fallback (Arial) even after they are added.
  * Fallbacks since the last ass_set_fonts + an attached font added since then
  * -> the next load rebuilds the selector (ass_aplicar_fontes_locked), once. */
-static int assFallbacks;      // "Using default font family" since the last ass_set_fonts (atomic)
+static int assFallbacks;      // "Using default font" since the last ass_set_fonts (atomic)
 static int assFonteNovaTarde; // an attached font was added since the last ass_set_fonts (assTrava)
 
 static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) {
@@ -371,7 +371,11 @@ static void ass_mensagem(int nivel, const char *fmt, va_list args, void *dados) 
   (void)dados;
   vsnprintf(linha, sizeof linha, fmt, args);
   if (strstr(linha, "fontselect:")) assResolucaoFonte++;
-  if (strstr(linha, "Using default font family")) __atomic_add_fetch(&assFallbacks, 1, __ATOMIC_RELAXED);
+  /* libass 0.17.5 (the .tpk's) says "fontselect: Using default font: (...)";
+   * older ones "Using default font family". Log 19 (owner 24/11/2026, Kaguya):
+   * only the old wording was matched, so the late-font rebuild never ran and
+   * fallen-back families stayed on the app's font until the app restarted. */
+  if (strstr(linha, "Using default font")) __atomic_add_fetch(&assFallbacks, 1, __ATOMIC_RELAXED);
   /* So ate MSGL_INFO (4), o mesmo corte do callback padrao do libass (que
    * para em 5). Os niveis 6-7 sao depuracao por quadro e por glifo. */
   if (nivel > 4) return;
